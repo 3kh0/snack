@@ -164,6 +164,22 @@ pub async fn fetch_history(
     decode(value, "conversations.history")
 }
 
+pub async fn fetch_replies(
+    transport: &Transport,
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    channel: ChannelId,
+    ts: MessageTs,
+    cursor: Option<String>,
+) -> Result<HistoryPage, Error> {
+    let value = transport
+        .execute(conversations_replies(
+            client, workspace, channel, ts, cursor,
+        ))
+        .await?;
+    decode(value, "conversations.replies")
+}
+
 pub async fn mark_channel(
     transport: &Transport,
     client: &SlackClient,
@@ -283,6 +299,22 @@ mod tests {
     }
 
     #[test]
+    fn replies_request_includes_thread_target() {
+        let request = conversations_replies(
+            &SlackClient::default(),
+            &workspace(),
+            "C0159TSJVH8".into(),
+            "1783372360.741769".into(),
+            None,
+        );
+        let fields = form_fields(&request);
+
+        assert!(request.url.contains("/api/conversations.replies?"));
+        assert!(fields.contains(&("channel".into(), "C0159TSJVH8".into())));
+        assert!(fields.contains(&("ts".into(), "1783372360.741769".into())));
+    }
+
+    #[test]
     fn send_request_includes_channel_and_text() {
         let request = chat_post_message(
             &SlackClient::default(),
@@ -296,6 +328,23 @@ mod tests {
         assert!(request.url.contains("/api/chat.postMessage?"));
         assert!(fields.contains(&("channel".into(), "C0159TSJVH8".into())));
         assert!(fields.contains(&("text".into(), "hello from snack".into())));
+    }
+
+    #[test]
+    fn send_thread_reply_includes_thread_ts() {
+        let request = chat_post_message(
+            &SlackClient::default(),
+            &workspace(),
+            "C0159TSJVH8".into(),
+            "reply from snack".into(),
+            Some("1783372360.741769".into()),
+        );
+        let fields = form_fields(&request);
+
+        assert!(request.url.contains("/api/chat.postMessage?"));
+        assert!(fields.contains(&("channel".into(), "C0159TSJVH8".into())));
+        assert!(fields.contains(&("text".into(), "reply from snack".into())));
+        assert!(fields.contains(&("thread_ts".into(), "1783372360.741769".into())));
     }
 
     #[test]

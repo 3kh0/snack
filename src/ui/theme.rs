@@ -11,6 +11,7 @@ pub const TEXT_MD: f32 = 14.0;
 pub const TEXT_LG: f32 = 16.0;
 
 pub const SIDEBAR_WIDTH: f32 = 220.0;
+pub const THREAD_WIDTH: f32 = 340.0;
 
 pub const SIDEBAR_BG: Color = Color::from_rgb(0.14, 0.11, 0.16);
 pub const SIDEBAR_FG: Color = Color::from_rgb(0.82, 0.80, 0.85);
@@ -77,5 +78,30 @@ pub fn reaction_button(active: bool) -> impl Fn(&Theme, button::Status) -> butto
             border: Border::default().rounded(10.0),
             ..button::Style::default()
         }
+    }
+}
+
+pub fn link_button(_theme: &Theme, status: button::Status) -> button::Style {
+    let hovered = matches!(status, button::Status::Hovered);
+    button::Style {
+        background: None,
+        text_color: if hovered {
+            Color::from_rgb(0.04, 0.32, 0.58)
+        } else {
+            SIDEBAR_ACTIVE_BG
+        },
+        ..button::Style::default()
+    }
+}
+
+pub fn panel(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(Color::from_rgb(0.98, 0.98, 0.99))),
+        border: Border {
+            color: Color::from_rgb(0.84, 0.84, 0.87),
+            width: 1.0,
+            radius: 0.0.into(),
+        },
+        ..container::Style::default()
     }
 }

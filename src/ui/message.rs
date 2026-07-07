@@ -44,14 +44,25 @@ pub fn row<'a>(
         .push(header)
         .push(text(state::message_text(msg)).size(theme::TEXT_MD));
 
-    if let Some(count) = msg.reply_count.filter(|c| *c > 0) {
+    let thread_ts = match (msg.thread_ts.as_deref(), msg.ts.as_deref()) {
+        (Some(root), Some(ts)) if root != ts => Some(root.to_owned()),
+        (_, Some(ts)) => Some(ts.to_owned()),
+        _ => None,
+    };
+    if let Some(ts) = thread_ts {
+        let reply_label = msg
+            .reply_count
+            .filter(|c| *c > 0)
+            .map(|count| format!("{count} repl{}", if count == 1 { "y" } else { "ies" }))
+            .unwrap_or_else(|| "Reply".to_owned());
         col = col.push(
-            text(format!(
-                "{count} repl{}",
-                if count == 1 { "y" } else { "ies" }
-            ))
-            .size(theme::TEXT_SM)
-            .color(theme::SIDEBAR_ACTIVE_BG),
+            button(text(reply_label).size(theme::TEXT_SM))
+                .padding([2, 0])
+                .style(theme::link_button)
+                .on_press(Message::ThreadOpened {
+                    channel: channel_id.to_owned(),
+                    ts,
+                }),
         );
     }
 

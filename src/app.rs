@@ -15,8 +15,10 @@ use crate::slack::models::{
 };
 use crate::slack::realtime::{self, ConnectParams, Connection, RtUpdate};
 use crate::slack::{Error as SlackError, SlackClient, Transport};
-use crate::state::{Presence, RealtimeStatus, Screen, Toast, Workspace};
+use crate::state::{ChannelMessages, Presence, RealtimeStatus, Screen, Toast, Workspace};
 use crate::ui;
+
+type ThreadKey = (ChannelId, MessageTs);
 
 pub struct App {
     screen: Screen,
@@ -26,8 +28,11 @@ pub struct App {
     transport: Option<Arc<Transport>>,
     active_team: Option<TeamId>,
     active_channel: Option<ChannelId>,
+    active_thread: Option<ThreadKey>,
     workspaces: BTreeMap<TeamId, Workspace>,
+    threads: HashMap<ThreadKey, ChannelMessages>,
     composer_text: String,
+    thread_composer_text: String,
     errors: Vec<Toast>,
     send_seq: u64,
     last_typing: HashMap<(TeamId, ChannelId), Instant>,
@@ -48,6 +53,26 @@ pub enum Message {
     CountsLoaded(TeamId, Result<CountsPage, SlackError>),
     HistoryLoaded(TeamId, ChannelId, Result<HistoryPage, SlackError>),
     ChannelMarked(TeamId, ChannelId, MessageTs, Result<(), SlackError>),
+    ThreadOpened {
+        channel: ChannelId,
+        ts: MessageTs,
+    },
+    ThreadClosed,
+    ThreadLoaded {
+        team: TeamId,
+        channel: ChannelId,
+        root_ts: MessageTs,
+        result: Result<HistoryPage, SlackError>,
+    },
+    ThreadComposerChanged(String),
+    ThreadSendPressed,
+    ThreadReplySent {
+        team: TeamId,
+        channel: ChannelId,
+        root_ts: MessageTs,
+        client_msg_id: String,
+        result: Result<SentMessage, SlackError>,
+    },
     ReactionPressed {
         channel: ChannelId,
         ts: MessageTs,
@@ -80,8 +105,11 @@ impl App {
             transport: None,
             active_team: None,
             active_channel: None,
+            active_thread: None,
             workspaces: BTreeMap::new(),
+            threads: HashMap::new(),
             composer_text: String::new(),
+            thread_composer_text: String::new(),
             errors: Vec::new(),
             send_seq: 0,
             last_typing: HashMap::new(),
@@ -237,6 +265,34 @@ impl App {
         )
     }
 
+    fn load_thread(&self, team: &str, channel: &ChannelId, root_ts: &MessageTs) -> Task<Message> {
+        let Some((transport, session)) = self.live() else {
+            return Task::none();
+        };
+        let Some(ws) = session.workspaces.get(team) else {
+            return Task::none();
+        };
+        let transport = transport.clone();
+        let client = self.client.clone();
+        let ws = ws.clone();
+        let team = team.to_owned();
+        let channel = channel.clone();
+        let root_ts = root_ts.clone();
+        let fetch_channel = channel.clone();
+        let fetch_ts = root_ts.clone();
+        Task::perform(
+            async move {
+                api::fetch_replies(&transport, &client, &ws, fetch_channel, fetch_ts, None).await
+            },
+            move |result| Message::ThreadLoaded {
+                team: team.clone(),
+                channel: channel.clone(),
+                root_ts: root_ts.clone(),
+                result,
+            },
+        )
+    }
+
     fn active_workspace(&self) -> Option<&Workspace> {
         self.workspaces.get(self.active_team.as_ref()?)
     }
@@ -268,6 +324,14 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
     match message {
         Message::ChannelSelected(id) => {
             app.active_channel = Some(id.clone());
+            if app
+                .active_thread
+                .as_ref()
+                .is_some_and(|(channel, _)| channel != &id)
+            {
+                app.active_thread = None;
+                app.thread_composer_text.clear();
+            }
             if let Some(team) = app.active_team.clone() {
                 let needs_load = app
                     .workspaces
@@ -278,6 +342,100 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                     return app.load_history(&team, &id);
                 }
                 return mark_latest_visible(app, &team, &id);
+            }
+            Task::none()
+        }
+
+        Message::ThreadOpened { channel, ts } => {
+            app.active_channel = Some(channel.clone());
+            app.active_thread = Some((channel.clone(), ts.clone()));
+            let Some(team) = app.active_team.clone() else {
+                return Task::none();
+            };
+            let needs_load = !app
+                .threads
+                .get(&(channel.clone(), ts.clone()))
+                .map(|cm| cm.loaded)
+                .unwrap_or(false);
+            if needs_load {
+                app.load_thread(&team, &channel, &ts)
+            } else {
+                Task::none()
+            }
+        }
+
+        Message::ThreadClosed => {
+            app.active_thread = None;
+            app.thread_composer_text.clear();
+            Task::none()
+        }
+
+        Message::ThreadLoaded {
+            team,
+            channel,
+            root_ts,
+            result,
+        } => {
+            if app.active_team.as_deref() != Some(&team) {
+                return Task::none();
+            }
+            match result {
+                Ok(page) => {
+                    let key = (channel.clone(), root_ts.clone());
+                    let cm = app.threads.entry(key).or_default();
+                    let n = page.messages.len();
+                    for msg in page.messages {
+                        cm.upsert(msg);
+                    }
+                    cm.loaded = true;
+                    tracing::info!(%channel, %root_ts, messages = n, "thread loaded");
+                }
+                Err(e) => {
+                    app.toast(format!("thread failed for {channel}/{root_ts}: {e}"));
+                    if is_auth_error(&e) {
+                        app.screen = Screen::Login;
+                    }
+                }
+            }
+            Task::none()
+        }
+
+        Message::ThreadComposerChanged(value) => {
+            app.thread_composer_text = value;
+            Task::none()
+        }
+
+        Message::ThreadSendPressed => send_thread_pressed(app),
+
+        Message::ThreadReplySent {
+            team,
+            channel,
+            root_ts,
+            client_msg_id,
+            result,
+        } => {
+            if app.active_team.as_deref() != Some(&team) {
+                return Task::none();
+            }
+            match result {
+                Ok(sent) => {
+                    if let Some(cm) = app.threads.get_mut(&(channel.clone(), root_ts.clone())) {
+                        cm.confirm(
+                            &client_msg_id,
+                            SlackMessage {
+                                ts: Some(sent.ts),
+                                thread_ts: Some(root_ts),
+                                ..sent.message
+                            },
+                        );
+                    }
+                }
+                Err(e) => {
+                    app.toast(format!("reply failed: {e}"));
+                    if is_auth_error(&e) {
+                        app.screen = Screen::Login;
+                    }
+                }
             }
             Task::none()
         }
@@ -611,6 +769,77 @@ fn send_pressed(app: &mut App) -> Task<Message> {
     )
 }
 
+fn send_thread_pressed(app: &mut App) -> Task<Message> {
+    let text = app.thread_composer_text.trim().to_owned();
+    if text.is_empty() {
+        return Task::none();
+    }
+    let Some(team) = app.active_team.clone() else {
+        return Task::none();
+    };
+    let Some((channel, root_ts)) = app.active_thread.clone() else {
+        return Task::none();
+    };
+
+    let seq = next_seq(app);
+    let client_msg_id = uuid::Uuid::new_v4().to_string();
+    let ts = format!("{}.{:06}", chrono::Utc::now().timestamp(), seq);
+
+    let Some(ws) = app.workspaces.get(&team) else {
+        return Task::none();
+    };
+    let self_user = ws.self_user_id.clone();
+    let pending = SlackMessage {
+        user: Some(self_user),
+        kind: Some("message".to_owned()),
+        ts: Some(ts.clone()),
+        client_msg_id: Some(client_msg_id.clone()),
+        text: Some(text.clone()),
+        channel: Some(channel.clone()),
+        thread_ts: Some(root_ts.clone()),
+        ..Default::default()
+    };
+    let cm = app
+        .threads
+        .entry((channel.clone(), root_ts.clone()))
+        .or_default();
+    cm.upsert(pending);
+    cm.pending.push(ts);
+    app.thread_composer_text.clear();
+
+    let Some((transport, session)) = app.live() else {
+        return Task::none();
+    };
+    let Some(ws_session) = session.workspaces.get(&team) else {
+        return Task::none();
+    };
+    let transport = transport.clone();
+    let client = app.client.clone();
+    let ws_session = ws_session.clone();
+    let send_channel = channel.clone();
+    let send_thread_ts = root_ts.clone();
+    Task::perform(
+        async move {
+            api::send_message(
+                &transport,
+                &client,
+                &ws_session,
+                send_channel,
+                text,
+                Some(send_thread_ts),
+            )
+            .await
+        },
+        move |result| Message::ThreadReplySent {
+            team: team.clone(),
+            channel: channel.clone(),
+            root_ts: root_ts.clone(),
+            client_msg_id: client_msg_id.clone(),
+            result,
+        },
+    )
+}
+
 fn toggle_reaction(
     app: &mut App,
     channel: ChannelId,
@@ -633,17 +862,36 @@ fn toggle_reaction(
         return Task::none();
     };
     let user = ws.self_user_id.clone();
-    let Some(cm) = ws.messages.get_mut(&channel) else {
+    let active = ws
+        .messages
+        .get(&channel)
+        .and_then(|cm| reaction_has_user_in(cm, &ts, &name, &user))
+        .or_else(|| {
+            app.threads
+                .iter()
+                .filter(|((thread_channel, _), _)| thread_channel == &channel)
+                .find_map(|(_, cm)| reaction_has_user_in(cm, &ts, &name, &user))
+        });
+    let Some(active) = active else {
         return Task::none();
     };
-    let adding = !cm
-        .messages
-        .iter()
-        .find(|m| m.ts.as_deref() == Some(ts.as_str()))
-        .and_then(|m| m.reactions.iter().find(|r| r.name == name))
-        .is_some_and(|r| crate::state::reaction_has_user(r, &user));
+    let adding = !active;
 
-    cm.apply_reaction(&ts, &user, &name, adding);
+    let mut applied = false;
+    if let Some(cm) = ws.messages.get_mut(&channel) {
+        if reaction_has_user_in(cm, &ts, &name, &user).is_some() {
+            cm.apply_reaction(&ts, &user, &name, adding);
+            applied = true;
+        }
+    }
+    if !applied {
+        for ((thread_channel, _), cm) in &mut app.threads {
+            if thread_channel == &channel && reaction_has_user_in(cm, &ts, &name, &user).is_some() {
+                cm.apply_reaction(&ts, &user, &name, adding);
+                break;
+            }
+        }
+    }
     persist_workspace(app, &team);
 
     let send_channel = channel.clone();
@@ -703,18 +951,27 @@ fn apply_realtime(app: &mut App, team: &str, generation: u64, event: RtEvent) {
             if let Some(user) = msg.user.as_deref() {
                 ws.clear_typing_user(&channel, user);
             }
-            let cm = ws.messages.entry(channel).or_default();
-            if let Some(cid) = msg.client_msg_id.clone() {
-                if cm.confirm(&cid, msg.clone()) {
+            if let Some(root_ts) = thread_root_for_reply(&msg) {
+                let key = (channel.clone(), root_ts);
+                if let Some(cm) = app.threads.get_mut(&key) {
+                    upsert_realtime_message(cm, msg.clone());
+                }
+                if msg.subtype.as_deref() != Some("thread_broadcast") {
                     return;
                 }
             }
-            if cm.confirm_matching_pending(msg.user.as_deref(), msg.text.as_deref(), msg.clone()) {
-                return;
-            }
-            cm.upsert(msg);
+            let cm = ws.messages.entry(channel).or_default();
+            upsert_realtime_message(cm, msg);
         }
         RtEvent::MessageChanged { channel, message } => {
+            if let Some(root_ts) = thread_root_for_reply(&message) {
+                if let Some(cm) = app.threads.get_mut(&(channel.clone(), root_ts)) {
+                    cm.merge_update(message.clone());
+                }
+                if message.subtype.as_deref() != Some("thread_broadcast") {
+                    return;
+                }
+            }
             ws.messages
                 .entry(channel)
                 .or_default()
@@ -726,6 +983,11 @@ fn apply_realtime(app: &mut App, team: &str, generation: u64, event: RtEvent) {
         } => {
             if let Some(cm) = ws.messages.get_mut(&channel) {
                 cm.remove(&deleted_ts);
+            }
+            for ((thread_channel, _), cm) in &mut app.threads {
+                if thread_channel == &channel {
+                    cm.remove(&deleted_ts);
+                }
             }
         }
         RtEvent::UserTyping { channel, user } => {
@@ -741,9 +1003,10 @@ fn apply_realtime(app: &mut App, team: &str, generation: u64, event: RtEvent) {
             reaction,
         } => {
             ws.messages
-                .entry(channel)
+                .entry(channel.clone())
                 .or_default()
                 .apply_reaction(&ts, &user, &reaction, true);
+            apply_thread_reaction(&mut app.threads, &channel, &ts, &user, &reaction, true);
         }
         RtEvent::ReactionRemoved {
             channel,
@@ -754,11 +1017,51 @@ fn apply_realtime(app: &mut App, team: &str, generation: u64, event: RtEvent) {
             if let Some(cm) = ws.messages.get_mut(&channel) {
                 cm.apply_reaction(&ts, &user, &reaction, false);
             }
+            apply_thread_reaction(&mut app.threads, &channel, &ts, &user, &reaction, false);
         }
         RtEvent::Unknown(raw) => {
             tracing::debug!(kind = %raw.kind, "unknown realtime event, ignoring");
         }
     }
+}
+
+fn upsert_realtime_message(cm: &mut ChannelMessages, msg: SlackMessage) {
+    if let Some(cid) = msg.client_msg_id.clone() {
+        if cm.confirm(&cid, msg.clone()) {
+            return;
+        }
+    }
+    if cm.confirm_matching_pending(msg.user.as_deref(), msg.text.as_deref(), msg.clone()) {
+        return;
+    }
+    cm.upsert(msg);
+}
+
+fn thread_root_for_reply(msg: &SlackMessage) -> Option<MessageTs> {
+    let root_ts = msg.thread_ts.as_deref()?;
+    let ts = msg.ts.as_deref()?;
+    (root_ts != ts).then(|| root_ts.to_owned())
+}
+
+fn apply_thread_reaction(
+    threads: &mut HashMap<ThreadKey, ChannelMessages>,
+    channel: &str,
+    ts: &str,
+    user: &str,
+    reaction: &str,
+    added: bool,
+) {
+    for ((thread_channel, _), cm) in threads {
+        if thread_channel == channel {
+            cm.apply_reaction(ts, user, reaction, added);
+        }
+    }
+}
+
+fn reaction_has_user_in(cm: &ChannelMessages, ts: &str, name: &str, user: &str) -> Option<bool> {
+    let message = cm.messages.iter().find(|m| m.ts.as_deref() == Some(ts))?;
+    let reaction = message.reactions.iter().find(|r| r.name == name)?;
+    Some(crate::state::reaction_has_user(reaction, user))
 }
 
 fn persist_workspace(app: &App, team: &str) {
@@ -819,7 +1122,20 @@ fn main_view(app: &App) -> Element<'_, Message> {
         None => center_text("Select a channel"),
     };
 
-    row![sidebar, main].width(Fill).height(Fill).into()
+    let content = if let Some((channel, root_ts)) = app.active_thread.as_ref() {
+        let replies = app.threads.get(&(channel.clone(), root_ts.clone()));
+        let root = ui::thread::root_message(ws, channel, root_ts);
+        row![
+            main,
+            ui::thread::view(ws, channel, root, replies, &app.thread_composer_text)
+        ]
+        .width(Fill)
+        .height(Fill)
+    } else {
+        row![main].width(Fill).height(Fill)
+    };
+
+    row![sidebar, content].width(Fill).height(Fill).into()
 }
 
 fn center_text(label: &str) -> Element<'_, Message> {
@@ -953,6 +1269,102 @@ mod tests {
         let ws = app.active_workspace().unwrap();
         assert!(!ws.messages.get("C_GENERAL").unwrap().messages.is_empty());
         assert!(!ws.messages.get("C_DEV").unwrap().messages.is_empty());
+    }
+
+    #[test]
+    fn thread_open_tracks_selected_root() {
+        let mut app = test_app();
+        let _ = update(
+            &mut app,
+            Message::ThreadOpened {
+                channel: "C_GENERAL".into(),
+                ts: "1783372300.000100".into(),
+            },
+        );
+
+        assert_eq!(app.active_channel.as_deref(), Some("C_GENERAL"));
+        assert_eq!(
+            app.active_thread.as_ref(),
+            Some(&("C_GENERAL".into(), "1783372300.000100".into()))
+        );
+    }
+
+    #[test]
+    fn thread_loaded_stores_replies() {
+        let mut app = test_app();
+        let team = app.active_team.clone().unwrap();
+        let root_ts = "1783372300.000100".to_owned();
+        let _ = update(
+            &mut app,
+            Message::ThreadLoaded {
+                team,
+                channel: "C_GENERAL".into(),
+                root_ts: root_ts.clone(),
+                result: Ok(HistoryPage {
+                    messages: vec![
+                        msg("U_ALICE", &root_ts, "morning"),
+                        SlackMessage {
+                            thread_ts: Some(root_ts.clone()),
+                            ..msg("U_BOB", "1783372310.000100", "reply")
+                        },
+                    ],
+                    ..Default::default()
+                }),
+            },
+        );
+
+        let cm = &app.threads[&("C_GENERAL".into(), root_ts)];
+        assert!(cm.loaded);
+        assert_eq!(cm.messages.len(), 2);
+    }
+
+    #[test]
+    fn optimistic_thread_reply_inserts_pending_without_transport() {
+        let mut app = test_app();
+        let root_ts = "1783372300.000100".to_owned();
+        app.active_thread = Some(("C_GENERAL".into(), root_ts.clone()));
+        app.thread_composer_text = "thread answer".into();
+        let _ = update(&mut app, Message::ThreadSendPressed);
+
+        assert!(app.thread_composer_text.is_empty());
+        let cm = &app.threads[&("C_GENERAL".into(), root_ts)];
+        let reply = cm.messages.last().unwrap();
+        assert_eq!(reply.text.as_deref(), Some("thread answer"));
+        assert_eq!(reply.thread_ts.as_deref(), Some("1783372300.000100"));
+        assert!(cm.is_pending(reply.ts.as_deref().unwrap()));
+    }
+
+    #[test]
+    fn realtime_thread_reply_updates_open_thread_not_channel() {
+        let mut app = test_app();
+        let team = app.active_team.clone().unwrap();
+        let root_ts = "1783372300.000100".to_owned();
+        app.active_thread = Some(("C_GENERAL".into(), root_ts.clone()));
+        app.threads.insert(
+            ("C_GENERAL".into(), root_ts.clone()),
+            ChannelMessages::default(),
+        );
+        let before = app.workspaces[&team].messages["C_GENERAL"].messages.len();
+        let ev = RtEvent::Message(SlackMessage {
+            user: Some("U_BOB".into()),
+            ts: Some("1783372310.000100".into()),
+            channel: Some("C_GENERAL".into()),
+            thread_ts: Some(root_ts.clone()),
+            text: Some("reply".into()),
+            ..Default::default()
+        });
+        let _ = update(&mut app, Message::Realtime(team.clone(), 1, ev));
+
+        assert_eq!(
+            app.workspaces[&team].messages["C_GENERAL"].messages.len(),
+            before
+        );
+        assert_eq!(
+            app.threads[&("C_GENERAL".into(), root_ts)].messages[0]
+                .text
+                .as_deref(),
+            Some("reply")
+        );
     }
 
     #[test]
