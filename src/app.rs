@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use iced::widget::image::Handle as ImageHandle;
+use iced::widget::operation::{self, RelativeOffset};
 use iced::widget::{button, column, container, row, text};
 use iced::{Element, Fill, Subscription, Task};
 
@@ -76,6 +77,7 @@ pub struct App {
     last_typing: HashMap<(TeamId, ChannelId), Instant>,
     last_active_channels: HashMap<TeamId, ChannelId>,
     file_previews: HashMap<String, FilePreview>,
+    pending_scroll_to: Option<(ChannelId, MessageTs)>,
 }
 
 #[derive(Debug, Clone)]
@@ -171,6 +173,8 @@ pub enum Message {
         filename: String,
     },
     FileDownloaded(Result<PathBuf, SlackError>),
+    OpenUrl(String),
+    UrlOpened(Result<(), String>),
     FilePreviewLoaded {
         key: String,
         result: Result<Vec<u8>, SlackError>,
@@ -208,6 +212,7 @@ impl App {
             last_typing: HashMap::new(),
             last_active_channels: HashMap::new(),
             file_previews: HashMap::new(),
+            pending_scroll_to: None,
         }
     }
 
@@ -654,6 +659,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                     return Task::batch([
                         mark_latest_visible(app, &team, &channel),
                         load_visible_file_previews(app, &team, &channel),
+                        scroll_to_pending(app, &channel),
                     ]);
                 }
                 Err(e) => app.toast(format!("history failed for {channel}: {e}")),
@@ -839,6 +845,15 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             match result {
                 Ok(path) => app.toast(format!("downloaded file to {}", path.display())),
                 Err(e) => app.toast(format!("download failed: {e}")),
+            }
+            Task::none()
+        }
+
+        Message::OpenUrl(url) => open_url_pressed(app, url),
+
+        Message::UrlOpened(result) => {
+            if let Err(e) = result {
+                app.toast(format!("could not open link: {e}"));
             }
             Task::none()
         }
@@ -1529,7 +1544,6 @@ fn open_search_result(
     ts: MessageTs,
     thread_ts: Option<MessageTs>,
 ) -> Task<Message> {
-    let _ = ts;
     app.search = None;
     let Some(team) = app.active_team.clone() else {
         return Task::none();
@@ -1539,6 +1553,7 @@ fn open_search_result(
         .insert(team.clone(), channel.clone());
     app.editing = None;
     app.edit_text.clear();
+    app.pending_scroll_to = Some((channel.clone(), ts));
 
     let mut tasks = Vec::new();
     let needs_load = app
@@ -1556,6 +1571,7 @@ fn open_search_result(
     } else {
         tasks.push(mark_latest_visible(app, &team, &channel));
         tasks.push(load_visible_file_previews(app, &team, &channel));
+        tasks.push(scroll_to_pending(app, &channel));
     }
 
     match thread_ts {
@@ -1575,6 +1591,76 @@ fn open_search_result(
         }
     }
     Task::batch(tasks)
+}
+
+fn scroll_to_pending(app: &mut App, channel: &ChannelId) -> Task<Message> {
+    let Some((pending_channel, ts)) = app.pending_scroll_to.clone() else {
+        return Task::none();
+    };
+    if pending_channel != *channel {
+        return Task::none();
+    }
+    let Some(team) = app.active_team.clone() else {
+        return Task::none();
+    };
+    let loaded_messages = app
+        .workspaces
+        .get(&team)
+        .and_then(|ws| ws.messages.get(channel))
+        .filter(|cm| cm.loaded)
+        .map(|cm| &cm.messages);
+    let Some(messages) = loaded_messages else {
+        return Task::none();
+    };
+    match crate::state::scroll_ratio_for_ts(messages, &ts) {
+        Some(ratio) => {
+            app.pending_scroll_to = None;
+            operation::snap_to(
+                ui::channel::CHANNEL_SCROLLABLE_ID,
+                RelativeOffset { x: 0.0, y: ratio },
+            )
+        }
+        None => Task::none(),
+    }
+}
+
+fn open_url_pressed(app: &mut App, url: String) -> Task<Message> {
+    if !crate::state::is_browser_url(&url) {
+        app.toast("could not open link: unsupported URL scheme");
+        return Task::none();
+    }
+    Task::perform(open_url_in_browser(url), Message::UrlOpened)
+}
+
+async fn open_url_in_browser(url: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut cmd = tokio::process::Command::new("open");
+        cmd.arg(&url);
+        cmd
+    };
+    #[cfg(target_os = "linux")]
+    let mut command = {
+        let mut cmd = tokio::process::Command::new("xdg-open");
+        cmd.arg(&url);
+        cmd
+    };
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut cmd = tokio::process::Command::new("cmd");
+        cmd.args(["/C", "start", "", &url]);
+        cmd
+    };
+
+    let status = command
+        .status()
+        .await
+        .map_err(|e| format!("spawn failed: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("exited with {status}"))
+    }
 }
 
 fn download_file_pressed(app: &mut App, url: String, filename: String) -> Task<Message> {

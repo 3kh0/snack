@@ -3,7 +3,8 @@ use crate::config::WorkspaceSession;
 use super::Error;
 use super::client::{PreparedRequest, SlackClient};
 use super::models::{
-    BootData, ChannelId, CountsPage, HistoryPage, MessageTs, SearchMessagesPage, SentMessage,
+    BootData, ChannelId, CountsPage, HistoryPage, MessageTs, SearchInlinePage, SearchMessagesPage,
+    SentMessage,
 };
 use super::transport::Transport;
 pub fn user_boot(client: &SlackClient, workspace: &WorkspaceSession) -> PreparedRequest {
@@ -121,6 +122,48 @@ pub fn search_messages(
             ("highlight", "true".to_owned()),
             ("extracts", "true".to_owned()),
             ("extra_message_data", "true".to_owned()),
+            ("client_req_id", uuid::Uuid::new_v4().to_string()),
+            ("search_session_id", uuid::Uuid::new_v4().to_string()),
+        ],
+    )
+}
+
+#[derive(Debug, Clone)]
+pub struct SearchInlineArgs {
+    pub query: String,
+    pub channel: ChannelId,
+    pub count: u32,
+    pub page: u32,
+}
+
+impl SearchInlineArgs {
+    pub fn new(query: impl Into<String>, channel: ChannelId) -> Self {
+        SearchInlineArgs {
+            query: query.into(),
+            channel,
+            count: 20,
+            page: 1,
+        }
+    }
+}
+
+pub fn search_inline(
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    args: SearchInlineArgs,
+) -> PreparedRequest {
+    client.rest_form(
+        workspace,
+        "search.inline",
+        vec![
+            ("query", args.query),
+            ("channel", args.channel),
+            ("count", args.count.to_string()),
+            ("page", args.page.to_string()),
+            ("sort", "timestamp".to_owned()),
+            ("sort_dir", "desc".to_owned()),
+            ("highlight", "true".to_owned()),
+            ("extracts", "true".to_owned()),
             ("client_req_id", uuid::Uuid::new_v4().to_string()),
             ("search_session_id", uuid::Uuid::new_v4().to_string()),
         ],
@@ -300,6 +343,18 @@ pub async fn fetch_search_messages(
     decode(value, "search.modules.messages")
 }
 
+pub async fn fetch_search_inline(
+    transport: &Transport,
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    args: SearchInlineArgs,
+) -> Result<SearchInlinePage, Error> {
+    let value = transport
+        .execute(search_inline(client, workspace, args))
+        .await?;
+    decode(value, "search.inline")
+}
+
 pub async fn edit_message(
     transport: &Transport,
     client: &SlackClient,
@@ -474,6 +529,28 @@ mod tests {
         assert!(fields.contains(&("query".into(), "deploy failed".into())));
         assert!(fields.contains(&("count".into(), "20".into())));
         assert!(fields.contains(&("page".into(), "2".into())));
+        assert!(fields.iter().any(|(k, _)| k == "client_req_id"));
+        assert!(fields.iter().any(|(k, _)| k == "search_session_id"));
+    }
+
+    #[test]
+    fn search_inline_request_targets_channel_with_query() {
+        let request = search_inline(
+            &SlackClient::default(),
+            &workspace(),
+            SearchInlineArgs {
+                query: "deploy".into(),
+                channel: "C0BBMA16677".into(),
+                count: 20,
+                page: 1,
+            },
+        );
+        let fields = form_fields(&request);
+
+        assert!(request.url.contains("/api/search.inline?"));
+        assert!(fields.contains(&("query".into(), "deploy".into())));
+        assert!(fields.contains(&("channel".into(), "C0BBMA16677".into())));
+        assert!(fields.contains(&("count".into(), "20".into())));
         assert!(fields.iter().any(|(k, _)| k == "client_req_id"));
         assert!(fields.iter().any(|(k, _)| k == "search_session_id"));
     }

@@ -402,6 +402,34 @@ pub struct SearchPagination {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SearchInlinePage {
+    #[serde(default)]
+    pub items: Vec<SearchInlineItem>,
+    #[serde(default)]
+    pub pagination: Option<SearchPagination>,
+    #[serde(default)]
+    pub query: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SearchInlineItem {
+    #[serde(default)]
+    pub channel_id: Option<ChannelId>,
+    #[serde(default)]
+    pub iid: Option<String>,
+    #[serde(default)]
+    pub permalink: Option<String>,
+    #[serde(default)]
+    pub ts: Option<MessageTs>,
+    #[serde(default)]
+    pub user: Option<UserId>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EdgeResults<T> {
     #[serde(default)]
     pub ok: bool,
@@ -548,6 +576,41 @@ mod fixture_tests {
         assert_eq!(pagination.page, Some(1));
         assert_eq!(pagination.page_count, Some(23551));
         assert_eq!(pagination.total_count, Some(117752));
+    }
+
+    #[test]
+    fn deserialize_search_inline_page() {
+        let page: SearchInlinePage = serde_json::from_str(
+            r#"{
+                "items": [
+                    {
+                        "channel_id": "C0BBMA16677",
+                        "iid": "fac7c614-5c33-4702-91bd-06122777ee4f",
+                        "permalink": "https://hackclub.enterprise.slack.com/archives/C0BBMA16677/p1783308502631879",
+                        "ts": "1783308502.631879",
+                        "user": "U0AEY1PUMPX"
+                    }
+                ],
+                "ok": true,
+                "pagination": { "first": 1, "last": 2, "page": 1, "page_count": 1, "per_page": 20, "total_count": 2 },
+                "query": "deploy"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(page.items.len(), 1);
+        let item = &page.items[0];
+        assert_eq!(item.channel_id.as_deref(), Some("C0BBMA16677"));
+        assert_eq!(item.ts.as_deref(), Some("1783308502.631879"));
+        assert_eq!(item.user.as_deref(), Some("U0AEY1PUMPX"));
+        assert_eq!(
+            item.permalink.as_deref(),
+            Some("https://hackclub.enterprise.slack.com/archives/C0BBMA16677/p1783308502631879")
+        );
+
+        let pagination = page.pagination.unwrap();
+        assert_eq!(pagination.total_count, Some(2));
+        assert!(pagination.extra.contains_key("first"));
     }
 
     #[test]

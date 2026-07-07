@@ -218,12 +218,15 @@ fn attachment_row<'a>(
             weight: iced::font::Weight::Bold,
             ..Font::default()
         });
-        let styled = if att.title_link.is_some() {
-            styled.color(theme::SIDEBAR_ACTIVE_BG)
-        } else {
-            styled
+        let widget: Element<'a, Message> = match non_empty(att.title_link.as_deref()) {
+            Some(link) => button(styled.color(theme::SIDEBAR_ACTIVE_BG))
+                .padding(0)
+                .style(theme::link_button)
+                .on_press(Message::OpenUrl(link.to_owned()))
+                .into(),
+            None => styled.into(),
         };
-        content = content.push(styled);
+        content = content.push(widget);
     }
     if let Some(body) = non_empty(att.text.as_deref()) {
         content = content.push(text(body.to_owned()).size(theme::TEXT_SM));

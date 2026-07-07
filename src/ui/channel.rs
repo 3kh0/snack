@@ -6,6 +6,8 @@ use crate::app::{FilePreview, Message};
 use crate::state::{self, Workspace};
 use std::collections::HashMap;
 
+pub const CHANNEL_SCROLLABLE_ID: &str = "channel-messages";
+
 pub fn view<'a>(
     ws: &Workspace,
     channel_id: &str,
@@ -41,7 +43,10 @@ pub fn view<'a>(
                     edit,
                 ));
             }
-            scrollable(col).height(Fill).into()
+            scrollable(col)
+                .id(CHANNEL_SCROLLABLE_ID)
+                .height(Fill)
+                .into()
         }
         _ => message::empty_placeholder(),
     };

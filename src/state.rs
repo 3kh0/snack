@@ -420,6 +420,10 @@ pub fn attachment_preview_url(att: &crate::slack::models::Attachment) -> Option<
     non_empty(att.thumb_url.as_deref()).or_else(|| non_empty(att.image_url.as_deref()))
 }
 
+pub fn is_browser_url(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://")
+}
+
 pub fn file_preview_url(file: &File) -> Option<&str> {
     non_empty(file.thumb_360.as_deref())
         .or_else(|| non_empty(file.thumb_160.as_deref()))
@@ -580,6 +584,16 @@ pub fn format_ts_hm(ts: &str) -> String {
 
 fn non_empty(s: Option<&str>) -> Option<&str> {
     s.map(str::trim).filter(|s| !s.is_empty())
+}
+
+pub fn scroll_ratio_for_ts(messages: &[SlackMessage], ts: &str) -> Option<f32> {
+    let index = messages.iter().position(|m| m.ts.as_deref() == Some(ts))?;
+    let last = messages.len() - 1;
+    if last == 0 {
+        Some(0.0)
+    } else {
+        Some(index as f32 / last as f32)
+    }
 }
 
 #[cfg(test)]
@@ -842,5 +856,51 @@ mod tests {
         ws.set_typing("C1", "U2".into(), now);
         assert!(ws.prune_typing(now, Duration::from_secs(4)));
         assert_eq!(ws.typing_names("C1"), vec![ws.display_name("U2")]);
+    }
+
+    #[test]
+    fn is_browser_url_accepts_only_http_and_https() {
+        assert!(is_browser_url("https://slack.com/archives/C1/p1"));
+        assert!(is_browser_url("http://example.com"));
+        assert!(!is_browser_url("file:///etc/passwd"));
+        assert!(!is_browser_url("javascript:alert(1)"));
+        assert!(!is_browser_url(""));
+        assert!(!is_browser_url("ftp://example.com"));
+    }
+
+    #[test]
+    fn scroll_ratio_for_ts_at_start_is_zero() {
+        let messages = vec![msg("1.0", "a"), msg("2.0", "b"), msg("3.0", "c")];
+        assert_eq!(scroll_ratio_for_ts(&messages, "1.0"), Some(0.0));
+    }
+
+    #[test]
+    fn scroll_ratio_for_ts_at_end_is_one() {
+        let messages = vec![msg("1.0", "a"), msg("2.0", "b"), msg("3.0", "c")];
+        assert_eq!(scroll_ratio_for_ts(&messages, "3.0"), Some(1.0));
+    }
+
+    #[test]
+    fn scroll_ratio_for_ts_middle_is_between() {
+        let messages = vec![msg("1.0", "a"), msg("2.0", "b"), msg("3.0", "c")];
+        assert_eq!(scroll_ratio_for_ts(&messages, "2.0"), Some(0.5));
+    }
+
+    #[test]
+    fn scroll_ratio_for_ts_missing_is_none() {
+        let messages = vec![msg("1.0", "a"), msg("2.0", "b")];
+        assert_eq!(scroll_ratio_for_ts(&messages, "9.0"), None);
+    }
+
+    #[test]
+    fn scroll_ratio_for_ts_single_message_is_zero() {
+        let messages = vec![msg("1.0", "a")];
+        assert_eq!(scroll_ratio_for_ts(&messages, "1.0"), Some(0.0));
+    }
+
+    #[test]
+    fn scroll_ratio_for_ts_empty_is_none() {
+        let messages: Vec<SlackMessage> = Vec::new();
+        assert_eq!(scroll_ratio_for_ts(&messages, "1.0"), None);
     }
 }
