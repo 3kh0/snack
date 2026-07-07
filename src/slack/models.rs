@@ -279,10 +279,17 @@ mod fixture_tests {
         assert!(page.has_more);
         assert_eq!(page.pin_count, Some(2));
         assert_eq!(
-            page.response_metadata.as_ref().unwrap().next_cursor.as_deref(),
+            page.response_metadata
+                .as_ref()
+                .unwrap()
+                .next_cursor
+                .as_deref(),
             Some("bmV4dF9jdXJzb3I=")
         );
-        assert_eq!(page.messages[0].text.as_deref(), Some("fixture message one"));
+        assert_eq!(
+            page.messages[0].text.as_deref(),
+            Some("fixture message one")
+        );
         assert_eq!(page.messages[1].reactions[0].name, "wave");
         assert_eq!(page.messages[2].subtype.as_deref(), Some("channel_join"));
     }
@@ -314,7 +321,12 @@ mod fixture_tests {
         assert!(page.ok);
         assert_eq!(page.results.len(), 1);
         assert_eq!(
-            page.results[0].profile.as_ref().unwrap().display_name.as_deref(),
+            page.results[0]
+                .profile
+                .as_ref()
+                .unwrap()
+                .display_name
+                .as_deref(),
             Some("alice")
         );
         assert_eq!(page.failed_ids, vec!["U_MISSING".to_owned()]);

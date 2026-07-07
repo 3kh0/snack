@@ -115,10 +115,7 @@ fn drive_login() -> Result<Session, String> {
 }
 
 fn harvest_d_cookie(webview: &wry::WebView) -> Option<String> {
-    let urls = [
-        "https://app.slack.com/",
-        "https://slack.com/",
-    ];
+    let urls = ["https://app.slack.com/", "https://slack.com/"];
     for attempt in 0..10 {
         let mut names = Vec::new();
         for url in urls {

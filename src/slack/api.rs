@@ -139,7 +139,6 @@ fn decode<T: serde::de::DeserializeOwned>(
     serde_json::from_value(value).map_err(|e| Error::Transport(format!("decode {what}: {e}")))
 }
 
-
 pub async fn fetch_user_boot(
     transport: &Transport,
     client: &SlackClient,
