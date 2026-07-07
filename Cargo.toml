@@ -8,7 +8,7 @@ chrono = { version = "0.4", features = ["serde"] }
 iced = { git = "https://github.com/iced-rs/iced", rev = "7c6ce8789c4671db81a3920d06e87ab6d8edef1d", features = ["tokio", "image", "svg", "advanced", "lazy"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 thiserror = "2"
 tokio = { version = "1", features = [
     "rt-multi-thread",
