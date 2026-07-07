@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
-iced = { version = "0.14.0", features = ["tokio", "image", "svg", "advanced", "lazy"] }
+iced = { git = "https://github.com/iced-rs/iced", rev = "7c6ce8789c4671db81a3920d06e87ab6d8edef1d", features = ["tokio", "image", "svg", "advanced", "lazy"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
