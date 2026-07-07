@@ -410,6 +410,19 @@ pub fn file_download_name(file: &File) -> String {
     )
 }
 
+pub fn file_preview_key(file: &File) -> Option<String> {
+    non_empty(file.id.as_deref())
+        .or_else(|| file_preview_url(file))
+        .map(str::to_owned)
+}
+
+pub fn file_preview_url(file: &File) -> Option<&str> {
+    non_empty(file.thumb_360.as_deref())
+        .or_else(|| non_empty(file.thumb_160.as_deref()))
+        .or_else(|| non_empty(file.thumb_80.as_deref()))
+        .or_else(|| non_empty(file.thumb_64.as_deref()))
+}
+
 fn sanitize_file_name(name: &str) -> String {
     let sanitized = name
         .chars()
@@ -747,6 +760,29 @@ mod tests {
 
         let fallback = File::default();
         assert_eq!(file_download_name(&fallback), "download");
+    }
+
+    #[test]
+    fn file_preview_uses_largest_known_thumb_and_stable_key() {
+        let file = File {
+            id: Some("F123".into()),
+            thumb_64: Some("https://files/thumb-64.png".into()),
+            thumb_160: Some("https://files/thumb-160.png".into()),
+            thumb_360: Some("https://files/thumb-360.png".into()),
+            ..Default::default()
+        };
+
+        assert_eq!(file_preview_key(&file).as_deref(), Some("F123"));
+        assert_eq!(file_preview_url(&file), Some("https://files/thumb-360.png"));
+
+        let without_id = File {
+            thumb_80: Some("https://files/thumb-80.png".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            file_preview_key(&without_id).as_deref(),
+            Some("https://files/thumb-80.png")
+        );
     }
 
     #[test]

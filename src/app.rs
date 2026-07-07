@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use iced::widget::image::Handle as ImageHandle;
 use iced::widget::{button, column, container, row, text};
 use iced::{Element, Fill, Subscription, Task};
 
@@ -22,6 +23,19 @@ use crate::ui;
 type ActiveThreadKey = (ChannelId, MessageTs);
 type ThreadKey = (TeamId, ChannelId, MessageTs);
 
+#[derive(Debug, Clone)]
+pub enum FilePreview {
+    Loading,
+    Loaded(ImageHandle),
+    Failed,
+}
+
+#[derive(Debug, Clone)]
+struct DesktopNotification {
+    title: String,
+    body: String,
+}
+
 pub struct App {
     screen: Screen,
     session: Option<Session>,
@@ -39,6 +53,7 @@ pub struct App {
     send_seq: u64,
     last_typing: HashMap<(TeamId, ChannelId), Instant>,
     last_active_channels: HashMap<TeamId, ChannelId>,
+    file_previews: HashMap<String, FilePreview>,
 }
 
 #[derive(Debug, Clone)]
@@ -96,6 +111,11 @@ pub enum Message {
         filename: String,
     },
     FileDownloaded(Result<PathBuf, SlackError>),
+    FilePreviewLoaded {
+        key: String,
+        result: Result<Vec<u8>, SlackError>,
+    },
+    DesktopNotificationShown(Result<(), String>),
     Realtime(TeamId, u64, RtEvent),
     RtConnected(TeamId, u64, Connection),
     RtDisconnected(TeamId, u64),
@@ -123,6 +143,7 @@ impl App {
             send_seq: 0,
             last_typing: HashMap::new(),
             last_active_channels: HashMap::new(),
+            file_previews: HashMap::new(),
         }
     }
 
@@ -353,7 +374,10 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 if app.transport.is_some() && needs_load {
                     return app.load_history(&team, &id);
                 }
-                return mark_latest_visible(app, &team, &id);
+                return Task::batch([
+                    mark_latest_visible(app, &team, &id),
+                    load_visible_file_previews(app, &team, &id),
+                ]);
             }
             Task::none()
         }
@@ -372,7 +396,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             if needs_load {
                 app.load_thread(&team, &channel, &ts)
             } else {
-                Task::none()
+                load_thread_file_previews(app, &team, &channel, &ts)
             }
         }
 
@@ -401,6 +425,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                     }
                     cm.loaded = true;
                     tracing::info!(%channel, %root_ts, messages = n, "thread loaded");
+                    return load_thread_file_previews(app, &team, &channel, &root_ts);
                 }
                 Err(e) => {
                     app.toast(format!("thread failed for {channel}/{root_ts}: {e}"));
@@ -509,6 +534,13 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                         return app.load_history(&team, &first);
                     }
                 }
+                if let Some(channel) = app
+                    .active_channel
+                    .clone()
+                    .filter(|_| app.active_team.as_deref() == Some(&team))
+                {
+                    return load_visible_file_previews(app, &team, &channel);
+                }
                 Task::none()
             }
             Err(e) => {
@@ -546,7 +578,10 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                         tracing::info!(%channel, messages = n, "history loaded");
                     }
                     persist_workspace(app, &team);
-                    return mark_latest_visible(app, &team, &channel);
+                    return Task::batch([
+                        mark_latest_visible(app, &team, &channel),
+                        load_visible_file_previews(app, &team, &channel),
+                    ]);
                 }
                 Err(e) => app.toast(format!("history failed for {channel}: {e}")),
             }
@@ -611,15 +646,41 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
 
-        Message::Realtime(team, generation, event) => {
-            apply_realtime(app, &team, generation, event);
-            persist_workspace(app, &team);
-            if app.active_team.as_deref() == Some(&team) {
-                if let Some(channel) = app.active_channel.clone() {
-                    return mark_latest_visible(app, &team, &channel);
+        Message::FilePreviewLoaded { key, result } => {
+            match result {
+                Ok(bytes) => {
+                    app.file_previews
+                        .insert(key, FilePreview::Loaded(ImageHandle::from_bytes(bytes)));
+                }
+                Err(e) => {
+                    tracing::warn!(%key, error = %e, "file preview failed");
+                    app.file_previews.insert(key, FilePreview::Failed);
                 }
             }
             Task::none()
+        }
+
+        Message::DesktopNotificationShown(result) => {
+            if let Err(e) = result {
+                tracing::debug!(error = %e, "desktop notification failed");
+            }
+            Task::none()
+        }
+
+        Message::Realtime(team, generation, event) => {
+            let notification = apply_realtime(app, &team, generation, event);
+            persist_workspace(app, &team);
+            let mut tasks = Vec::new();
+            if let Some(notification) = notification {
+                tasks.push(show_desktop_notification_task(notification));
+            }
+            if app.active_team.as_deref() == Some(&team) {
+                if let Some(channel) = app.active_channel.clone() {
+                    tasks.push(mark_latest_visible(app, &team, &channel));
+                    tasks.push(load_visible_file_previews(app, &team, &channel));
+                }
+            }
+            Task::batch(tasks)
         }
 
         Message::RtConnected(team, generation, connection) => {
@@ -1091,21 +1152,243 @@ async fn unique_download_path(dir: &Path, filename: &str) -> Result<PathBuf, Sla
     ))
 }
 
-fn apply_realtime(app: &mut App, team: &str, generation: u64, event: RtEvent) {
+fn load_visible_file_previews(app: &mut App, team: &str, channel: &str) -> Task<Message> {
+    let messages = app
+        .workspaces
+        .get(team)
+        .and_then(|ws| ws.messages.get(channel))
+        .map(|cm| cm.messages.clone())
+        .unwrap_or_default();
+    load_file_previews(app, messages)
+}
+
+fn load_thread_file_previews(
+    app: &mut App,
+    team: &str,
+    channel: &str,
+    root_ts: &str,
+) -> Task<Message> {
+    let mut messages = Vec::new();
+    if let Some(root) = app
+        .workspaces
+        .get(team)
+        .and_then(|ws| ws.messages.get(channel))
+        .and_then(|cm| {
+            cm.messages
+                .iter()
+                .find(|msg| msg.ts.as_deref() == Some(root_ts))
+        })
+    {
+        messages.push(root.clone());
+    }
+    if let Some(replies) =
+        app.threads
+            .get(&(team.to_owned(), channel.to_owned(), root_ts.to_owned()))
+    {
+        messages.extend(replies.messages.clone());
+    }
+    load_file_previews(app, messages)
+}
+
+fn load_file_previews(app: &mut App, messages: Vec<SlackMessage>) -> Task<Message> {
+    let Some(transport) = app.transport.clone() else {
+        return Task::none();
+    };
+    let requests: Vec<_> = messages
+        .iter()
+        .flat_map(|msg| &msg.files)
+        .filter_map(|file| {
+            let key = crate::state::file_preview_key(file)?;
+            let url = crate::state::file_preview_url(file)?.to_owned();
+            Some((key, url))
+        })
+        .filter(|(key, _)| !app.file_previews.contains_key(key))
+        .collect();
+
+    if requests.is_empty() {
+        return Task::none();
+    }
+
+    for (key, _) in &requests {
+        app.file_previews.insert(key.clone(), FilePreview::Loading);
+    }
+
+    let user_agent = crate::slack::xparams::Identity::from_capture().user_agent;
+    Task::batch(requests.into_iter().map(|(key, url)| {
+        let transport = transport.clone();
+        let user_agent = user_agent.clone();
+        Task::perform(
+            async move { transport.get_bytes(&url, &user_agent).await },
+            move |result| Message::FilePreviewLoaded {
+                key: key.clone(),
+                result,
+            },
+        )
+    }))
+}
+
+fn show_desktop_notification_task(notification: DesktopNotification) -> Task<Message> {
+    Task::perform(
+        async move { show_desktop_notification(notification).await },
+        Message::DesktopNotificationShown,
+    )
+}
+
+async fn show_desktop_notification(notification: DesktopNotification) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || show_desktop_notification_blocking(&notification))
+        .await
+        .map_err(|e| format!("notification task join failed: {e}"))?
+}
+
+#[cfg(target_os = "macos")]
+fn show_desktop_notification_blocking(notification: &DesktopNotification) -> Result<(), String> {
+    let script = format!(
+        "display notification {} with title {}",
+        applescript_string(&notification.body),
+        applescript_string(&notification.title),
+    );
+    command_status(
+        std::process::Command::new("osascript")
+            .arg("-e")
+            .arg(script),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn show_desktop_notification_blocking(notification: &DesktopNotification) -> Result<(), String> {
+    command_status(
+        std::process::Command::new("notify-send")
+            .arg(&notification.title)
+            .arg(&notification.body),
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn show_desktop_notification_blocking(_notification: &DesktopNotification) -> Result<(), String> {
+    Err("desktop notifications are not implemented on windows".to_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn applescript_string(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn command_status(command: &mut std::process::Command) -> Result<(), String> {
+    let status = command
+        .status()
+        .map_err(|e| format!("notification command failed: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("notification command exited with {status}"))
+    }
+}
+
+fn notification_for_message(
+    ws: &Workspace,
+    channel: &str,
+    msg: &SlackMessage,
+    active_channel: Option<&str>,
+) -> Option<DesktopNotification> {
+    if active_channel == Some(channel) || msg.user.as_deref() == Some(&ws.self_user_id) {
+        return None;
+    }
+
+    let direct = ws
+        .channels
+        .get(channel)
+        .map(|channel| channel.is_im || channel.is_mpim)
+        .unwrap_or(false);
+    let mentioned = message_mentions_user(msg, &ws.self_user_id);
+    if !(direct || mentioned) {
+        return None;
+    }
+
+    let author = msg
+        .user
+        .as_deref()
+        .map(|user| ws.display_name(user))
+        .unwrap_or_else(|| msg.bot_id.clone().unwrap_or_else(|| "Slack".to_owned()));
+    let channel_label = ws
+        .channels
+        .get(channel)
+        .map(crate::state::channel_label)
+        .unwrap_or_else(|| channel.to_owned());
+    let title = if direct {
+        author
+    } else {
+        format!("{author} in {channel_label}")
+    };
+    let body = ui::blocks::notification_text(ws, msg);
+    let body = if body.trim().is_empty() {
+        "[message]".to_owned()
+    } else {
+        body
+    };
+
+    Some(DesktopNotification { title, body })
+}
+
+fn message_mentions_user(msg: &SlackMessage, user: &str) -> bool {
+    if user.is_empty() {
+        return false;
+    }
+    let encoded = format!("<@{user}>");
+    msg.text
+        .as_deref()
+        .is_some_and(|text| text.contains(&encoded))
+        || msg
+            .blocks
+            .iter()
+            .any(|block| value_mentions_user(block, user, &encoded))
+}
+
+fn value_mentions_user(value: &serde_json::Value, user: &str, encoded: &str) -> bool {
+    match value {
+        serde_json::Value::String(s) => s == user || s.contains(encoded),
+        serde_json::Value::Array(values) => values
+            .iter()
+            .any(|value| value_mentions_user(value, user, encoded)),
+        serde_json::Value::Object(map) => {
+            matches!(
+                map.get("user_id")
+                    .or_else(|| map.get("user"))
+                    .and_then(serde_json::Value::as_str),
+                Some(found) if found == user
+            ) || map
+                .values()
+                .any(|value| value_mentions_user(value, user, encoded))
+        }
+        _ => false,
+    }
+}
+
+fn apply_realtime(
+    app: &mut App,
+    team: &str,
+    generation: u64,
+    event: RtEvent,
+) -> Option<DesktopNotification> {
     let now = Instant::now();
+    let active_channel = (app.active_team.as_deref() == Some(team))
+        .then(|| app.active_channel.clone())
+        .flatten();
     let Some(ws) = app.workspaces.get_mut(team) else {
         tracing::debug!(%team, "realtime event for unknown workspace, ignoring");
-        return;
+        return None;
     };
     if generation != ws.rt_generation {
         tracing::debug!(%team, generation, current = ws.rt_generation, "stale realtime event, ignoring");
-        return;
+        return None;
     }
     match event {
         RtEvent::Message(msg) => {
             let Some(channel) = msg.channel.clone() else {
-                return;
+                return None;
             };
+            let notification =
+                notification_for_message(ws, &channel, &msg, active_channel.as_deref());
             if let Some(user) = msg.user.as_deref() {
                 ws.clear_typing_user(&channel, user);
             }
@@ -1115,11 +1398,12 @@ fn apply_realtime(app: &mut App, team: &str, generation: u64, event: RtEvent) {
                     upsert_realtime_message(cm, msg.clone());
                 }
                 if msg.subtype.as_deref() != Some("thread_broadcast") {
-                    return;
+                    return notification;
                 }
             }
             let cm = ws.messages.entry(channel).or_default();
             upsert_realtime_message(cm, msg);
+            notification
         }
         RtEvent::MessageChanged { channel, message } => {
             if let Some(root_ts) = thread_root_for_reply(&message) {
@@ -1130,13 +1414,14 @@ fn apply_realtime(app: &mut App, team: &str, generation: u64, event: RtEvent) {
                     cm.merge_update(message.clone());
                 }
                 if message.subtype.as_deref() != Some("thread_broadcast") {
-                    return;
+                    return None;
                 }
             }
             ws.messages
                 .entry(channel)
                 .or_default()
                 .merge_update(message);
+            None
         }
         RtEvent::MessageDeleted {
             channel,
@@ -1150,12 +1435,15 @@ fn apply_realtime(app: &mut App, team: &str, generation: u64, event: RtEvent) {
                     cm.remove(&deleted_ts);
                 }
             }
+            None
         }
         RtEvent::UserTyping { channel, user } => {
             ws.set_typing(&channel, user, now);
+            None
         }
         RtEvent::PresenceChange { user, presence } => {
             ws.set_presence(user, Presence::from_slack(&presence));
+            None
         }
         RtEvent::ReactionAdded {
             channel,
@@ -1176,6 +1464,7 @@ fn apply_realtime(app: &mut App, team: &str, generation: u64, event: RtEvent) {
                 &reaction,
                 true,
             );
+            None
         }
         RtEvent::ReactionRemoved {
             channel,
@@ -1195,9 +1484,11 @@ fn apply_realtime(app: &mut App, team: &str, generation: u64, event: RtEvent) {
                 &reaction,
                 false,
             );
+            None
         }
         RtEvent::Unknown(raw) => {
             tracing::debug!(kind = %raw.kind, "unknown realtime event, ignoring");
+            None
         }
     }
 }
@@ -1295,7 +1586,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
                 .map(crate::state::channel_label)
                 .unwrap_or_else(|| channel_id.to_owned());
             column![
-                container(ui::channel::view(ws, channel_id)).height(Fill),
+                container(ui::channel::view(ws, channel_id, &app.file_previews)).height(Fill),
                 ui::composer::view(&app.composer_text, &label),
             ]
             .width(Fill)
@@ -1314,7 +1605,14 @@ fn main_view(app: &App) -> Element<'_, Message> {
         let root = ui::thread::root_message(ws, channel, root_ts);
         row![
             main,
-            ui::thread::view(ws, channel, root, replies, &app.thread_composer_text)
+            ui::thread::view(
+                ws,
+                channel,
+                root,
+                replies,
+                &app.thread_composer_text,
+                &app.file_previews,
+            )
         ]
         .width(Fill)
         .height(Fill)
@@ -1365,6 +1663,8 @@ fn map_rt_update((team, update): (TeamId, RtUpdate)) -> Message {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, HashMap};
+
+    use serde_json::json;
 
     use super::*;
     use crate::slack::models::Channel;
@@ -1459,6 +1759,69 @@ mod tests {
             loaded_channel("U_SECOND", "1783375000.000100", "second workspace"),
         )]);
         app.workspaces.insert(ws.team_id.clone(), ws);
+    }
+
+    #[test]
+    fn notification_created_for_inactive_channel_mention() {
+        let app = test_app();
+        let ws = app.active_workspace().unwrap();
+        let message = SlackMessage {
+            user: Some("U_ALICE".into()),
+            text: Some("hi <@U_SELF>".into()),
+            ..Default::default()
+        };
+
+        let notification = notification_for_message(ws, "C_DEV", &message, Some("C_GENERAL"))
+            .expect("mention should notify");
+
+        assert_eq!(notification.title, "U_ALICE in #dev");
+        assert_eq!(notification.body, "hi <@U_SELF>");
+    }
+
+    #[test]
+    fn notification_suppresses_self_and_active_channel_messages() {
+        let app = test_app();
+        let ws = app.active_workspace().unwrap();
+        let self_message = SlackMessage {
+            user: Some(SELF_USER.into()),
+            text: Some("self <@U_SELF>".into()),
+            ..Default::default()
+        };
+        assert!(notification_for_message(ws, "C_DEV", &self_message, Some("C_GENERAL")).is_none());
+
+        let active_message = SlackMessage {
+            user: Some("U_ALICE".into()),
+            text: Some("active <@U_SELF>".into()),
+            ..Default::default()
+        };
+        assert!(
+            notification_for_message(ws, "C_GENERAL", &active_message, Some("C_GENERAL")).is_none()
+        );
+    }
+
+    #[test]
+    fn notification_detects_block_user_mentions() {
+        let app = test_app();
+        let ws = app.active_workspace().unwrap();
+        let message = SlackMessage {
+            user: Some("U_ALICE".into()),
+            blocks: vec![json!({
+                "type": "rich_text",
+                "elements": [{
+                    "type": "rich_text_section",
+                    "elements": [
+                        {"type": "text", "text": "cc "},
+                        {"type": "user", "user_id": "U_SELF"}
+                    ]
+                }]
+            })],
+            ..Default::default()
+        };
+
+        let notification = notification_for_message(ws, "C_DEV", &message, Some("C_GENERAL"))
+            .expect("block mention should notify");
+
+        assert_eq!(notification.body, "cc @U_SELF");
     }
 
     #[test]

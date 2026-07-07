@@ -1,3 +1,4 @@
+pub mod blocks;
 pub mod channel;
 pub mod composer;
 pub mod message;

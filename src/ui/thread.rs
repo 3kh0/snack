@@ -1,8 +1,9 @@
 use iced::widget::{Column, button, column, container, row, scrollable, text, text_input};
 use iced::{Element, Fill, Font, Length};
+use std::collections::HashMap;
 
 use super::{message, theme};
-use crate::app::Message;
+use crate::app::{FilePreview, Message};
 use crate::slack::models::Message as SlackMessage;
 use crate::state::{ChannelMessages, Workspace};
 
@@ -12,6 +13,7 @@ pub fn view<'a>(
     root: Option<&SlackMessage>,
     replies: Option<&ChannelMessages>,
     value: &str,
+    file_previews: &HashMap<String, FilePreview>,
 ) -> Element<'a, Message> {
     let header = row![
         text("Thread").size(theme::TEXT_LG).font(Font {
@@ -31,14 +33,14 @@ pub fn view<'a>(
                     .as_deref()
                     .map(|ts| cm.is_pending(ts))
                     .unwrap_or(false);
-                col = col.push(message::row(ws, channel_id, msg, pending));
+                col = col.push(message::row(ws, channel_id, msg, pending, file_previews));
             }
             scrollable(col).height(Fill).into()
         }
         _ => {
             let mut col = Column::new().spacing(theme::SPACE_XS);
             if let Some(root) = root {
-                col = col.push(message::row(ws, channel_id, root, false));
+                col = col.push(message::row(ws, channel_id, root, false, file_previews));
             }
             let status = if replies.map(|cm| cm.loaded).unwrap_or(false) {
                 "No replies yet."

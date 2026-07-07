@@ -2,10 +2,15 @@ use iced::widget::{Column, column, container, scrollable, text};
 use iced::{Element, Fill};
 
 use super::{message, theme};
-use crate::app::Message;
+use crate::app::{FilePreview, Message};
 use crate::state::{self, Workspace};
+use std::collections::HashMap;
 
-pub fn view<'a>(ws: &Workspace, channel_id: &str) -> Element<'a, Message> {
+pub fn view<'a>(
+    ws: &Workspace,
+    channel_id: &str,
+    file_previews: &HashMap<String, FilePreview>,
+) -> Element<'a, Message> {
     let label = ws
         .channels
         .get(channel_id)
@@ -23,7 +28,7 @@ pub fn view<'a>(ws: &Workspace, channel_id: &str) -> Element<'a, Message> {
             let mut col = Column::new().spacing(theme::SPACE_XS);
             for m in &cm.messages {
                 let pending = m.ts.as_deref().map(|ts| cm.is_pending(ts)).unwrap_or(false);
-                col = col.push(message::row(ws, channel_id, m, pending));
+                col = col.push(message::row(ws, channel_id, m, pending, file_previews));
             }
             scrollable(col).height(Fill).into()
         }

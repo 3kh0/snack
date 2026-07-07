@@ -1,8 +1,10 @@
-use iced::widget::{Column, Row, button, container, text};
-use iced::{Element, Font};
+use std::collections::HashMap;
 
-use super::theme;
-use crate::app::Message;
+use iced::widget::{Column, Row, button, container, image, text};
+use iced::{ContentFit, Element, Font, Length};
+
+use super::{blocks, theme};
+use crate::app::{FilePreview, Message};
 use crate::slack::models::Message as SlackMessage;
 use crate::state::{self, Workspace};
 
@@ -11,6 +13,7 @@ pub fn row<'a>(
     channel_id: &str,
     msg: &SlackMessage,
     pending: bool,
+    file_previews: &HashMap<String, FilePreview>,
 ) -> Element<'a, Message> {
     let author = msg
         .user
@@ -40,13 +43,20 @@ pub fn row<'a>(
     }
 
     let mut col = Column::new().spacing(theme::SPACE_XS).push(header);
-    let body = state::message_text(msg);
-    if !body.is_empty() {
-        col = col.push(text(body).size(theme::TEXT_MD));
+    let block_lines = blocks::message_lines(ws, msg);
+    if block_lines.is_empty() {
+        let body = state::message_text(msg);
+        if !body.is_empty() {
+            col = col.push(text(body).size(theme::TEXT_MD));
+        }
+    } else {
+        for line in block_lines {
+            col = col.push(text(line).size(theme::TEXT_MD));
+        }
     }
 
     for file in &msg.files {
-        col = col.push(file_row(file));
+        col = col.push(file_row(file, file_previews));
     }
 
     let thread_ts = match (msg.thread_ts.as_deref(), msg.ts.as_deref()) {
@@ -112,7 +122,10 @@ pub fn empty_placeholder<'a>() -> Element<'a, Message> {
     .into()
 }
 
-fn file_row<'a>(file: &crate::slack::models::File) -> Element<'a, Message> {
+fn file_row<'a>(
+    file: &crate::slack::models::File,
+    file_previews: &HashMap<String, FilePreview>,
+) -> Element<'a, Message> {
     let title = state::file_title(file);
     let summary = state::file_summary(file);
     let mut content = Column::new()
@@ -122,6 +135,34 @@ fn file_row<'a>(file: &crate::slack::models::File) -> Element<'a, Message> {
             ..Font::default()
         }))
         .push(text(summary).size(theme::TEXT_SM).color(theme::MUTED));
+
+    if let Some(preview) = state::file_preview_key(file).and_then(|key| file_previews.get(&key)) {
+        match preview {
+            FilePreview::Loaded(handle) => {
+                content = content.push(
+                    image::Image::new(handle.clone())
+                        .width(Length::Fixed(220.0))
+                        .height(Length::Fixed(140.0))
+                        .content_fit(ContentFit::Contain)
+                        .border_radius(6.0),
+                );
+            }
+            FilePreview::Loading => {
+                content = content.push(
+                    text("Loading preview...")
+                        .size(theme::TEXT_SM)
+                        .color(theme::MUTED),
+                );
+            }
+            FilePreview::Failed => {
+                content = content.push(
+                    text("Preview unavailable")
+                        .size(theme::TEXT_SM)
+                        .color(theme::MUTED),
+                );
+            }
+        }
+    }
 
     if let Some(url) = file.url_private.clone() {
         content = content.push(
