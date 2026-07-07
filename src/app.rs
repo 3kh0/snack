@@ -18,7 +18,8 @@ use crate::slack::{Error as SlackError, SlackClient, Transport};
 use crate::state::{ChannelMessages, Presence, RealtimeStatus, Screen, Toast, Workspace};
 use crate::ui;
 
-type ThreadKey = (ChannelId, MessageTs);
+type ActiveThreadKey = (ChannelId, MessageTs);
+type ThreadKey = (TeamId, ChannelId, MessageTs);
 
 pub struct App {
     screen: Screen,
@@ -28,7 +29,7 @@ pub struct App {
     transport: Option<Arc<Transport>>,
     active_team: Option<TeamId>,
     active_channel: Option<ChannelId>,
-    active_thread: Option<ThreadKey>,
+    active_thread: Option<ActiveThreadKey>,
     workspaces: BTreeMap<TeamId, Workspace>,
     threads: HashMap<ThreadKey, ChannelMessages>,
     composer_text: String,
@@ -36,10 +37,12 @@ pub struct App {
     errors: Vec<Toast>,
     send_seq: u64,
     last_typing: HashMap<(TeamId, ChannelId), Instant>,
+    last_active_channels: HashMap<TeamId, ChannelId>,
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    WorkspaceSelected(TeamId),
     ChannelSelected(ChannelId),
     ComposerChanged(String),
     SendPressed,
@@ -113,6 +116,7 @@ impl App {
             errors: Vec::new(),
             send_seq: 0,
             last_typing: HashMap::new(),
+            last_active_channels: HashMap::new(),
         }
     }
 
@@ -153,10 +157,7 @@ impl App {
                     if warm {
                         self.screen = Screen::Main;
                         if let Some(team) = self.active_team.clone() {
-                            self.active_channel = self
-                                .workspaces
-                                .get(&team)
-                                .and_then(|ws| ws.channels.keys().next().cloned());
+                            self.active_channel = preferred_channel(self, &team);
                         }
                     } else {
                         self.screen = Screen::Loading;
@@ -322,8 +323,13 @@ pub fn run() -> iced::Result {
 
 fn update(app: &mut App, message: Message) -> Task<Message> {
     match message {
+        Message::WorkspaceSelected(team) => select_workspace(app, team),
+
         Message::ChannelSelected(id) => {
             app.active_channel = Some(id.clone());
+            if let Some(team) = app.active_team.clone() {
+                app.last_active_channels.insert(team, id.clone());
+            }
             if app
                 .active_thread
                 .as_ref()
@@ -354,7 +360,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             };
             let needs_load = !app
                 .threads
-                .get(&(channel.clone(), ts.clone()))
+                .get(&(team.clone(), channel.clone(), ts.clone()))
                 .map(|cm| cm.loaded)
                 .unwrap_or(false);
             if needs_load {
@@ -381,7 +387,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             }
             match result {
                 Ok(page) => {
-                    let key = (channel.clone(), root_ts.clone());
+                    let key = (team.clone(), channel.clone(), root_ts.clone());
                     let cm = app.threads.entry(key).or_default();
                     let n = page.messages.len();
                     for msg in page.messages {
@@ -419,7 +425,10 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             }
             match result {
                 Ok(sent) => {
-                    if let Some(cm) = app.threads.get_mut(&(channel.clone(), root_ts.clone())) {
+                    if let Some(cm) =
+                        app.threads
+                            .get_mut(&(team.clone(), channel.clone(), root_ts.clone()))
+                    {
                         cm.confirm(
                             &client_msg_id,
                             SlackMessage {
@@ -577,6 +586,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 {
                     cm.apply_reaction(&ts, &user, &name, !added);
                 }
+                apply_thread_reaction(&mut app.threads, &team, &channel, &ts, &user, &name, !added);
                 if is_auth_error(&e) {
                     app.screen = Screen::Login;
                 }
@@ -653,6 +663,63 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
     }
+}
+
+fn select_workspace(app: &mut App, team: TeamId) -> Task<Message> {
+    if app.active_team.as_deref() == Some(&team) {
+        return Task::none();
+    }
+    if !app.workspaces.contains_key(&team) {
+        return Task::none();
+    }
+
+    if let (Some(current_team), Some(current_channel)) =
+        (app.active_team.clone(), app.active_channel.clone())
+    {
+        app.last_active_channels
+            .insert(current_team, current_channel);
+    }
+
+    app.active_team = Some(team.clone());
+    app.active_channel = preferred_channel(app, &team);
+    app.active_thread = None;
+    app.composer_text.clear();
+    app.thread_composer_text.clear();
+
+    let Some(channel) = app.active_channel.clone() else {
+        return Task::none();
+    };
+    let needs_load = app
+        .workspaces
+        .get(&team)
+        .map(|ws| {
+            !ws.messages
+                .get(&channel)
+                .map(|cm| cm.loaded)
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+    if app.transport.is_some() && needs_load {
+        app.load_history(&team, &channel)
+    } else {
+        mark_latest_visible(app, &team, &channel)
+    }
+}
+
+fn preferred_channel(app: &App, team: &str) -> Option<ChannelId> {
+    let ws = app.workspaces.get(team)?;
+    if let Some(channel) = app
+        .last_active_channels
+        .get(team)
+        .filter(|channel| ws.channels.contains_key(*channel))
+    {
+        return Some(channel.clone());
+    }
+    app.active_channel
+        .as_ref()
+        .filter(|channel| ws.channels.contains_key(*channel))
+        .cloned()
+        .or_else(|| ws.channels.keys().next().cloned())
 }
 
 fn next_seq(app: &mut App) -> u64 {
@@ -801,7 +868,7 @@ fn send_thread_pressed(app: &mut App) -> Task<Message> {
     };
     let cm = app
         .threads
-        .entry((channel.clone(), root_ts.clone()))
+        .entry((team.clone(), channel.clone(), root_ts.clone()))
         .or_default();
     cm.upsert(pending);
     cm.pending.push(ts);
@@ -869,7 +936,9 @@ fn toggle_reaction(
         .or_else(|| {
             app.threads
                 .iter()
-                .filter(|((thread_channel, _), _)| thread_channel == &channel)
+                .filter(|((thread_team, thread_channel, _), _)| {
+                    thread_team == &team && thread_channel == &channel
+                })
                 .find_map(|(_, cm)| reaction_has_user_in(cm, &ts, &name, &user))
         });
     let Some(active) = active else {
@@ -885,8 +954,11 @@ fn toggle_reaction(
         }
     }
     if !applied {
-        for ((thread_channel, _), cm) in &mut app.threads {
-            if thread_channel == &channel && reaction_has_user_in(cm, &ts, &name, &user).is_some() {
+        for ((thread_team, thread_channel, _), cm) in &mut app.threads {
+            if thread_team == &team
+                && thread_channel == &channel
+                && reaction_has_user_in(cm, &ts, &name, &user).is_some()
+            {
                 cm.apply_reaction(&ts, &user, &name, adding);
                 break;
             }
@@ -952,7 +1024,7 @@ fn apply_realtime(app: &mut App, team: &str, generation: u64, event: RtEvent) {
                 ws.clear_typing_user(&channel, user);
             }
             if let Some(root_ts) = thread_root_for_reply(&msg) {
-                let key = (channel.clone(), root_ts);
+                let key = (team.to_owned(), channel.clone(), root_ts);
                 if let Some(cm) = app.threads.get_mut(&key) {
                     upsert_realtime_message(cm, msg.clone());
                 }
@@ -965,7 +1037,10 @@ fn apply_realtime(app: &mut App, team: &str, generation: u64, event: RtEvent) {
         }
         RtEvent::MessageChanged { channel, message } => {
             if let Some(root_ts) = thread_root_for_reply(&message) {
-                if let Some(cm) = app.threads.get_mut(&(channel.clone(), root_ts)) {
+                if let Some(cm) = app
+                    .threads
+                    .get_mut(&(team.to_owned(), channel.clone(), root_ts))
+                {
                     cm.merge_update(message.clone());
                 }
                 if message.subtype.as_deref() != Some("thread_broadcast") {
@@ -984,8 +1059,8 @@ fn apply_realtime(app: &mut App, team: &str, generation: u64, event: RtEvent) {
             if let Some(cm) = ws.messages.get_mut(&channel) {
                 cm.remove(&deleted_ts);
             }
-            for ((thread_channel, _), cm) in &mut app.threads {
-                if thread_channel == &channel {
+            for ((thread_team, thread_channel, _), cm) in &mut app.threads {
+                if thread_team == team && thread_channel == &channel {
                     cm.remove(&deleted_ts);
                 }
             }
@@ -1006,7 +1081,15 @@ fn apply_realtime(app: &mut App, team: &str, generation: u64, event: RtEvent) {
                 .entry(channel.clone())
                 .or_default()
                 .apply_reaction(&ts, &user, &reaction, true);
-            apply_thread_reaction(&mut app.threads, &channel, &ts, &user, &reaction, true);
+            apply_thread_reaction(
+                &mut app.threads,
+                team,
+                &channel,
+                &ts,
+                &user,
+                &reaction,
+                true,
+            );
         }
         RtEvent::ReactionRemoved {
             channel,
@@ -1017,7 +1100,15 @@ fn apply_realtime(app: &mut App, team: &str, generation: u64, event: RtEvent) {
             if let Some(cm) = ws.messages.get_mut(&channel) {
                 cm.apply_reaction(&ts, &user, &reaction, false);
             }
-            apply_thread_reaction(&mut app.threads, &channel, &ts, &user, &reaction, false);
+            apply_thread_reaction(
+                &mut app.threads,
+                team,
+                &channel,
+                &ts,
+                &user,
+                &reaction,
+                false,
+            );
         }
         RtEvent::Unknown(raw) => {
             tracing::debug!(kind = %raw.kind, "unknown realtime event, ignoring");
@@ -1045,14 +1136,15 @@ fn thread_root_for_reply(msg: &SlackMessage) -> Option<MessageTs> {
 
 fn apply_thread_reaction(
     threads: &mut HashMap<ThreadKey, ChannelMessages>,
+    team: &str,
     channel: &str,
     ts: &str,
     user: &str,
     reaction: &str,
     added: bool,
 ) {
-    for ((thread_channel, _), cm) in threads {
-        if thread_channel == channel {
+    for ((thread_team, thread_channel, _), cm) in threads {
+        if thread_team == team && thread_channel == channel {
             cm.apply_reaction(ts, user, reaction, added);
         }
     }
@@ -1102,7 +1194,12 @@ fn main_view(app: &App) -> Element<'_, Message> {
         return center_text("No workspace");
     };
 
-    let sidebar = ui::sidebar::view(ws, app.active_channel.as_deref());
+    let sidebar = ui::sidebar::view(
+        &app.workspaces,
+        app.active_team.as_deref(),
+        ws,
+        app.active_channel.as_deref(),
+    );
 
     let main: Element<'_, Message> = match app.active_channel.as_deref() {
         Some(channel_id) => {
@@ -1122,8 +1219,12 @@ fn main_view(app: &App) -> Element<'_, Message> {
         None => center_text("Select a channel"),
     };
 
-    let content = if let Some((channel, root_ts)) = app.active_thread.as_ref() {
-        let replies = app.threads.get(&(channel.clone(), root_ts.clone()));
+    let content = if let (Some(team), Some((channel, root_ts))) =
+        (app.active_team.as_ref(), app.active_thread.as_ref())
+    {
+        let replies = app
+            .threads
+            .get(&(team.clone(), channel.clone(), root_ts.clone()));
         let root = ui::thread::root_message(ws, channel, root_ts);
         row![
             main,
@@ -1252,6 +1353,28 @@ mod tests {
         app
     }
 
+    fn add_second_workspace(app: &mut App) {
+        let mut ws = test_workspace();
+        ws.team_id = "T_SECOND".into();
+        ws.name = "Second".into();
+        ws.url = "https://second.slack.com".into();
+        ws.channels.clear();
+        ws.channels.insert(
+            "C_SECOND".into(),
+            Channel {
+                id: "C_SECOND".into(),
+                name: Some("second".into()),
+                is_channel: true,
+                ..Default::default()
+            },
+        );
+        ws.messages = HashMap::from([(
+            "C_SECOND".into(),
+            loaded_channel("U_SECOND", "1783375000.000100", "second workspace"),
+        )]);
+        app.workspaces.insert(ws.team_id.clone(), ws);
+    }
+
     #[test]
     fn boot_selects_first_channel() {
         let app = test_app();
@@ -1269,6 +1392,35 @@ mod tests {
         let ws = app.active_workspace().unwrap();
         assert!(!ws.messages.get("C_GENERAL").unwrap().messages.is_empty());
         assert!(!ws.messages.get("C_DEV").unwrap().messages.is_empty());
+    }
+
+    #[test]
+    fn workspace_selection_switches_active_workspace_and_channel() {
+        let mut app = test_app();
+        add_second_workspace(&mut app);
+        app.composer_text = "draft".into();
+        app.thread_composer_text = "reply draft".into();
+        app.active_thread = Some(("C_GENERAL".into(), "1783372300.000100".into()));
+
+        let _ = update(&mut app, Message::WorkspaceSelected("T_SECOND".into()));
+
+        assert_eq!(app.active_team.as_deref(), Some("T_SECOND"));
+        assert_eq!(app.active_channel.as_deref(), Some("C_SECOND"));
+        assert!(app.active_thread.is_none());
+        assert!(app.composer_text.is_empty());
+        assert!(app.thread_composer_text.is_empty());
+    }
+
+    #[test]
+    fn workspace_selection_remembers_previous_channel() {
+        let mut app = test_app();
+        add_second_workspace(&mut app);
+        let _ = update(&mut app, Message::ChannelSelected("C_DEV".into()));
+        let _ = update(&mut app, Message::WorkspaceSelected("T_SECOND".into()));
+        let _ = update(&mut app, Message::WorkspaceSelected("T_TEST".into()));
+
+        assert_eq!(app.active_team.as_deref(), Some("T_TEST"));
+        assert_eq!(app.active_channel.as_deref(), Some("C_DEV"));
     }
 
     #[test]
@@ -1297,7 +1449,7 @@ mod tests {
         let _ = update(
             &mut app,
             Message::ThreadLoaded {
-                team,
+                team: team.clone(),
                 channel: "C_GENERAL".into(),
                 root_ts: root_ts.clone(),
                 result: Ok(HistoryPage {
@@ -1313,7 +1465,7 @@ mod tests {
             },
         );
 
-        let cm = &app.threads[&("C_GENERAL".into(), root_ts)];
+        let cm = &app.threads[&(team, "C_GENERAL".into(), root_ts)];
         assert!(cm.loaded);
         assert_eq!(cm.messages.len(), 2);
     }
@@ -1327,7 +1479,8 @@ mod tests {
         let _ = update(&mut app, Message::ThreadSendPressed);
 
         assert!(app.thread_composer_text.is_empty());
-        let cm = &app.threads[&("C_GENERAL".into(), root_ts)];
+        let team = app.active_team.clone().unwrap();
+        let cm = &app.threads[&(team, "C_GENERAL".into(), root_ts)];
         let reply = cm.messages.last().unwrap();
         assert_eq!(reply.text.as_deref(), Some("thread answer"));
         assert_eq!(reply.thread_ts.as_deref(), Some("1783372300.000100"));
@@ -1341,7 +1494,7 @@ mod tests {
         let root_ts = "1783372300.000100".to_owned();
         app.active_thread = Some(("C_GENERAL".into(), root_ts.clone()));
         app.threads.insert(
-            ("C_GENERAL".into(), root_ts.clone()),
+            (team.clone(), "C_GENERAL".into(), root_ts.clone()),
             ChannelMessages::default(),
         );
         let before = app.workspaces[&team].messages["C_GENERAL"].messages.len();
@@ -1360,7 +1513,7 @@ mod tests {
             before
         );
         assert_eq!(
-            app.threads[&("C_GENERAL".into(), root_ts)].messages[0]
+            app.threads[&(team, "C_GENERAL".into(), root_ts)].messages[0]
                 .text
                 .as_deref(),
             Some("reply")

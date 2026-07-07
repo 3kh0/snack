@@ -39,10 +39,15 @@ pub fn row<'a>(
         header = header.push(text("sending…").size(theme::TEXT_SM).color(theme::MUTED));
     }
 
-    let mut col = Column::new()
-        .spacing(theme::SPACE_XS)
-        .push(header)
-        .push(text(state::message_text(msg)).size(theme::TEXT_MD));
+    let mut col = Column::new().spacing(theme::SPACE_XS).push(header);
+    let body = state::message_text(msg);
+    if !body.is_empty() {
+        col = col.push(text(body).size(theme::TEXT_MD));
+    }
+
+    for file in &msg.files {
+        col = col.push(file_row(file));
+    }
 
     let thread_ts = match (msg.thread_ts.as_deref(), msg.ts.as_deref()) {
         (Some(root), Some(ts)) if root != ts => Some(root.to_owned()),
@@ -104,5 +109,22 @@ pub fn empty_placeholder<'a>() -> Element<'a, Message> {
             .color(theme::MUTED),
     )
     .padding(theme::SPACE_LG)
+    .into()
+}
+
+fn file_row<'a>(file: &crate::slack::models::File) -> Element<'a, Message> {
+    let title = state::file_title(file);
+    let summary = state::file_summary(file);
+    container(
+        Column::new()
+            .spacing(theme::SPACE_XS)
+            .push(text(title).size(theme::TEXT_MD).font(Font {
+                weight: iced::font::Weight::Bold,
+                ..Font::default()
+            }))
+            .push(text(summary).size(theme::TEXT_SM).color(theme::MUTED)),
+    )
+    .padding(theme::SPACE_SM)
+    .style(theme::file_attachment)
     .into()
 }

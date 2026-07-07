@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
 
 use crate::slack::models::{
-    Channel, ChannelId, Message as SlackMessage, MessageTs, Reaction, TeamId, User, UserId,
+    Channel, ChannelId, File, Message as SlackMessage, MessageTs, Reaction, TeamId, User, UserId,
 };
 use crate::slack::realtime::Connection;
 
@@ -363,16 +363,58 @@ pub fn message_text(msg: &SlackMessage) -> String {
     if let Some(text) = non_empty(msg.text.as_deref()) {
         return text.to_owned();
     }
+    if !msg.files.is_empty() {
+        return String::new();
+    }
     if let Some(subtype) = non_empty(msg.subtype.as_deref()) {
         return format!("[{subtype}]");
-    }
-    if !msg.files.is_empty() {
-        return "[file]".to_owned();
     }
     if !msg.blocks.is_empty() {
         return "[rich message]".to_owned();
     }
     "[no text]".to_owned()
+}
+
+pub fn file_title(file: &File) -> String {
+    non_empty(file.title.as_deref())
+        .or_else(|| non_empty(file.name.as_deref()))
+        .or_else(|| non_empty(file.id.as_deref()))
+        .unwrap_or("file")
+        .to_owned()
+}
+
+pub fn file_summary(file: &File) -> String {
+    let mut parts = Vec::new();
+    if let Some(kind) = non_empty(file.pretty_type.as_deref())
+        .or_else(|| non_empty(file.filetype.as_deref()))
+        .or_else(|| non_empty(file.mimetype.as_deref()))
+    {
+        parts.push(kind.to_owned());
+    }
+    if let Some(size) = file.size {
+        parts.push(format_file_size(size));
+    }
+    if parts.is_empty() {
+        "attachment".to_owned()
+    } else {
+        parts.join(" - ")
+    }
+}
+
+pub fn format_file_size(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if (bytes as f64) < MB {
+        format!("{:.1} KB", bytes as f64 / KB)
+    } else if (bytes as f64) < GB {
+        format!("{:.1} MB", bytes as f64 / MB)
+    } else {
+        format!("{:.1} GB", bytes as f64 / GB)
+    }
 }
 
 pub fn reaction_summary(reaction: &crate::slack::models::Reaction) -> String {
@@ -620,6 +662,16 @@ mod tests {
     fn message_text_fallbacks() {
         assert_eq!(message_text(&msg("1.0", "hello")), "hello");
 
+        let file_only = SlackMessage {
+            ts: Some("1.0".into()),
+            files: vec![File {
+                name: Some("mock.png".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(message_text(&file_only), "");
+
         let empty = SlackMessage {
             ts: Some("1.0".into()),
             text: Some("   ".into()),
@@ -633,6 +685,23 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(message_text(&bare), "[no text]");
+    }
+
+    #[test]
+    fn file_summary_prefers_title_type_and_size() {
+        let file = File {
+            id: Some("F1".into()),
+            name: Some("report.pdf".into()),
+            title: Some("Quarterly report".into()),
+            pretty_type: Some("PDF".into()),
+            size: Some(1_572_864),
+            ..Default::default()
+        };
+
+        assert_eq!(file_title(&file), "Quarterly report");
+        assert_eq!(file_summary(&file), "PDF - 1.5 MB");
+        assert_eq!(format_file_size(512), "512 B");
+        assert_eq!(format_file_size(2048), "2.0 KB");
     }
 
     #[test]

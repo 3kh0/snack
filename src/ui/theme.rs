@@ -81,6 +81,18 @@ pub fn reaction_button(active: bool) -> impl Fn(&Theme, button::Status) -> butto
     }
 }
 
+pub fn file_attachment(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(Color::from_rgb(0.96, 0.97, 0.98))),
+        border: Border {
+            color: Color::from_rgb(0.82, 0.84, 0.88),
+            width: 1.0,
+            radius: 6.0.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
 pub fn link_button(_theme: &Theme, status: button::Status) -> button::Style {
     let hovered = matches!(status, button::Status::Hovered);
     button::Style {

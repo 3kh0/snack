@@ -1,9 +1,11 @@
+use std::collections::BTreeMap;
+
 use iced::widget::{Column, button, column, container, scrollable, text};
 use iced::{Element, Fill, Length};
 
 use super::theme;
 use crate::app::Message;
-use crate::slack::models::Channel;
+use crate::slack::models::{Channel, TeamId};
 use crate::state::{self, Presence, Workspace};
 
 fn grouped(ws: &Workspace) -> (Vec<&Channel>, Vec<&Channel>) {
@@ -44,12 +46,35 @@ fn channel_button<'a>(ws: &Workspace, c: &Channel, active: bool) -> Element<'a, 
         .into()
 }
 
-pub fn view<'a>(ws: &Workspace, active: Option<&str>) -> Element<'a, Message> {
+fn workspace_button<'a>(ws: &Workspace, active: bool) -> Element<'a, Message> {
+    let status = if ws.rt.is_connected() { "●" } else { "○" };
+    button(text(format!("{status} {}", ws.name)).size(theme::TEXT_MD))
+        .width(Fill)
+        .padding([theme::SPACE_XS, theme::SPACE_SM])
+        .style(theme::channel_row(active))
+        .on_press(Message::WorkspaceSelected(ws.team_id.clone()))
+        .into()
+}
+
+pub fn view<'a>(
+    workspaces: &BTreeMap<TeamId, Workspace>,
+    active_team: Option<&str>,
+    ws: &Workspace,
+    active: Option<&str>,
+) -> Element<'a, Message> {
     let (rooms, dms) = grouped(ws);
 
     let mut list = Column::new()
         .spacing(theme::SPACE_XS)
-        .push(section_header("Channels"));
+        .push(section_header("Workspaces"));
+    for team_ws in workspaces.values() {
+        list = list.push(workspace_button(
+            team_ws,
+            active_team == Some(team_ws.team_id.as_str()),
+        ));
+    }
+
+    list = list.push(section_header("Channels"));
     for c in rooms {
         list = list.push(channel_button(ws, c, active == Some(c.id.as_str())));
     }

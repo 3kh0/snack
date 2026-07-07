@@ -113,7 +113,7 @@ pub struct Message {
     #[serde(default)]
     pub blocks: Vec<Value>,
     #[serde(default)]
-    pub files: Vec<Value>,
+    pub files: Vec<File>,
     #[serde(default)]
     pub edited: Option<Value>,
     #[serde(flatten)]
@@ -134,6 +134,38 @@ pub struct Reaction {
     pub users: Vec<UserId>,
     #[serde(default)]
     pub count: u32,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct File {
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub mimetype: Option<String>,
+    #[serde(default)]
+    pub filetype: Option<String>,
+    #[serde(default)]
+    pub pretty_type: Option<String>,
+    #[serde(default)]
+    pub url_private: Option<String>,
+    #[serde(default)]
+    pub thumb_64: Option<String>,
+    #[serde(default)]
+    pub thumb_80: Option<String>,
+    #[serde(default)]
+    pub thumb_160: Option<String>,
+    #[serde(default)]
+    pub thumb_360: Option<String>,
+    #[serde(default)]
+    pub size: Option<u64>,
+    #[serde(default)]
+    pub is_external: Option<bool>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -373,5 +405,34 @@ mod fixture_tests {
             Some("alice")
         );
         assert_eq!(page.failed_ids, vec!["U_MISSING".to_owned()]);
+    }
+
+    #[test]
+    fn deserialize_message_files() {
+        let page: HistoryPage = serde_json::from_str(
+            r#"{"ok":true,"messages":[{
+                "type":"message",
+                "ts":"1783372600.000100",
+                "files":[{
+                    "id":"F123",
+                    "name":"design.png",
+                    "title":"Design mock",
+                    "mimetype":"image/png",
+                    "filetype":"png",
+                    "pretty_type":"PNG",
+                    "url_private":"https://files.slack.com/files-pri/T-F/design.png",
+                    "thumb_160":"https://files.slack.com/files-tmb/T-F/design_160.png",
+                    "size":2048,
+                    "mode":"hosted"
+                }]
+            }]}"#,
+        )
+        .unwrap();
+        let file = &page.messages[0].files[0];
+        assert_eq!(file.id.as_deref(), Some("F123"));
+        assert_eq!(file.title.as_deref(), Some("Design mock"));
+        assert_eq!(file.pretty_type.as_deref(), Some("PNG"));
+        assert_eq!(file.size, Some(2048));
+        assert_eq!(file.extra["mode"].as_str(), Some("hosted"));
     }
 }
