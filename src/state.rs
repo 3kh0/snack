@@ -416,6 +416,10 @@ pub fn file_preview_key(file: &File) -> Option<String> {
         .map(str::to_owned)
 }
 
+pub fn attachment_preview_url(att: &crate::slack::models::Attachment) -> Option<&str> {
+    non_empty(att.thumb_url.as_deref()).or_else(|| non_empty(att.image_url.as_deref()))
+}
+
 pub fn file_preview_url(file: &File) -> Option<&str> {
     non_empty(file.thumb_360.as_deref())
         .or_else(|| non_empty(file.thumb_160.as_deref()))

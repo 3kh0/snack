@@ -104,7 +104,7 @@ pub fn row<'a>(
     }
 
     let mut col = Column::new().spacing(theme::SPACE_XS).push(header);
-    let block_lines = blocks::message_lines(ws, msg);
+    let block_lines = blocks::render_lines(ws, msg);
     if block_lines.is_empty() {
         let body = state::message_text(msg);
         if !body.is_empty() {
@@ -112,12 +112,22 @@ pub fn row<'a>(
         }
     } else {
         for line in block_lines {
-            col = col.push(text(line).size(theme::TEXT_MD));
+            let widget = text(line.text).size(theme::TEXT_MD);
+            let widget = if line.mono {
+                widget.font(Font::MONOSPACE)
+            } else {
+                widget
+            };
+            col = col.push(widget);
         }
     }
 
     for file in &msg.files {
         col = col.push(file_row(file, file_previews));
+    }
+
+    for att in &msg.attachments {
+        col = col.push(attachment_row(att, file_previews));
     }
 
     let thread_ts = match (msg.thread_ts.as_deref(), msg.ts.as_deref()) {
@@ -181,6 +191,76 @@ pub fn empty_placeholder<'a>() -> Element<'a, Message> {
     )
     .padding(theme::SPACE_LG)
     .into()
+}
+
+fn attachment_row<'a>(
+    att: &crate::slack::models::Attachment,
+    file_previews: &HashMap<String, FilePreview>,
+) -> Element<'a, Message> {
+    let mut content = Column::new().spacing(theme::SPACE_XS);
+
+    if let Some(service) = non_empty(att.service_name.as_deref()) {
+        content = content.push(
+            text(service.to_owned())
+                .size(theme::TEXT_SM)
+                .color(theme::MUTED),
+        );
+    }
+    if let Some(author) = non_empty(att.author_name.as_deref()) {
+        content = content.push(
+            text(author.to_owned())
+                .size(theme::TEXT_SM)
+                .color(theme::MUTED),
+        );
+    }
+    if let Some(title) = non_empty(att.title.as_deref()) {
+        let styled = text(title.to_owned()).size(theme::TEXT_MD).font(Font {
+            weight: iced::font::Weight::Bold,
+            ..Font::default()
+        });
+        let styled = if att.title_link.is_some() {
+            styled.color(theme::SIDEBAR_ACTIVE_BG)
+        } else {
+            styled
+        };
+        content = content.push(styled);
+    }
+    if let Some(body) = non_empty(att.text.as_deref()) {
+        content = content.push(text(body.to_owned()).size(theme::TEXT_SM));
+    }
+    for field in &att.fields {
+        let title = non_empty(field.title.as_deref());
+        let value = non_empty(field.value.as_deref());
+        let line = match (title, value) {
+            (Some(t), Some(v)) => format!("{t}: {v}"),
+            (Some(t), None) => t.to_owned(),
+            (None, Some(v)) => v.to_owned(),
+            (None, None) => continue,
+        };
+        content = content.push(text(line).size(theme::TEXT_SM));
+    }
+
+    if let Some(preview) = state::attachment_preview_url(att).and_then(|url| file_previews.get(url))
+    {
+        if let FilePreview::Loaded(handle) = preview {
+            content = content.push(
+                image::Image::new(handle.clone())
+                    .width(Length::Fixed(260.0))
+                    .height(Length::Fixed(160.0))
+                    .content_fit(ContentFit::Contain)
+                    .border_radius(6.0),
+            );
+        }
+    }
+
+    container(content)
+        .padding(theme::SPACE_SM)
+        .style(theme::file_attachment)
+        .into()
+}
+
+fn non_empty(s: Option<&str>) -> Option<&str> {
+    s.map(str::trim).filter(|s| !s.is_empty())
 }
 
 fn file_row<'a>(

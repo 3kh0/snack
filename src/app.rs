@@ -1689,15 +1689,25 @@ fn load_file_previews(app: &mut App, messages: Vec<SlackMessage>) -> Task<Messag
     let Some(transport) = app.transport.clone() else {
         return Task::none();
     };
-    let requests: Vec<_> = messages
+    let file_requests = messages
         .iter()
         .flat_map(|msg| &msg.files)
         .filter_map(|file| {
             let key = crate::state::file_preview_key(file)?;
             let url = crate::state::file_preview_url(file)?.to_owned();
             Some((key, url))
-        })
-        .filter(|(key, _)| !app.file_previews.contains_key(key))
+        });
+    let attachment_requests = messages
+        .iter()
+        .flat_map(|msg| &msg.attachments)
+        .filter_map(|att| {
+            let url = crate::state::attachment_preview_url(att)?.to_owned();
+            Some((url.clone(), url))
+        });
+    let mut seen = std::collections::HashSet::new();
+    let requests: Vec<_> = file_requests
+        .chain(attachment_requests)
+        .filter(|(key, _)| !app.file_previews.contains_key(key) && seen.insert(key.clone()))
         .collect();
 
     if requests.is_empty() {

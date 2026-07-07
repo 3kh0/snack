@@ -115,7 +115,59 @@ pub struct Message {
     #[serde(default)]
     pub files: Vec<File>,
     #[serde(default)]
+    pub attachments: Vec<Attachment>,
+    #[serde(default)]
     pub edited: Option<Value>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Attachment {
+    #[serde(default)]
+    pub id: Option<u64>,
+    #[serde(default)]
+    pub service_name: Option<String>,
+    #[serde(default)]
+    pub service_icon: Option<String>,
+    #[serde(default)]
+    pub author_name: Option<String>,
+    #[serde(default)]
+    pub author_link: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub title_link: Option<String>,
+    #[serde(default)]
+    pub pretext: Option<String>,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub footer: Option<String>,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub image_url: Option<String>,
+    #[serde(default)]
+    pub thumb_url: Option<String>,
+    #[serde(default)]
+    pub from_url: Option<String>,
+    #[serde(default)]
+    pub original_url: Option<String>,
+    #[serde(default)]
+    pub fields: Vec<AttachmentField>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AttachmentField {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub value: Option<String>,
+    #[serde(default)]
+    pub short: bool,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -496,6 +548,43 @@ mod fixture_tests {
         assert_eq!(pagination.page, Some(1));
         assert_eq!(pagination.page_count, Some(23551));
         assert_eq!(pagination.total_count, Some(117752));
+    }
+
+    #[test]
+    fn deserialize_message_attachments() {
+        let page: HistoryPage = serde_json::from_str(
+            r#"{"ok":true,"messages":[{
+                "type":"message",
+                "ts":"1783328401.000100",
+                "text":"check this",
+                "attachments":[{
+                    "id":1,
+                    "service_name":"the Guardian",
+                    "service_icon":"https://www.theguardian.com/favicon.ico",
+                    "title":"Some headline",
+                    "title_link":"https://www.theguardian.com/football/x",
+                    "text":"A short description of the article.",
+                    "image_url":"https://i.guim.co.uk/img/media/x/master/2961.jpg",
+                    "from_url":"https://www.theguardian.com/football/x",
+                    "fields":[{"title":"Score","value":"1-0","short":true}]
+                }]
+            }]}"#,
+        )
+        .unwrap();
+        let att = &page.messages[0].attachments[0];
+        assert_eq!(att.service_name.as_deref(), Some("the Guardian"));
+        assert_eq!(att.title.as_deref(), Some("Some headline"));
+        assert_eq!(
+            att.title_link.as_deref(),
+            Some("https://www.theguardian.com/football/x")
+        );
+        assert_eq!(
+            att.image_url.as_deref().unwrap().ends_with("2961.jpg"),
+            true
+        );
+        assert_eq!(att.fields[0].title.as_deref(), Some("Score"));
+        assert_eq!(att.fields[0].value.as_deref(), Some("1-0"));
+        assert!(att.fields[0].short);
     }
 
     #[test]

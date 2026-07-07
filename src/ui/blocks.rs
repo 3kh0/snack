@@ -2,12 +2,18 @@ use serde_json::Value;
 
 use crate::state::{self, Workspace};
 
-pub fn message_lines(ws: &Workspace, msg: &crate::slack::models::Message) -> Vec<String> {
-    lines(ws, &msg.blocks)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderLine {
+    pub text: String,
+    pub mono: bool,
+}
+
+pub fn render_lines(ws: &Workspace, msg: &crate::slack::models::Message) -> Vec<RenderLine> {
+    render_blocks(ws, &msg.blocks)
 }
 
 pub fn notification_text(ws: &Workspace, msg: &crate::slack::models::Message) -> String {
-    let block_text = message_lines(ws, msg).join(" ");
+    let block_text = lines(ws, &msg.blocks).join(" ");
     if !block_text.trim().is_empty() {
         return block_text;
     }
@@ -15,15 +21,31 @@ pub fn notification_text(ws: &Workspace, msg: &crate::slack::models::Message) ->
 }
 
 pub fn lines(ws: &Workspace, blocks: &[Value]) -> Vec<String> {
-    blocks
-        .iter()
-        .flat_map(|block| block_lines(ws, block))
-        .map(|line| line.trim().to_owned())
-        .filter(|line| !line.is_empty())
+    render_blocks(ws, blocks)
+        .into_iter()
+        .map(|line| line.text)
         .collect()
 }
 
-fn block_lines(ws: &Workspace, block: &Value) -> Vec<String> {
+fn render_blocks(ws: &Workspace, blocks: &[Value]) -> Vec<RenderLine> {
+    blocks
+        .iter()
+        .flat_map(|block| block_lines(ws, block))
+        .map(|mut line| {
+            if !line.mono {
+                line.text = line.text.trim().to_owned();
+            }
+            line
+        })
+        .filter(|line| !line.text.trim().is_empty())
+        .collect()
+}
+
+fn plain(text: String) -> RenderLine {
+    RenderLine { text, mono: false }
+}
+
+fn block_lines(ws: &Workspace, block: &Value) -> Vec<RenderLine> {
     match value_type(block) {
         Some("rich_text") => block
             .get("elements")
@@ -35,10 +57,10 @@ fn block_lines(ws: &Workspace, block: &Value) -> Vec<String> {
         Some("section") => {
             let mut out = Vec::new();
             if let Some(text) = block.get("text").and_then(text_object) {
-                out.push(text);
+                out.push(plain(text));
             }
             if let Some(fields) = block.get("fields").and_then(Value::as_array) {
-                out.extend(fields.iter().filter_map(text_object));
+                out.extend(fields.iter().filter_map(text_object).map(plain));
             }
             out
         }
@@ -48,35 +70,36 @@ fn block_lines(ws: &Workspace, block: &Value) -> Vec<String> {
             .into_iter()
             .flatten()
             .filter_map(text_object)
+            .map(plain)
             .collect(),
         Some("header") => block
             .get("text")
             .and_then(text_object)
+            .map(plain)
             .into_iter()
             .collect(),
         _ => Vec::new(),
     }
 }
 
-fn rich_element_lines(ws: &Workspace, element: &Value) -> Vec<String> {
+fn rich_element_lines(ws: &Workspace, element: &Value) -> Vec<RenderLine> {
     match value_type(element) {
-        Some("rich_text_section") => vec![rich_inline_text(ws, element)],
+        Some("rich_text_section") => vec![plain(rich_inline_text(ws, element))],
         Some("rich_text_list") => element
             .get("elements")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
-            .map(|item| format!("- {}", rich_inline_text(ws, item)))
+            .map(|item| plain(format!("- {}", rich_inline_text(ws, item))))
             .collect(),
-        Some("rich_text_preformatted") => {
-            let body = rich_inline_text(ws, element);
-            if body.trim().is_empty() {
-                Vec::new()
-            } else {
-                vec!["```".to_owned(), body, "```".to_owned()]
-            }
-        }
-        Some("rich_text_quote") => vec![format!("> {}", rich_inline_text(ws, element))],
+        Some("rich_text_preformatted") => rich_inline_text(ws, element)
+            .lines()
+            .map(|line| RenderLine {
+                text: line.to_owned(),
+                mono: true,
+            })
+            .collect(),
+        Some("rich_text_quote") => vec![plain(format!("> {}", rich_inline_text(ws, element)))],
         _ => Vec::new(),
     }
 }
@@ -293,11 +316,45 @@ mod tests {
 
         assert_eq!(
             lines(&ws(), &blocks),
+            vec!["run `cargo test` *now* ~_maybe_~", "let x = 1;"]
+        );
+    }
+
+    #[test]
+    fn render_lines_marks_preformatted_as_mono() {
+        let msg = crate::slack::models::Message {
+            blocks: vec![json!({
+                "type": "rich_text",
+                "elements": [
+                    {
+                        "type": "rich_text_section",
+                        "elements": [{"type": "text", "text": "prose"}]
+                    },
+                    {
+                        "type": "rich_text_preformatted",
+                        "elements": [{"type": "text", "text": "fn main() {}\n    indented"}]
+                    }
+                ]
+            })],
+            ..Default::default()
+        };
+
+        let rendered = render_lines(&ws(), &msg);
+        assert_eq!(
+            rendered,
             vec![
-                "run `cargo test` *now* ~_maybe_~",
-                "```",
-                "let x = 1;",
-                "```",
+                RenderLine {
+                    text: "prose".into(),
+                    mono: false
+                },
+                RenderLine {
+                    text: "fn main() {}".into(),
+                    mono: true
+                },
+                RenderLine {
+                    text: "    indented".into(),
+                    mono: true
+                },
             ]
         );
     }
