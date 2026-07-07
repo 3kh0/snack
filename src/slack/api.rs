@@ -2,7 +2,7 @@ use crate::config::WorkspaceSession;
 
 use super::Error;
 use super::client::{PreparedRequest, SlackClient};
-use super::models::{BootData, ChannelId, HistoryPage, MessageTs, SentMessage};
+use super::models::{BootData, ChannelId, CountsPage, HistoryPage, MessageTs, SentMessage};
 use super::transport::Transport;
 pub fn user_boot(client: &SlackClient, workspace: &WorkspaceSession) -> PreparedRequest {
     client.rest_form(
@@ -66,6 +66,10 @@ pub fn conversations_mark(
         "conversations.mark",
         vec![("channel", channel), ("ts", ts)],
     )
+}
+
+pub fn client_counts(client: &SlackClient, workspace: &WorkspaceSession) -> PreparedRequest {
+    client.rest_form(workspace, "client.counts", Vec::new())
 }
 
 pub fn chat_post_message(
@@ -160,6 +164,28 @@ pub async fn fetch_history(
     decode(value, "conversations.history")
 }
 
+pub async fn mark_channel(
+    transport: &Transport,
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    channel: ChannelId,
+    ts: MessageTs,
+) -> Result<(), Error> {
+    transport
+        .execute(conversations_mark(client, workspace, channel, ts))
+        .await?;
+    Ok(())
+}
+
+pub async fn fetch_counts(
+    transport: &Transport,
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+) -> Result<CountsPage, Error> {
+    let value = transport.execute(client_counts(client, workspace)).await?;
+    decode(value, "client.counts")
+}
+
 pub async fn send_message(
     transport: &Transport,
     client: &SlackClient,
@@ -240,5 +266,27 @@ mod tests {
         assert!(request.url.contains("/api/chat.postMessage?"));
         assert!(fields.contains(&("channel".into(), "C0159TSJVH8".into())));
         assert!(fields.contains(&("text".into(), "hello from snack".into())));
+    }
+
+    #[test]
+    fn mark_request_includes_channel_and_ts() {
+        let request = conversations_mark(
+            &SlackClient::default(),
+            &workspace(),
+            "C0159TSJVH8".into(),
+            "1783372400.111111".into(),
+        );
+        let fields = form_fields(&request);
+
+        assert!(request.url.contains("/api/conversations.mark?"));
+        assert!(fields.contains(&("channel".into(), "C0159TSJVH8".into())));
+        assert!(fields.contains(&("ts".into(), "1783372400.111111".into())));
+    }
+
+    #[test]
+    fn counts_request_targets_client_counts() {
+        let request = client_counts(&SlackClient::default(), &workspace());
+        assert!(request.url.contains("/api/client.counts?"));
+        assert!(form_fields(&request).contains(&("token".into(), "xoxc-test-token".into())));
     }
 }

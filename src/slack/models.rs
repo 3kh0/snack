@@ -44,6 +44,39 @@ pub struct HistoryPage {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CountsPage {
+    #[serde(default)]
+    pub channels: Vec<Channel>,
+    #[serde(default)]
+    pub ims: Vec<Channel>,
+    #[serde(default)]
+    pub groups: Vec<Channel>,
+    #[serde(default)]
+    pub mpims: Vec<Channel>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+impl CountsPage {
+    pub fn all_channels(&self) -> Vec<Channel> {
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for channel in self
+            .channels
+            .iter()
+            .chain(&self.groups)
+            .chain(&self.ims)
+            .chain(&self.mpims)
+        {
+            if seen.insert(channel.id.clone()) {
+                out.push(channel.clone());
+            }
+        }
+        out
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Message {
     #[serde(default)]
     pub user: Option<UserId>,
@@ -165,6 +198,14 @@ pub struct Channel {
     pub is_archived: bool,
     #[serde(default)]
     pub updated: Option<u64>,
+    #[serde(default)]
+    pub user: Option<UserId>,
+    #[serde(default)]
+    pub unread_count: Option<u32>,
+    #[serde(default)]
+    pub unread_count_display: Option<u32>,
+    #[serde(default)]
+    pub last_read: Option<MessageTs>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -209,6 +250,8 @@ pub struct BootData {
     pub groups: Vec<Channel>,
     #[serde(default)]
     pub mpims: Vec<Channel>,
+    #[serde(default)]
+    pub users: Vec<User>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }

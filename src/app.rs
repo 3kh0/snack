@@ -1,24 +1,27 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use iced::widget::{button, column, container, row, text};
 use iced::{Element, Fill, Subscription, Task};
 
+use crate::cache::Cache;
 use crate::config::{self, Session};
 use crate::slack::api::{self, HistoryArgs};
 use crate::slack::events::RtEvent;
 use crate::slack::models::{
-    BootData, ChannelId, HistoryPage, Message as SlackMessage, SentMessage, TeamId,
+    BootData, ChannelId, CountsPage, HistoryPage, Message as SlackMessage, MessageTs, SentMessage,
+    TeamId,
 };
 use crate::slack::realtime::{self, ConnectParams, Connection, RtUpdate};
 use crate::slack::{Error as SlackError, SlackClient, Transport};
-use crate::state::{RealtimeStatus, Screen, Toast, Workspace};
+use crate::state::{Presence, RealtimeStatus, Screen, Toast, Workspace};
 use crate::ui;
 
 pub struct App {
     screen: Screen,
     session: Option<Session>,
+    cache: Option<Cache>,
     client: SlackClient,
     transport: Option<Arc<Transport>>,
     active_team: Option<TeamId>,
@@ -27,6 +30,7 @@ pub struct App {
     composer_text: String,
     errors: Vec<Toast>,
     send_seq: u64,
+    last_typing: HashMap<(TeamId, ChannelId), Instant>,
 }
 
 #[derive(Debug, Clone)]
@@ -41,10 +45,12 @@ pub enum Message {
         result: Result<SentMessage, SlackError>,
     },
     BootLoaded(TeamId, Result<BootData, SlackError>),
+    CountsLoaded(TeamId, Result<CountsPage, SlackError>),
     HistoryLoaded(TeamId, ChannelId, Result<HistoryPage, SlackError>),
-    Realtime(TeamId, RtEvent),
-    RtConnected(TeamId, Connection),
-    RtDisconnected(TeamId),
+    ChannelMarked(TeamId, ChannelId, MessageTs, Result<(), SlackError>),
+    Realtime(TeamId, u64, RtEvent),
+    RtConnected(TeamId, u64, Connection),
+    RtDisconnected(TeamId, u64),
     SignInPressed,
     RetryAuth,
     Tick,
@@ -55,6 +61,7 @@ impl App {
         App {
             screen: Screen::Login,
             session: None,
+            cache: None,
             client: SlackClient::default(),
             transport: None,
             active_team: None,
@@ -63,6 +70,7 @@ impl App {
             composer_text: String::new(),
             errors: Vec::new(),
             send_seq: 0,
+            last_typing: HashMap::new(),
         }
     }
 
@@ -77,13 +85,42 @@ impl App {
             Ok(Some(session)) => match Transport::new(session.d_cookie.clone()) {
                 Ok(transport) => {
                     self.transport = Some(Arc::new(transport));
+                    let cache = match Cache::open_default() {
+                        Ok(cache) => Some(cache),
+                        Err(e) => {
+                            self.toast(format!("cache unavailable: {e}"));
+                            None
+                        }
+                    };
+                    let mut warm = false;
                     for ws in session.workspaces.values() {
-                        self.workspaces
-                            .insert(ws.team_id.clone(), Workspace::from_session(ws));
+                        let workspace = cache
+                            .as_ref()
+                            .and_then(|cache| match cache.load_workspace(ws) {
+                                Ok(workspace) => workspace,
+                                Err(e) => {
+                                    tracing::warn!(team = %ws.team_id, error = %e, "cache load failed");
+                                    None
+                                }
+                            })
+                            .unwrap_or_else(|| Workspace::from_session(ws));
+                        warm |= !workspace.channels.is_empty();
+                        self.workspaces.insert(ws.team_id.clone(), workspace);
                     }
                     self.active_team = session.workspaces.keys().next().cloned();
+                    if warm {
+                        self.screen = Screen::Main;
+                        if let Some(team) = self.active_team.clone() {
+                            self.active_channel = self
+                                .workspaces
+                                .get(&team)
+                                .and_then(|ws| ws.channels.keys().next().cloned());
+                        }
+                    } else {
+                        self.screen = Screen::Loading;
+                    }
+                    self.cache = cache;
                     self.session = Some(session);
-                    self.screen = Screen::Loading;
                     self.boot_all()
                 }
                 Err(e) => {
@@ -108,20 +145,39 @@ impl App {
         let Some((transport, session)) = self.live() else {
             return Task::none();
         };
-        let tasks = session.workspaces.values().map(|ws| {
-            let transport = transport.clone();
-            let client = self.client.clone();
-            let ws = ws.clone();
+        let tasks = session.workspaces.values().flat_map(|ws| {
+            let boot_transport = transport.clone();
+            let boot_client = self.client.clone();
+            let boot_ws = ws.clone();
             let team = ws.team_id.clone();
-            Task::perform(
-                async move { api::fetch_user_boot(&transport, &client, &ws).await },
+            let boot = Task::perform(
+                async move { api::fetch_user_boot(&boot_transport, &boot_client, &boot_ws).await },
                 move |result| Message::BootLoaded(team.clone(), result),
-            )
+            );
+
+            let counts_transport = transport.clone();
+            let counts_client = self.client.clone();
+            let counts_ws = ws.clone();
+            let team = ws.team_id.clone();
+            let counts = Task::perform(
+                async move { api::fetch_counts(&counts_transport, &counts_client, &counts_ws).await },
+                move |result| Message::CountsLoaded(team.clone(), result),
+            );
+            [boot, counts]
         });
         Task::batch(tasks)
     }
 
     fn load_history(&self, team: &str, channel: &ChannelId) -> Task<Message> {
+        self.load_history_since(team, channel, None)
+    }
+
+    fn load_history_since(
+        &self,
+        team: &str,
+        channel: &ChannelId,
+        oldest: Option<MessageTs>,
+    ) -> Task<Message> {
         let Some((transport, session)) = self.live() else {
             return Task::none();
         };
@@ -135,12 +191,35 @@ impl App {
         let channel = channel.clone();
         let args = HistoryArgs {
             channel: channel.clone(),
+            oldest,
             limit: Some(50),
             ..Default::default()
         };
         Task::perform(
             async move { api::fetch_history(&transport, &client, &ws, args).await },
             move |result| Message::HistoryLoaded(team.clone(), channel.clone(), result),
+        )
+    }
+
+    fn mark_channel_read(&self, team: &str, channel: &ChannelId, ts: MessageTs) -> Task<Message> {
+        let Some((transport, session)) = self.live() else {
+            return Task::none();
+        };
+        let Some(ws) = session.workspaces.get(team) else {
+            return Task::none();
+        };
+        let transport = transport.clone();
+        let client = self.client.clone();
+        let ws = ws.clone();
+        let team = team.to_owned();
+        let channel = channel.clone();
+        let send_channel = channel.clone();
+        let mark_ts = ts.clone();
+        Task::perform(
+            async move { api::mark_channel(&transport, &client, &ws, send_channel, ts).await },
+            move |result| {
+                Message::ChannelMarked(team.clone(), channel.clone(), mark_ts.clone(), result)
+            },
         )
     }
 
@@ -184,12 +263,14 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 if app.transport.is_some() && needs_load {
                     return app.load_history(&team, &id);
                 }
+                return mark_latest_visible(app, &team, &id);
             }
             Task::none()
         }
 
         Message::ComposerChanged(value) => {
             app.composer_text = value;
+            maybe_send_typing(app);
             Task::none()
         }
 
@@ -216,6 +297,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                             },
                         );
                     }
+                    persist_workspace(app, &team);
                 }
                 Err(e) => app.toast(format!("send failed: {e}")),
             }
@@ -228,6 +310,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                     ws.apply_boot(boot);
                     tracing::info!(%team, channels = ws.channels.len(), "boot ok");
                 }
+                persist_workspace(app, &team);
                 app.screen = Screen::Main;
                 if app.active_team.as_deref() == Some(&team) && app.active_channel.is_none() {
                     if let Some(first) = app
@@ -250,6 +333,19 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             }
         },
 
+        Message::CountsLoaded(team, result) => {
+            match result {
+                Ok(counts) => {
+                    if let Some(ws) = app.workspaces.get_mut(&team) {
+                        ws.apply_counts(counts);
+                    }
+                    persist_workspace(app, &team);
+                }
+                Err(e) => tracing::warn!(%team, error = %e, "counts failed"),
+            }
+            Task::none()
+        }
+
         Message::HistoryLoaded(team, channel, result) => {
             match result {
                 Ok(page) => {
@@ -262,34 +358,69 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                         cm.loaded = true;
                         tracing::info!(%channel, messages = n, "history loaded");
                     }
+                    persist_workspace(app, &team);
+                    return mark_latest_visible(app, &team, &channel);
                 }
                 Err(e) => app.toast(format!("history failed for {channel}: {e}")),
             }
             Task::none()
         }
 
-        Message::Realtime(team, event) => {
-            apply_realtime(app, &team, event);
+        Message::ChannelMarked(team, channel, ts, result) => {
+            match result {
+                Ok(()) => {
+                    if let Some(cm) = app
+                        .workspaces
+                        .get_mut(&team)
+                        .and_then(|ws| ws.messages.get_mut(&channel))
+                    {
+                        cm.last_read = Some(ts);
+                        cm.unread_count = 0;
+                        cm.mention_count = 0;
+                    }
+                    persist_workspace(app, &team);
+                }
+                Err(e) => tracing::warn!(%team, %channel, error = %e, "mark failed"),
+            }
             Task::none()
         }
 
-        Message::RtConnected(team, connection) => {
+        Message::Realtime(team, generation, event) => {
+            apply_realtime(app, &team, generation, event);
+            persist_workspace(app, &team);
+            if app.active_team.as_deref() == Some(&team) {
+                if let Some(channel) = app.active_channel.clone() {
+                    return mark_latest_visible(app, &team, &channel);
+                }
+            }
+            Task::none()
+        }
+
+        Message::RtConnected(team, generation, connection) => {
             if let Some(ws) = app.workspaces.get_mut(&team) {
+                ws.rt_generation = generation;
                 ws.rt = RealtimeStatus::Connected(connection);
             }
             if app.active_team.as_deref() == Some(&team) {
                 if let Some(channel) = app.active_channel.clone() {
                     if app.transport.is_some() {
-                        return app.load_history(&team, &channel);
+                        let oldest = app
+                            .workspaces
+                            .get(&team)
+                            .and_then(|ws| ws.messages.get(&channel))
+                            .and_then(|cm| cm.latest_ts());
+                        return app.load_history_since(&team, &channel, oldest);
                     }
                 }
             }
             Task::none()
         }
 
-        Message::RtDisconnected(team) => {
+        Message::RtDisconnected(team, generation) => {
             if let Some(ws) = app.workspaces.get_mut(&team) {
-                ws.rt = RealtimeStatus::Disconnected;
+                if generation >= ws.rt_generation {
+                    ws.rt = RealtimeStatus::Disconnected;
+                }
             }
             Task::none()
         }
@@ -333,6 +464,55 @@ fn is_auth_error(e: &SlackError) -> bool {
     matches!(e, SlackError::Api(code) if code == "invalid_auth" || code == "not_authed" || code == "token_revoked")
 }
 
+fn maybe_send_typing(app: &mut App) {
+    if app.composer_text.trim().is_empty() {
+        return;
+    }
+    let (Some(team), Some(channel)) = (app.active_team.clone(), app.active_channel.clone()) else {
+        return;
+    };
+    let now = Instant::now();
+    let key = (team.clone(), channel.clone());
+    if app
+        .last_typing
+        .get(&key)
+        .is_some_and(|last| now.duration_since(*last) < Duration::from_secs(3))
+    {
+        return;
+    }
+    let Some(ws) = app.workspaces.get(&team) else {
+        return;
+    };
+    let RealtimeStatus::Connected(connection) = &ws.rt else {
+        return;
+    };
+    connection.send(realtime::user_typing_frame(&channel));
+    app.last_typing.insert(key, now);
+}
+
+fn mark_latest_visible(app: &App, team: &str, channel: &ChannelId) -> Task<Message> {
+    let Some(ws) = app.workspaces.get(team) else {
+        return Task::none();
+    };
+    let Some(cm) = ws.messages.get(channel) else {
+        return Task::none();
+    };
+    if !cm.loaded {
+        return Task::none();
+    }
+    let Some(latest) = cm.latest_ts() else {
+        return Task::none();
+    };
+    if cm
+        .last_read
+        .as_ref()
+        .is_some_and(|last_read| crate::state::ts_key(last_read) >= crate::state::ts_key(&latest))
+    {
+        return Task::none();
+    }
+    app.mark_channel_read(team, channel, latest)
+}
+
 fn send_pressed(app: &mut App) -> Task<Message> {
     let text = app.composer_text.trim().to_owned();
     if text.is_empty() {
@@ -364,6 +544,7 @@ fn send_pressed(app: &mut App) -> Task<Message> {
     cm.upsert(pending);
     cm.pending.push(ts);
     app.composer_text.clear();
+    persist_workspace(app, &team);
 
     let Some((transport, session)) = app.live() else {
         return Task::none();
@@ -388,27 +569,40 @@ fn send_pressed(app: &mut App) -> Task<Message> {
     )
 }
 
-fn apply_realtime(app: &mut App, team: &str, event: RtEvent) {
+fn apply_realtime(app: &mut App, team: &str, generation: u64, event: RtEvent) {
     let now = Instant::now();
     let Some(ws) = app.workspaces.get_mut(team) else {
         tracing::debug!(%team, "realtime event for unknown workspace, ignoring");
         return;
     };
+    if generation != ws.rt_generation {
+        tracing::debug!(%team, generation, current = ws.rt_generation, "stale realtime event, ignoring");
+        return;
+    }
     match event {
         RtEvent::Message(msg) => {
             let Some(channel) = msg.channel.clone() else {
                 return;
             };
+            if let Some(user) = msg.user.as_deref() {
+                ws.clear_typing_user(&channel, user);
+            }
             let cm = ws.messages.entry(channel).or_default();
             if let Some(cid) = msg.client_msg_id.clone() {
                 if cm.confirm(&cid, msg.clone()) {
                     return;
                 }
             }
+            if cm.confirm_matching_pending(msg.user.as_deref(), msg.text.as_deref(), msg.clone()) {
+                return;
+            }
             cm.upsert(msg);
         }
         RtEvent::MessageChanged { channel, message } => {
-            ws.messages.entry(channel).or_default().upsert(message);
+            ws.messages
+                .entry(channel)
+                .or_default()
+                .merge_update(message);
         }
         RtEvent::MessageDeleted {
             channel,
@@ -421,10 +615,21 @@ fn apply_realtime(app: &mut App, team: &str, event: RtEvent) {
         RtEvent::UserTyping { channel, user } => {
             ws.set_typing(&channel, user, now);
         }
-        RtEvent::PresenceChange { .. } => {}
+        RtEvent::PresenceChange { user, presence } => {
+            ws.set_presence(user, Presence::from_slack(&presence));
+        }
         RtEvent::Unknown(raw) => {
             tracing::debug!(kind = %raw.kind, "unknown realtime event, ignoring");
         }
+    }
+}
+
+fn persist_workspace(app: &App, team: &str) {
+    let (Some(cache), Some(ws)) = (app.cache.as_ref(), app.workspaces.get(team)) else {
+        return;
+    };
+    if let Err(e) = cache.save_workspace(ws) {
+        tracing::warn!(%team, error = %e, "cache save failed");
     }
 }
 
@@ -508,9 +713,12 @@ fn subscription(app: &App) -> Subscription<Message> {
 
 fn map_rt_update((team, update): (TeamId, RtUpdate)) -> Message {
     match update {
-        RtUpdate::Connected(connection) => Message::RtConnected(team, connection),
-        RtUpdate::Event(event) => Message::Realtime(team, event),
-        RtUpdate::Disconnected => Message::RtDisconnected(team),
+        RtUpdate::Connected {
+            generation,
+            connection,
+        } => Message::RtConnected(team, generation, connection),
+        RtUpdate::Event { generation, event } => Message::Realtime(team, generation, event),
+        RtUpdate::Disconnected { generation } => Message::RtDisconnected(team, generation),
     }
 }
 
@@ -574,7 +782,9 @@ mod tests {
             users: HashMap::new(),
             messages,
             typing: HashMap::new(),
+            presence: HashMap::new(),
             rt: RealtimeStatus::default(),
+            rt_generation: 1,
         }
     }
 
@@ -698,7 +908,7 @@ mod tests {
             text: Some("live!".into()),
             ..Default::default()
         });
-        let _ = update(&mut app, Message::Realtime(team.clone(), ev));
+        let _ = update(&mut app, Message::Realtime(team.clone(), 1, ev));
         let after = app.workspaces[&team].messages["C_GENERAL"].messages.len();
         assert_eq!(after, before + 1);
     }
@@ -711,7 +921,7 @@ mod tests {
             channel: "C_GENERAL".into(),
             deleted_ts: "1783372300.000100".into(),
         };
-        let _ = update(&mut app, Message::Realtime(team.clone(), ev));
+        let _ = update(&mut app, Message::Realtime(team.clone(), 1, ev));
         let exists = app.workspaces[&team].messages["C_GENERAL"]
             .messages
             .iter()
@@ -725,9 +935,30 @@ mod tests {
         let team = app.active_team.clone().unwrap();
         let (tx, _rx) = tokio::sync::mpsc::channel(4);
         let conn = Connection::from_sender(tx);
-        let _ = update(&mut app, Message::RtConnected(team.clone(), conn));
+        let _ = update(&mut app, Message::RtConnected(team.clone(), 2, conn));
         assert!(app.workspaces[&team].rt.is_connected());
-        let _ = update(&mut app, Message::RtDisconnected(team.clone()));
+        assert_eq!(app.workspaces[&team].rt_generation, 2);
+        let _ = update(&mut app, Message::RtDisconnected(team.clone(), 1));
+        assert!(app.workspaces[&team].rt.is_connected());
+        let _ = update(&mut app, Message::RtDisconnected(team.clone(), 2));
         assert!(!app.workspaces[&team].rt.is_connected());
+    }
+
+    #[test]
+    fn stale_realtime_event_is_ignored() {
+        let mut app = test_app();
+        let team = app.active_team.clone().unwrap();
+        app.workspaces.get_mut(&team).unwrap().rt_generation = 5;
+        let before = app.workspaces[&team].messages["C_GENERAL"].messages.len();
+        let ev = RtEvent::Message(SlackMessage {
+            user: Some("U_ALICE".into()),
+            ts: Some("9999999999.000002".into()),
+            channel: Some("C_GENERAL".into()),
+            text: Some("stale".into()),
+            ..Default::default()
+        });
+        let _ = update(&mut app, Message::Realtime(team.clone(), 4, ev));
+        let after = app.workspaces[&team].messages["C_GENERAL"].messages.len();
+        assert_eq!(after, before);
     }
 }

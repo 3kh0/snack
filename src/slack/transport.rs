@@ -1,4 +1,7 @@
+use std::time::Duration;
+
 use serde_json::Value;
+use wreq::header::HeaderMap;
 use wreq_util::Emulation;
 
 use super::Error;
@@ -41,6 +44,20 @@ impl Transport {
     }
 
     pub async fn execute(&self, req: PreparedRequest) -> Result<Value, Error> {
+        let mut attempt = 0;
+        loop {
+            match self.execute_once(&req).await {
+                Ok(value) => return Ok(value),
+                Err(e) if req.retry_safe() && retryable_error(&e) && attempt < 2 => {
+                    attempt += 1;
+                    tokio::time::sleep(retry_delay(&e, attempt)).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    async fn execute_once(&self, req: &PreparedRequest) -> Result<Value, Error> {
         let req_url = req.url.clone();
         let mut builder = match req.method {
             "POST" => self.http.post(&req.url),
@@ -56,9 +73,9 @@ impl Transport {
         }
         builder = builder.header("Cookie", self.cookie());
 
-        builder = match req.body {
-            RequestBody::Form(fields) => builder.form(&fields),
-            RequestBody::Json(value) => builder.json(&value),
+        builder = match &req.body {
+            RequestBody::Form(fields) => builder.form(fields),
+            RequestBody::Json(value) => builder.json(value),
         };
 
         let response = builder
@@ -67,6 +84,23 @@ impl Transport {
             .map_err(|e| Error::Transport(format!("send: {e}")))?;
 
         let status = response.status();
+        let retry_after_secs = retry_after_secs(response.headers());
+        if status.as_u16() == 429 {
+            return Err(Error::RateLimited { retry_after_secs });
+        }
+        if !status.is_success() {
+            tracing::warn!(
+                url = %redact_secrets(&req_url),
+                status = %status,
+                retry_after_secs = ?retry_after_secs,
+                "slack http error"
+            );
+            return Err(Error::HttpStatus {
+                status: status.as_u16(),
+                retry_after_secs,
+            });
+        }
+
         let value: Value = response
             .json()
             .await
@@ -103,5 +137,82 @@ impl Transport {
             .text()
             .await
             .map_err(|e| Error::Transport(format!("read body: {e}")))
+    }
+}
+
+pub fn retry_after_secs(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get("retry-after")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+}
+
+fn retryable_error(error: &Error) -> bool {
+    matches!(error, Error::RateLimited { .. })
+        || matches!(
+            error,
+            Error::HttpStatus {
+                status: 500..=599,
+                ..
+            }
+        )
+}
+
+fn retry_delay(error: &Error, attempt: u32) -> Duration {
+    let fallback_ms = 250 * 2_u64.saturating_pow(attempt.saturating_sub(1));
+    let secs = match error {
+        Error::RateLimited {
+            retry_after_secs: Some(secs),
+        }
+        | Error::HttpStatus {
+            retry_after_secs: Some(secs),
+            ..
+        } => Some((*secs).min(30)),
+        _ => None,
+    };
+    secs.map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_millis(fallback_ms))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wreq::header::HeaderValue;
+
+    #[test]
+    fn parses_retry_after_seconds() {
+        let mut headers = HeaderMap::new();
+        headers.insert("retry-after", HeaderValue::from_static("12"));
+        assert_eq!(retry_after_secs(&headers), Some(12));
+    }
+
+    #[test]
+    fn ignores_invalid_retry_after() {
+        let mut headers = HeaderMap::new();
+        headers.insert("retry-after", HeaderValue::from_static("soon"));
+        assert_eq!(retry_after_secs(&headers), None);
+    }
+
+    #[test]
+    fn retry_policy_is_bounded() {
+        assert!(retryable_error(&Error::RateLimited {
+            retry_after_secs: Some(60)
+        }));
+        assert!(
+            retry_delay(
+                &Error::RateLimited {
+                    retry_after_secs: Some(60)
+                },
+                1
+            ) <= Duration::from_secs(30)
+        );
+        assert!(retryable_error(&Error::HttpStatus {
+            status: 503,
+            retry_after_secs: None
+        }));
+        assert!(!retryable_error(&Error::HttpStatus {
+            status: 404,
+            retry_after_secs: None
+        }));
     }
 }

@@ -31,11 +31,32 @@ pub struct Toast {
     pub text: String,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Presence {
+    Active,
+    Away,
+    #[default]
+    Unknown,
+}
+
+impl Presence {
+    pub fn from_slack(value: &str) -> Self {
+        match value {
+            "active" => Presence::Active,
+            "away" => Presence::Away,
+            _ => Presence::Unknown,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ChannelMessages {
     pub messages: Vec<SlackMessage>,
     pub loaded: bool,
     pub pending: Vec<MessageTs>,
+    pub last_read: Option<MessageTs>,
+    pub unread_count: u32,
+    pub mention_count: u32,
 }
 
 impl ChannelMessages {
@@ -91,8 +112,55 @@ impl ChannelMessages {
         }
     }
 
+    pub fn confirm_matching_pending(
+        &mut self,
+        user: Option<&str>,
+        text: Option<&str>,
+        confirmed: SlackMessage,
+    ) -> bool {
+        let temp_ts = self.messages.iter().find_map(|m| {
+            let ts = m.ts.as_deref()?;
+            if !self.pending.iter().any(|p| p == ts) {
+                return None;
+            }
+            if m.user.as_deref() == user && m.text.as_deref() == text {
+                Some(ts.to_owned())
+            } else {
+                None
+            }
+        });
+        if let Some(ts) = temp_ts {
+            self.remove(&ts);
+            self.upsert(confirmed);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn merge_update(&mut self, update: SlackMessage) -> bool {
+        let Some(ts) = update.ts.clone() else {
+            self.messages.push(update);
+            return true;
+        };
+        match self.index_of(&ts) {
+            Some(i) => {
+                merge_message(&mut self.messages[i], update);
+                false
+            }
+            None => self.upsert(update),
+        }
+    }
+
     pub fn is_pending(&self, ts: &str) -> bool {
         self.pending.iter().any(|p| p == ts)
+    }
+
+    pub fn latest_ts(&self) -> Option<MessageTs> {
+        self.messages
+            .iter()
+            .filter_map(|m| m.ts.clone())
+            .max_by(|a, b| ts_key(a).cmp(&ts_key(b)))
     }
 
     fn index_of(&self, ts: &str) -> Option<usize> {
@@ -112,7 +180,9 @@ pub struct Workspace {
     pub users: HashMap<UserId, User>,
     pub messages: HashMap<ChannelId, ChannelMessages>,
     pub typing: HashMap<ChannelId, Vec<(UserId, Instant)>>,
+    pub presence: HashMap<UserId, Presence>,
     pub rt: RealtimeStatus,
+    pub rt_generation: u64,
 }
 
 impl Workspace {
@@ -126,7 +196,9 @@ impl Workspace {
             users: HashMap::new(),
             messages: HashMap::new(),
             typing: HashMap::new(),
+            presence: HashMap::new(),
             rt: RealtimeStatus::default(),
+            rt_generation: 0,
         }
     }
 
@@ -143,7 +215,26 @@ impl Workspace {
             }
         }
         for channel in boot.all_channels() {
+            self.apply_channel_read_state(&channel);
             self.channels.insert(channel.id.clone(), channel);
+        }
+        for user in boot.users {
+            self.users.insert(user.id.clone(), user);
+        }
+    }
+
+    pub fn apply_counts(&mut self, counts: crate::slack::models::CountsPage) {
+        for channel in counts.all_channels() {
+            self.apply_channel_read_state(&channel);
+            if let Some(existing) = self.channels.get_mut(&channel.id) {
+                existing.unread_count = channel.unread_count.or(existing.unread_count);
+                existing.unread_count_display = channel
+                    .unread_count_display
+                    .or(existing.unread_count_display);
+                existing.last_read = channel.last_read.or_else(|| existing.last_read.take());
+            } else {
+                self.channels.insert(channel.id.clone(), channel);
+            }
         }
     }
 
@@ -152,9 +243,19 @@ impl Workspace {
     }
 
     pub fn set_typing(&mut self, channel: &str, user: UserId, now: Instant) {
+        if user == self.self_user_id {
+            return;
+        }
         let entry = self.typing.entry(channel.to_owned()).or_default();
         entry.retain(|(u, _)| u != &user);
         entry.push((user, now));
+    }
+
+    pub fn clear_typing_user(&mut self, channel: &str, user: &str) {
+        if let Some(entry) = self.typing.get_mut(channel) {
+            entry.retain(|(u, _)| u != user);
+        }
+        self.typing.retain(|_, v| !v.is_empty());
     }
 
     pub fn prune_typing(&mut self, now: Instant, ttl: Duration) -> bool {
@@ -177,6 +278,44 @@ impl Workspace {
             .map(|(u, _)| self.display_name(u))
             .collect()
     }
+
+    pub fn set_presence(&mut self, user: UserId, presence: Presence) {
+        if user.is_empty() {
+            return;
+        }
+        self.presence.insert(user, presence);
+    }
+
+    pub fn presence_for_channel(&self, channel: &Channel) -> Presence {
+        if !(channel.is_im || channel.is_mpim) {
+            return Presence::Unknown;
+        }
+        dm_user_id(channel)
+            .and_then(|user| self.presence.get(user).copied())
+            .unwrap_or(Presence::Unknown)
+    }
+
+    fn apply_channel_read_state(&mut self, channel: &Channel) {
+        let cm = self.messages.entry(channel.id.clone()).or_default();
+        if let Some(last_read) = &channel.last_read {
+            cm.last_read = Some(last_read.clone());
+        }
+        if let Some(unread) = channel.unread_count.or(channel.unread_count_display) {
+            cm.unread_count = unread;
+        }
+    }
+}
+
+pub fn dm_user_id(channel: &Channel) -> Option<&str> {
+    if let Some(user) = channel.user.as_deref() {
+        return Some(user);
+    }
+    for key in ["user", "user_id"] {
+        if let Some(user) = channel.extra.get(key).and_then(serde_json::Value::as_str) {
+            return Some(user);
+        }
+    }
+    None
 }
 
 pub fn display_name(user: Option<&User>, user_id: &str) -> String {
@@ -231,6 +370,40 @@ pub fn message_text(msg: &SlackMessage) -> String {
 
 pub fn reaction_summary(reaction: &crate::slack::models::Reaction) -> String {
     format!(":{}: {}", reaction.name, reaction.count.max(1))
+}
+
+fn merge_message(existing: &mut SlackMessage, update: SlackMessage) {
+    existing.user = update.user.or_else(|| existing.user.take());
+    existing.bot_id = update.bot_id.or_else(|| existing.bot_id.take());
+    existing.kind = update.kind.or_else(|| existing.kind.take());
+    existing.subtype = update.subtype.or_else(|| existing.subtype.take());
+    existing.client_msg_id = update
+        .client_msg_id
+        .or_else(|| existing.client_msg_id.take());
+    existing.text = update.text.or_else(|| existing.text.take());
+    existing.team = update.team.or_else(|| existing.team.take());
+    existing.channel = update.channel.or_else(|| existing.channel.take());
+    existing.thread_ts = update.thread_ts.or_else(|| existing.thread_ts.take());
+    existing.parent_user_id = update
+        .parent_user_id
+        .or_else(|| existing.parent_user_id.take());
+    existing.reply_count = update.reply_count.or(existing.reply_count);
+    existing.reply_users_count = update.reply_users_count.or(existing.reply_users_count);
+    existing.latest_reply = update.latest_reply.or_else(|| existing.latest_reply.take());
+    if !update.reply_users.is_empty() {
+        existing.reply_users = update.reply_users;
+    }
+    if !update.reactions.is_empty() {
+        existing.reactions = update.reactions;
+    }
+    if !update.blocks.is_empty() {
+        existing.blocks = update.blocks;
+    }
+    if !update.files.is_empty() {
+        existing.files = update.files;
+    }
+    existing.edited = update.edited.or_else(|| existing.edited.take());
+    existing.extra.extend(update.extra);
 }
 
 pub fn ts_key(ts: &str) -> (u64, u64) {
@@ -427,7 +600,9 @@ mod tests {
             users: HashMap::new(),
             messages: HashMap::new(),
             typing: HashMap::new(),
+            presence: HashMap::new(),
             rt: RealtimeStatus::default(),
+            rt_generation: 0,
         };
         let now = Instant::now();
         ws.set_typing("C1", "U1".into(), now - Duration::from_secs(10));

@@ -227,6 +227,19 @@ fn redact_kv(input: &str, pattern: &str, end_at: impl Fn(&str) -> usize) -> Stri
 }
 
 impl PreparedRequest {
+    pub fn retry_safe(&self) -> bool {
+        self.method == "GET"
+            || [
+                "/api/client.userBoot?",
+                "/api/client.counts?",
+                "/api/conversations.history?",
+                "/api/conversations.replies?",
+                "/api/conversations.mark?",
+            ]
+            .iter()
+            .any(|endpoint| self.url.contains(endpoint))
+    }
+
     pub fn redacted_debug(&self) -> String {
         let body = match &self.body {
             RequestBody::Form(fields) => fields
@@ -331,5 +344,16 @@ mod tests {
         assert!(debug.contains("token=REDACTED"));
         assert!(debug.contains("channel=C123"));
         assert!(debug.contains("text=hi"));
+    }
+
+    #[test]
+    fn retry_safe_only_allows_idempotent_requests() {
+        let client = SlackClient::default();
+        let workspace = workspace();
+        let history = client.rest_form(&workspace, "conversations.history", Vec::new());
+        let send = client.rest_form(&workspace, "chat.postMessage", Vec::new());
+
+        assert!(history.retry_safe());
+        assert!(!send.retry_safe());
     }
 }

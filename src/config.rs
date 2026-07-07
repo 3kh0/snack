@@ -54,6 +54,12 @@ pub fn config_dir() -> Result<PathBuf, AppError> {
     Ok(dirs.config_dir().to_path_buf())
 }
 
+pub fn data_dir() -> Result<PathBuf, AppError> {
+    let dirs = directories::ProjectDirs::from("com", "hackclub", "snack")
+        .ok_or_else(|| AppError::Io(std::io::Error::other("no home directory for data path")))?;
+    Ok(dirs.data_local_dir().to_path_buf())
+}
+
 fn session_path() -> Result<PathBuf, AppError> {
     Ok(config_dir()?.join("session.json"))
 }

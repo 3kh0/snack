@@ -10,9 +10,17 @@ use super::models::{Message as SlackMessage, TeamId};
 
 #[derive(Debug, Clone)]
 pub enum RtUpdate {
-    Connected(Connection),
-    Event(RtEvent),
-    Disconnected,
+    Connected {
+        generation: u64,
+        connection: Connection,
+    },
+    Event {
+        generation: u64,
+        event: RtEvent,
+    },
+    Disconnected {
+        generation: u64,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -42,6 +50,13 @@ pub fn flannel_url(token: &str, team_id: &str) -> String {
     format!("wss://wss-primary.slack.com/?token={token}&flannel=3&gateway_server={team_id}-1")
 }
 
+pub fn user_typing_frame(channel: &str) -> String {
+    format!(
+        r#"{{"type":"user_typing","channel":{}}}"#,
+        serde_json::json!(channel)
+    )
+}
+
 pub fn connect(params: ConnectParams) -> Subscription<(TeamId, RtUpdate)> {
     Subscription::run_with(params.clone(), build_live_stream)
 }
@@ -50,15 +65,17 @@ fn build_live_stream(params: &ConnectParams) -> impl Stream<Item = (TeamId, RtUp
     let params = params.clone();
     iced::stream::channel(64, move |mut output| async move {
         let mut backoff = Duration::from_secs(1);
+        let mut generation = 0;
         loop {
-            match run_connection(&params, &mut output).await {
+            generation += 1;
+            match run_connection(&params, generation, &mut output).await {
                 Ok(()) => backoff = Duration::from_secs(1),
                 Err(e) => {
                     tracing::warn!(team = %params.team, error = %e, "flannel connection ended");
                 }
             }
             let _ = output
-                .send((params.team.clone(), RtUpdate::Disconnected))
+                .send((params.team.clone(), RtUpdate::Disconnected { generation }))
                 .await;
             tokio::time::sleep(backoff).await;
             backoff = (backoff * 2).min(Duration::from_secs(30));
@@ -68,7 +85,11 @@ fn build_live_stream(params: &ConnectParams) -> impl Stream<Item = (TeamId, RtUp
 
 type OutSink = iced::futures::channel::mpsc::Sender<(TeamId, RtUpdate)>;
 
-async fn run_connection(params: &ConnectParams, output: &mut OutSink) -> Result<(), String> {
+async fn run_connection(
+    params: &ConnectParams,
+    generation: u64,
+    output: &mut OutSink,
+) -> Result<(), String> {
     let http = wreq::Client::builder()
         .emulation(wreq_util::Emulation::Chrome140)
         .build()
@@ -88,7 +109,13 @@ async fn run_connection(params: &ConnectParams, output: &mut OutSink) -> Result<
 
     let (tx, mut rx) = mpsc::channel::<String>(64);
     if output
-        .send((params.team.clone(), RtUpdate::Connected(Connection { tx })))
+        .send((
+            params.team.clone(),
+            RtUpdate::Connected {
+                generation,
+                connection: Connection { tx },
+            },
+        ))
         .await
         .is_err()
     {
@@ -104,7 +131,14 @@ async fn run_connection(params: &ConnectParams, output: &mut OutSink) -> Result<
             incoming = socket.recv() => match incoming {
                 Some(Ok(wreq::ws::message::Message::Text(text))) => {
                     if let Some(event) = parse_event(text.as_str()) {
-                        if output.send((params.team.clone(), RtUpdate::Event(event))).await.is_err() {
+                        if output
+                            .send((
+                                params.team.clone(),
+                                RtUpdate::Event { generation, event },
+                            ))
+                            .await
+                            .is_err()
+                        {
                             return Ok(());
                         }
                     }
@@ -251,5 +285,13 @@ mod tests {
         assert!(url.contains("token=xoxc-abc"));
         assert!(url.contains("gateway_server=T123-1"));
         assert!(url.starts_with("wss://"));
+    }
+
+    #[test]
+    fn user_typing_frame_contains_channel() {
+        assert_eq!(
+            user_typing_frame("C1"),
+            r#"{"type":"user_typing","channel":"C1"}"#
+        );
     }
 }

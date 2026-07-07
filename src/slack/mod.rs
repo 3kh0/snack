@@ -16,6 +16,13 @@ pub enum Error {
     MissingWorkspace(models::TeamId),
     #[error("Slack API returned error: {0}")]
     Api(String),
+    #[error("Slack rate limited request; retry after {retry_after_secs:?} seconds")]
+    RateLimited { retry_after_secs: Option<u64> },
+    #[error("Slack HTTP status {status}; retry after {retry_after_secs:?} seconds")]
+    HttpStatus {
+        status: u16,
+        retry_after_secs: Option<u64>,
+    },
     #[error("transport error: {0}")]
     Transport(String),
     #[error("transport not up")]
