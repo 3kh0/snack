@@ -209,11 +209,50 @@ pub fn parse_event(text: &str) -> Option<RtEvent> {
                 .unwrap_or("")
                 .to_owned(),
         }),
+        "reaction_added" => parse_reaction_event(value, true),
+        "reaction_removed" => parse_reaction_event(value, false),
         _ => {
             let raw: RawEvent = serde_json::from_value(value).ok()?;
             Some(RtEvent::Unknown(raw))
         }
     }
+}
+
+fn parse_reaction_event(value: Value, added: bool) -> Option<RtEvent> {
+    let item = value.get("item")?;
+    if item.get("type").and_then(Value::as_str) != Some("message") {
+        return None;
+    }
+    let channel = item.get("channel").and_then(Value::as_str)?.to_owned();
+    let ts = item.get("ts").and_then(Value::as_str)?.to_owned();
+    let user = value
+        .get("user")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    let reaction = value
+        .get("reaction")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    if reaction.is_empty() {
+        return None;
+    }
+    Some(if added {
+        RtEvent::ReactionAdded {
+            channel,
+            ts,
+            user,
+            reaction,
+        }
+    } else {
+        RtEvent::ReactionRemoved {
+            channel,
+            ts,
+            user,
+            reaction,
+        }
+    })
 }
 
 #[cfg(test)]
@@ -264,6 +303,31 @@ mod tests {
         assert!(matches!(
             parse_event(frame),
             Some(RtEvent::UserTyping { .. })
+        ));
+    }
+
+    #[test]
+    fn parses_reaction_events_for_messages() {
+        let added = r#"{"type":"reaction_added","user":"U1","reaction":"thumbsup","item":{"type":"message","channel":"C1","ts":"1.2"}}"#;
+        match parse_event(added) {
+            Some(RtEvent::ReactionAdded {
+                channel,
+                ts,
+                user,
+                reaction,
+            }) => {
+                assert_eq!(channel, "C1");
+                assert_eq!(ts, "1.2");
+                assert_eq!(user, "U1");
+                assert_eq!(reaction, "thumbsup");
+            }
+            other => panic!("expected ReactionAdded, got {other:?}"),
+        }
+
+        let removed = r#"{"type":"reaction_removed","user":"U1","reaction":"eyes","item":{"type":"message","channel":"C1","ts":"1.2"}}"#;
+        assert!(matches!(
+            parse_event(removed),
+            Some(RtEvent::ReactionRemoved { reaction, .. }) if reaction == "eyes"
         ));
     }
 

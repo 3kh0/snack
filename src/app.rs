@@ -48,6 +48,20 @@ pub enum Message {
     CountsLoaded(TeamId, Result<CountsPage, SlackError>),
     HistoryLoaded(TeamId, ChannelId, Result<HistoryPage, SlackError>),
     ChannelMarked(TeamId, ChannelId, MessageTs, Result<(), SlackError>),
+    ReactionPressed {
+        channel: ChannelId,
+        ts: MessageTs,
+        name: String,
+    },
+    ReactionUpdated {
+        team: TeamId,
+        channel: ChannelId,
+        ts: MessageTs,
+        user: String,
+        name: String,
+        added: bool,
+        result: Result<(), SlackError>,
+    },
     Realtime(TeamId, u64, RtEvent),
     RtConnected(TeamId, u64, Connection),
     RtDisconnected(TeamId, u64),
@@ -385,6 +399,34 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
 
+        Message::ReactionPressed { channel, ts, name } => toggle_reaction(app, channel, ts, name),
+
+        Message::ReactionUpdated {
+            team,
+            channel,
+            ts,
+            user,
+            name,
+            added,
+            result,
+        } => {
+            if let Err(e) = result {
+                app.toast(format!("reaction failed: {e}"));
+                if let Some(cm) = app
+                    .workspaces
+                    .get_mut(&team)
+                    .and_then(|ws| ws.messages.get_mut(&channel))
+                {
+                    cm.apply_reaction(&ts, &user, &name, !added);
+                }
+                if is_auth_error(&e) {
+                    app.screen = Screen::Login;
+                }
+                persist_workspace(app, &team);
+            }
+            Task::none()
+        }
+
         Message::Realtime(team, generation, event) => {
             apply_realtime(app, &team, generation, event);
             persist_workspace(app, &team);
@@ -569,6 +611,80 @@ fn send_pressed(app: &mut App) -> Task<Message> {
     )
 }
 
+fn toggle_reaction(
+    app: &mut App,
+    channel: ChannelId,
+    ts: MessageTs,
+    name: String,
+) -> Task<Message> {
+    let Some(team) = app.active_team.clone() else {
+        return Task::none();
+    };
+    let Some((transport, session)) = app.live() else {
+        return Task::none();
+    };
+    let Some(ws_session) = session.workspaces.get(&team) else {
+        return Task::none();
+    };
+    let transport = transport.clone();
+    let client = app.client.clone();
+    let ws_session = ws_session.clone();
+    let Some(ws) = app.workspaces.get_mut(&team) else {
+        return Task::none();
+    };
+    let user = ws.self_user_id.clone();
+    let Some(cm) = ws.messages.get_mut(&channel) else {
+        return Task::none();
+    };
+    let adding = !cm
+        .messages
+        .iter()
+        .find(|m| m.ts.as_deref() == Some(ts.as_str()))
+        .and_then(|m| m.reactions.iter().find(|r| r.name == name))
+        .is_some_and(|r| crate::state::reaction_has_user(r, &user));
+
+    cm.apply_reaction(&ts, &user, &name, adding);
+    persist_workspace(app, &team);
+
+    let send_channel = channel.clone();
+    let send_ts = ts.clone();
+    let send_name = name.clone();
+    Task::perform(
+        async move {
+            if adding {
+                api::add_reaction(
+                    &transport,
+                    &client,
+                    &ws_session,
+                    send_channel,
+                    send_ts,
+                    send_name,
+                )
+                .await
+            } else {
+                api::remove_reaction(
+                    &transport,
+                    &client,
+                    &ws_session,
+                    send_channel,
+                    send_ts,
+                    send_name,
+                )
+                .await
+            }
+        },
+        move |result| Message::ReactionUpdated {
+            team: team.clone(),
+            channel: channel.clone(),
+            ts: ts.clone(),
+            user: user.clone(),
+            name: name.clone(),
+            added: adding,
+            result,
+        },
+    )
+}
+
 fn apply_realtime(app: &mut App, team: &str, generation: u64, event: RtEvent) {
     let now = Instant::now();
     let Some(ws) = app.workspaces.get_mut(team) else {
@@ -617,6 +733,27 @@ fn apply_realtime(app: &mut App, team: &str, generation: u64, event: RtEvent) {
         }
         RtEvent::PresenceChange { user, presence } => {
             ws.set_presence(user, Presence::from_slack(&presence));
+        }
+        RtEvent::ReactionAdded {
+            channel,
+            ts,
+            user,
+            reaction,
+        } => {
+            ws.messages
+                .entry(channel)
+                .or_default()
+                .apply_reaction(&ts, &user, &reaction, true);
+        }
+        RtEvent::ReactionRemoved {
+            channel,
+            ts,
+            user,
+            reaction,
+        } => {
+            if let Some(cm) = ws.messages.get_mut(&channel) {
+                cm.apply_reaction(&ts, &user, &reaction, false);
+            }
         }
         RtEvent::Unknown(raw) => {
             tracing::debug!(kind = %raw.kind, "unknown realtime event, ignoring");

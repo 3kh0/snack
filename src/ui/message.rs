@@ -1,4 +1,4 @@
-use iced::widget::{Column, Row, container, text};
+use iced::widget::{Column, Row, button, container, text};
 use iced::{Element, Font};
 
 use super::theme;
@@ -6,7 +6,12 @@ use crate::app::Message;
 use crate::slack::models::Message as SlackMessage;
 use crate::state::{self, Workspace};
 
-pub fn row<'a>(ws: &Workspace, msg: &SlackMessage, pending: bool) -> Element<'a, Message> {
+pub fn row<'a>(
+    ws: &Workspace,
+    channel_id: &str,
+    msg: &SlackMessage,
+    pending: bool,
+) -> Element<'a, Message> {
     let author = msg
         .user
         .as_deref()
@@ -53,11 +58,25 @@ pub fn row<'a>(ws: &Workspace, msg: &SlackMessage, pending: bool) -> Element<'a,
     if !msg.reactions.is_empty() {
         let mut chips = Row::new().spacing(theme::SPACE_XS);
         for r in &msg.reactions {
-            chips = chips.push(
-                container(text(state::reaction_summary(r)).size(theme::TEXT_SM))
+            let label = state::reaction_summary(r);
+            let active = state::reaction_has_user(r, &ws.self_user_id);
+            let chip: Element<'a, Message> = if let Some(ts) = msg.ts.clone() {
+                button(text(label).size(theme::TEXT_SM))
                     .padding([2, 6])
-                    .style(theme::reaction_chip),
-            );
+                    .style(theme::reaction_button(active))
+                    .on_press(Message::ReactionPressed {
+                        channel: channel_id.to_owned(),
+                        ts,
+                        name: r.name.clone(),
+                    })
+                    .into()
+            } else {
+                container(text(label).size(theme::TEXT_SM))
+                    .padding([2, 6])
+                    .style(theme::reaction_chip)
+                    .into()
+            };
+            chips = chips.push(chip);
         }
         col = col.push(chips);
     }

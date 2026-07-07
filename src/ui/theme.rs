@@ -60,3 +60,22 @@ pub fn reaction_chip(_theme: &Theme) -> container::Style {
         ..container::Style::default()
     }
 }
+
+pub fn reaction_button(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let hovered = matches!(status, button::Status::Hovered);
+        let background = if active {
+            Color::from_rgb(0.82, 0.91, 1.0)
+        } else if hovered {
+            Color::from_rgb(0.84, 0.88, 0.94)
+        } else {
+            REACTION_BG
+        };
+        button::Style {
+            background: Some(Background::Color(background)),
+            text_color: Color::from_rgb(0.14, 0.16, 0.20),
+            border: Border::default().rounded(10.0),
+            ..button::Style::default()
+        }
+    }
+}

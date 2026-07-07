@@ -202,6 +202,36 @@ pub async fn send_message(
     decode(value, "chat.postMessage")
 }
 
+pub async fn add_reaction(
+    transport: &Transport,
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    channel: ChannelId,
+    timestamp: MessageTs,
+    name: String,
+) -> Result<(), Error> {
+    transport
+        .execute(reactions_add(client, workspace, channel, timestamp, name))
+        .await?;
+    Ok(())
+}
+
+pub async fn remove_reaction(
+    transport: &Transport,
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    channel: ChannelId,
+    timestamp: MessageTs,
+    name: String,
+) -> Result<(), Error> {
+    transport
+        .execute(reactions_remove(
+            client, workspace, channel, timestamp, name,
+        ))
+        .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,6 +311,23 @@ mod tests {
         assert!(request.url.contains("/api/conversations.mark?"));
         assert!(fields.contains(&("channel".into(), "C0159TSJVH8".into())));
         assert!(fields.contains(&("ts".into(), "1783372400.111111".into())));
+    }
+
+    #[test]
+    fn reaction_request_includes_message_target() {
+        let request = reactions_add(
+            &SlackClient::default(),
+            &workspace(),
+            "C0159TSJVH8".into(),
+            "1783372360.741769".into(),
+            "thumbsup".into(),
+        );
+        let fields = form_fields(&request);
+
+        assert!(request.url.contains("/api/reactions.add?"));
+        assert!(fields.contains(&("channel".into(), "C0159TSJVH8".into())));
+        assert!(fields.contains(&("timestamp".into(), "1783372360.741769".into())));
+        assert!(fields.contains(&("name".into(), "thumbsup".into())));
     }
 
     #[test]

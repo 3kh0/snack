@@ -32,5 +32,17 @@ pub enum RtEvent {
         user: UserId,
         presence: String,
     },
+    ReactionAdded {
+        channel: ChannelId,
+        ts: MessageTs,
+        user: UserId,
+        reaction: String,
+    },
+    ReactionRemoved {
+        channel: ChannelId,
+        ts: MessageTs,
+        user: UserId,
+        reaction: String,
+    },
     Unknown(RawEvent),
 }

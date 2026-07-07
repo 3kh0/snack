@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
 
 use crate::slack::models::{
-    Channel, ChannelId, Message as SlackMessage, MessageTs, TeamId, User, UserId,
+    Channel, ChannelId, Message as SlackMessage, MessageTs, Reaction, TeamId, User, UserId,
 };
 use crate::slack::realtime::Connection;
 
@@ -161,6 +161,13 @@ impl ChannelMessages {
             .iter()
             .filter_map(|m| m.ts.clone())
             .max_by(|a, b| ts_key(a).cmp(&ts_key(b)))
+    }
+
+    pub fn apply_reaction(&mut self, ts: &str, user: &str, name: &str, added: bool) -> bool {
+        let Some(i) = self.index_of(ts) else {
+            return false;
+        };
+        apply_message_reaction(&mut self.messages[i], user, name, added)
     }
 
     fn index_of(&self, ts: &str) -> Option<usize> {
@@ -370,6 +377,55 @@ pub fn message_text(msg: &SlackMessage) -> String {
 
 pub fn reaction_summary(reaction: &crate::slack::models::Reaction) -> String {
     format!(":{}: {}", reaction.name, reaction.count.max(1))
+}
+
+pub fn reaction_has_user(reaction: &Reaction, user: &str) -> bool {
+    !user.is_empty() && reaction.users.iter().any(|u| u == user)
+}
+
+fn apply_message_reaction(msg: &mut SlackMessage, user: &str, name: &str, added: bool) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+
+    if added {
+        if let Some(reaction) = msg.reactions.iter_mut().find(|r| r.name == name) {
+            if reaction_has_user(reaction, user) {
+                return false;
+            }
+            if !user.is_empty() {
+                reaction.users.push(user.to_owned());
+            }
+            reaction.count = reaction.count.saturating_add(1).max(1);
+            return true;
+        }
+        msg.reactions.push(Reaction {
+            name: name.to_owned(),
+            users: if user.is_empty() {
+                Vec::new()
+            } else {
+                vec![user.to_owned()]
+            },
+            count: 1,
+            ..Default::default()
+        });
+        return true;
+    }
+
+    let Some(i) = msg.reactions.iter().position(|r| r.name == name) else {
+        return false;
+    };
+    let reaction = &mut msg.reactions[i];
+    let before_users = reaction.users.len();
+    reaction.users.retain(|u| u != user);
+    let removed_known_user = before_users != reaction.users.len();
+    if removed_known_user || reaction.users.is_empty() {
+        reaction.count = reaction.count.saturating_sub(1);
+    }
+    if reaction.count == 0 {
+        msg.reactions.remove(i);
+    }
+    true
 }
 
 fn merge_message(existing: &mut SlackMessage, update: SlackMessage) {
@@ -587,6 +643,29 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(reaction_summary(&r), ":thumbsup: 3");
+    }
+
+    #[test]
+    fn applies_reaction_add_remove_without_double_counting() {
+        let mut cm = ChannelMessages::default();
+        cm.upsert(msg("1.0", "hello"));
+
+        assert!(cm.apply_reaction("1.0", "U1", "thumbsup", true));
+        assert_eq!(cm.messages[0].reactions[0].count, 1);
+        assert_eq!(cm.messages[0].reactions[0].users, vec!["U1"]);
+
+        assert!(!cm.apply_reaction("1.0", "U1", "thumbsup", true));
+        assert_eq!(cm.messages[0].reactions[0].count, 1);
+
+        assert!(cm.apply_reaction("1.0", "U2", "thumbsup", true));
+        assert_eq!(cm.messages[0].reactions[0].count, 2);
+
+        assert!(cm.apply_reaction("1.0", "U1", "thumbsup", false));
+        assert_eq!(cm.messages[0].reactions[0].count, 1);
+        assert_eq!(cm.messages[0].reactions[0].users, vec!["U2"]);
+
+        assert!(cm.apply_reaction("1.0", "U2", "thumbsup", false));
+        assert!(cm.messages[0].reactions.is_empty());
     }
 
     #[test]
