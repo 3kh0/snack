@@ -308,6 +308,48 @@ impl BootData {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SearchMessagesPage {
+    #[serde(default)]
+    pub items: Vec<SearchItem>,
+    #[serde(default)]
+    pub pagination: Option<SearchPagination>,
+    #[serde(default)]
+    pub query: Option<String>,
+    #[serde(default)]
+    pub module: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SearchItem {
+    #[serde(default)]
+    pub iid: Option<String>,
+    #[serde(default)]
+    pub team: Option<TeamId>,
+    #[serde(default)]
+    pub channel: Option<Channel>,
+    #[serde(default)]
+    pub messages: Vec<Message>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SearchPagination {
+    #[serde(default)]
+    pub page: Option<u32>,
+    #[serde(default)]
+    pub page_count: Option<u32>,
+    #[serde(default)]
+    pub per_page: Option<u32>,
+    #[serde(default)]
+    pub total_count: Option<u64>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EdgeResults<T> {
     #[serde(default)]
     pub ok: bool,
@@ -405,6 +447,55 @@ mod fixture_tests {
             Some("alice")
         );
         assert_eq!(page.failed_ids, vec!["U_MISSING".to_owned()]);
+    }
+
+    #[test]
+    fn deserialize_search_messages_page() {
+        let page: SearchMessagesPage = serde_json::from_str(
+            r#"{
+                "ok": true,
+                "module": "messages",
+                "query": "hello",
+                "items": [
+                    {
+                        "iid": "21c94942-e73c-4cb6-a605-44994d411930",
+                        "team": "T0266FRGM",
+                        "channel": {"id":"C07TM4C0AQ5","name":"help","is_channel":true,"is_private":false},
+                        "messages": [{
+                            "type":"message",
+                            "text":"Hello, can anyone help me?",
+                            "ts":"1783431840.570159",
+                            "thread_ts":"1783431840.570159",
+                            "user":"U0BF7PL6RQF",
+                            "username":"lolfero095",
+                            "reply_count":5,
+                            "reactions":[{"name":"white_check_mark","count":1,"users":["U0ASE1R05FW"]}],
+                            "permalink":"https://hackclub.slack.com/archives/C07TM4C0AQ5/p1783431840570159"
+                        }]
+                    }
+                ],
+                "pagination": {"first":1,"last":5,"page":1,"page_count":23551,"per_page":5,"total_count":117752}
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(page.module.as_deref(), Some("messages"));
+        assert_eq!(page.items.len(), 1);
+        let item = &page.items[0];
+        assert_eq!(item.channel.as_ref().unwrap().name.as_deref(), Some("help"));
+        let msg = &item.messages[0];
+        assert_eq!(msg.text.as_deref(), Some("Hello, can anyone help me?"));
+        assert_eq!(msg.ts.as_deref(), Some("1783431840.570159"));
+        assert_eq!(msg.reply_count, Some(5));
+        assert_eq!(msg.reactions[0].name, "white_check_mark");
+        assert_eq!(
+            msg.extra["permalink"].as_str(),
+            Some("https://hackclub.slack.com/archives/C07TM4C0AQ5/p1783431840570159")
+        );
+        let pagination = page.pagination.unwrap();
+        assert_eq!(pagination.page, Some(1));
+        assert_eq!(pagination.page_count, Some(23551));
+        assert_eq!(pagination.total_count, Some(117752));
     }
 
     #[test]

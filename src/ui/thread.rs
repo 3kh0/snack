@@ -14,6 +14,7 @@ pub fn view<'a>(
     replies: Option<&ChannelMessages>,
     value: &str,
     file_previews: &HashMap<String, FilePreview>,
+    editing: Option<(&str, &str)>,
 ) -> Element<'a, Message> {
     let header = row![
         text("Thread").size(theme::TEXT_LG).font(Font {
@@ -33,14 +34,34 @@ pub fn view<'a>(
                     .as_deref()
                     .map(|ts| cm.is_pending(ts))
                     .unwrap_or(false);
-                col = col.push(message::row(ws, channel_id, msg, pending, file_previews));
+                let edit = editing
+                    .filter(|(ts, _)| Some(*ts) == msg.ts.as_deref())
+                    .map(|(_, value)| value);
+                col = col.push(message::row(
+                    ws,
+                    channel_id,
+                    msg,
+                    pending,
+                    file_previews,
+                    edit,
+                ));
             }
             scrollable(col).height(Fill).into()
         }
         _ => {
             let mut col = Column::new().spacing(theme::SPACE_XS);
             if let Some(root) = root {
-                col = col.push(message::row(ws, channel_id, root, false, file_previews));
+                let edit = editing
+                    .filter(|(ts, _)| Some(*ts) == root.ts.as_deref())
+                    .map(|(_, value)| value);
+                col = col.push(message::row(
+                    ws,
+                    channel_id,
+                    root,
+                    false,
+                    file_previews,
+                    edit,
+                ));
             }
             let status = if replies.map(|cm| cm.loaded).unwrap_or(false) {
                 "No replies yet."

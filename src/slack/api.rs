@@ -2,7 +2,9 @@ use crate::config::WorkspaceSession;
 
 use super::Error;
 use super::client::{PreparedRequest, SlackClient};
-use super::models::{BootData, ChannelId, CountsPage, HistoryPage, MessageTs, SentMessage};
+use super::models::{
+    BootData, ChannelId, CountsPage, HistoryPage, MessageTs, SearchMessagesPage, SentMessage,
+};
 use super::transport::Transport;
 pub fn user_boot(client: &SlackClient, workspace: &WorkspaceSession) -> PreparedRequest {
     client.rest_form(
@@ -82,6 +84,74 @@ pub fn chat_post_message(
     let mut fields = vec![("channel", channel), ("text", text)];
     push_opt(&mut fields, "thread_ts", thread_ts);
     client.rest_form(workspace, "chat.postMessage", fields)
+}
+
+#[derive(Debug, Clone)]
+pub struct SearchArgs {
+    pub query: String,
+    pub count: u32,
+    pub page: u32,
+}
+
+impl SearchArgs {
+    pub fn new(query: impl Into<String>) -> Self {
+        SearchArgs {
+            query: query.into(),
+            count: 20,
+            page: 1,
+        }
+    }
+}
+
+pub fn search_messages(
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    args: SearchArgs,
+) -> PreparedRequest {
+    client.rest_form(
+        workspace,
+        "search.modules.messages",
+        vec![
+            ("module", "messages".to_owned()),
+            ("query", args.query),
+            ("count", args.count.to_string()),
+            ("page", args.page.to_string()),
+            ("sort", "timestamp".to_owned()),
+            ("sort_dir", "desc".to_owned()),
+            ("highlight", "true".to_owned()),
+            ("extracts", "true".to_owned()),
+            ("extra_message_data", "true".to_owned()),
+            ("client_req_id", uuid::Uuid::new_v4().to_string()),
+            ("search_session_id", uuid::Uuid::new_v4().to_string()),
+        ],
+    )
+}
+
+pub fn chat_update(
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    channel: ChannelId,
+    ts: MessageTs,
+    text: String,
+) -> PreparedRequest {
+    client.rest_form(
+        workspace,
+        "chat.update",
+        vec![("channel", channel), ("ts", ts), ("text", text)],
+    )
+}
+
+pub fn chat_delete(
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    channel: ChannelId,
+    ts: MessageTs,
+) -> PreparedRequest {
+    client.rest_form(
+        workspace,
+        "chat.delete",
+        vec![("channel", channel), ("ts", ts)],
+    )
 }
 
 pub fn reactions_add(
@@ -218,6 +288,45 @@ pub async fn send_message(
     decode(value, "chat.postMessage")
 }
 
+pub async fn fetch_search_messages(
+    transport: &Transport,
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    args: SearchArgs,
+) -> Result<SearchMessagesPage, Error> {
+    let value = transport
+        .execute(search_messages(client, workspace, args))
+        .await?;
+    decode(value, "search.modules.messages")
+}
+
+pub async fn edit_message(
+    transport: &Transport,
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    channel: ChannelId,
+    ts: MessageTs,
+    text: String,
+) -> Result<SentMessage, Error> {
+    let value = transport
+        .execute(chat_update(client, workspace, channel, ts, text))
+        .await?;
+    decode(value, "chat.update")
+}
+
+pub async fn delete_message(
+    transport: &Transport,
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    channel: ChannelId,
+    ts: MessageTs,
+) -> Result<(), Error> {
+    transport
+        .execute(chat_delete(client, workspace, channel, ts))
+        .await?;
+    Ok(())
+}
+
 pub async fn add_reaction(
     transport: &Transport,
     client: &SlackClient,
@@ -345,6 +454,60 @@ mod tests {
         assert!(fields.contains(&("channel".into(), "C0159TSJVH8".into())));
         assert!(fields.contains(&("text".into(), "reply from snack".into())));
         assert!(fields.contains(&("thread_ts".into(), "1783372360.741769".into())));
+    }
+
+    #[test]
+    fn search_request_targets_messages_module_with_query_and_page() {
+        let request = search_messages(
+            &SlackClient::default(),
+            &workspace(),
+            SearchArgs {
+                query: "deploy failed".into(),
+                count: 20,
+                page: 2,
+            },
+        );
+        let fields = form_fields(&request);
+
+        assert!(request.url.contains("/api/search.modules.messages?"));
+        assert!(fields.contains(&("module".into(), "messages".into())));
+        assert!(fields.contains(&("query".into(), "deploy failed".into())));
+        assert!(fields.contains(&("count".into(), "20".into())));
+        assert!(fields.contains(&("page".into(), "2".into())));
+        assert!(fields.iter().any(|(k, _)| k == "client_req_id"));
+        assert!(fields.iter().any(|(k, _)| k == "search_session_id"));
+    }
+
+    #[test]
+    fn update_request_includes_channel_ts_and_text() {
+        let request = chat_update(
+            &SlackClient::default(),
+            &workspace(),
+            "C0159TSJVH8".into(),
+            "1783372360.741769".into(),
+            "edited body".into(),
+        );
+        let fields = form_fields(&request);
+
+        assert!(request.url.contains("/api/chat.update?"));
+        assert!(fields.contains(&("channel".into(), "C0159TSJVH8".into())));
+        assert!(fields.contains(&("ts".into(), "1783372360.741769".into())));
+        assert!(fields.contains(&("text".into(), "edited body".into())));
+    }
+
+    #[test]
+    fn delete_request_includes_channel_and_ts() {
+        let request = chat_delete(
+            &SlackClient::default(),
+            &workspace(),
+            "C0159TSJVH8".into(),
+            "1783372360.741769".into(),
+        );
+        let fields = form_fields(&request);
+
+        assert!(request.url.contains("/api/chat.delete?"));
+        assert!(fields.contains(&("channel".into(), "C0159TSJVH8".into())));
+        assert!(fields.contains(&("ts".into(), "1783372360.741769".into())));
     }
 
     #[test]

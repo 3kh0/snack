@@ -68,7 +68,14 @@ fn rich_element_lines(ws: &Workspace, element: &Value) -> Vec<String> {
             .flatten()
             .map(|item| format!("- {}", rich_inline_text(ws, item)))
             .collect(),
-        Some("rich_text_preformatted") => vec![rich_inline_text(ws, element)],
+        Some("rich_text_preformatted") => {
+            let body = rich_inline_text(ws, element);
+            if body.trim().is_empty() {
+                Vec::new()
+            } else {
+                vec!["```".to_owned(), body, "```".to_owned()]
+            }
+        }
         Some("rich_text_quote") => vec![format!("> {}", rich_inline_text(ws, element))],
         _ => Vec::new(),
     }
@@ -86,11 +93,10 @@ fn rich_inline_text(ws: &Workspace, element: &Value) -> String {
 
 fn rich_leaf_text(ws: &Workspace, leaf: &Value) -> String {
     match value_type(leaf) {
-        Some("text") => leaf
-            .get("text")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned(),
+        Some("text") => {
+            let raw = leaf.get("text").and_then(Value::as_str).unwrap_or_default();
+            apply_mrkdwn_style(raw, leaf.get("style"))
+        }
         Some("emoji") => leaf
             .get("name")
             .and_then(Value::as_str)
@@ -137,6 +143,30 @@ fn rich_leaf_text(ws: &Workspace, leaf: &Value) -> String {
             .to_owned(),
         _ => String::new(),
     }
+}
+
+fn apply_mrkdwn_style(raw: &str, style: Option<&Value>) -> String {
+    let Some(style) = style else {
+        return raw.to_owned();
+    };
+    if raw.is_empty() {
+        return raw.to_owned();
+    }
+    let flag = |key: &str| style.get(key).and_then(Value::as_bool).unwrap_or(false);
+    let mut out = raw.to_owned();
+    if flag("code") {
+        return format!("`{out}`");
+    }
+    if flag("bold") {
+        out = format!("*{out}*");
+    }
+    if flag("italic") {
+        out = format!("_{out}_");
+    }
+    if flag("strike") {
+        out = format!("~{out}~");
+    }
+    out
 }
 
 fn text_object(value: &Value) -> Option<String> {
@@ -235,6 +265,40 @@ mod tests {
         assert_eq!(
             lines(&ws(), &blocks),
             vec!["Hi @alice in #general :wave: example"]
+        );
+    }
+
+    #[test]
+    fn renders_inline_styles_and_code_block() {
+        let blocks = vec![json!({
+            "type": "rich_text",
+            "elements": [
+                {
+                    "type": "rich_text_section",
+                    "elements": [
+                        {"type": "text", "text": "run "},
+                        {"type": "text", "text": "cargo test", "style": {"code": true}},
+                        {"type": "text", "text": " "},
+                        {"type": "text", "text": "now", "style": {"bold": true}},
+                        {"type": "text", "text": " "},
+                        {"type": "text", "text": "maybe", "style": {"italic": true, "strike": true}}
+                    ]
+                },
+                {
+                    "type": "rich_text_preformatted",
+                    "elements": [{"type": "text", "text": "let x = 1;"}]
+                }
+            ]
+        })];
+
+        assert_eq!(
+            lines(&ws(), &blocks),
+            vec![
+                "run `cargo test` *now* ~_maybe_~",
+                "```",
+                "let x = 1;",
+                "```",
+            ]
         );
     }
 }

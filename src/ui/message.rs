@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use iced::widget::{Column, Row, button, container, image, text};
+use iced::widget::{Column, Row, button, container, image, text, text_input};
 use iced::{ContentFit, Element, Font, Length};
 
 use super::{blocks, theme};
@@ -14,6 +14,7 @@ pub fn row<'a>(
     msg: &SlackMessage,
     pending: bool,
     file_previews: &HashMap<String, FilePreview>,
+    edit_text: Option<&str>,
 ) -> Element<'a, Message> {
     let author = msg
         .user
@@ -40,6 +41,66 @@ pub fn row<'a>(
     }
     if pending {
         header = header.push(text("sending…").size(theme::TEXT_SM).color(theme::MUTED));
+    }
+
+    let editable = !pending
+        && msg.bot_id.is_none()
+        && msg.ts.is_some()
+        && msg.user.as_deref() == Some(ws.self_user_id.as_str());
+    if editable && edit_text.is_none() {
+        if let Some(ts) = msg.ts.clone() {
+            let del_ts = ts.clone();
+            header = header
+                .push(
+                    button(text("Edit").size(theme::TEXT_SM))
+                        .padding([2, 0])
+                        .style(theme::link_button)
+                        .on_press(Message::EditPressed {
+                            channel: channel_id.to_owned(),
+                            ts,
+                        }),
+                )
+                .push(
+                    button(text("Delete").size(theme::TEXT_SM))
+                        .padding([2, 0])
+                        .style(theme::link_button)
+                        .on_press(Message::DeletePressed {
+                            channel: channel_id.to_owned(),
+                            ts: del_ts,
+                        }),
+                );
+        }
+    }
+
+    if let Some(value) = edit_text {
+        let input = text_input("Edit message", value)
+            .on_input(Message::EditComposerChanged)
+            .on_submit(Message::EditSubmit)
+            .padding(theme::SPACE_SM)
+            .width(Length::Fixed(360.0));
+        let actions = Row::new()
+            .spacing(theme::SPACE_SM)
+            .push(
+                button(text("Save").size(theme::TEXT_SM))
+                    .padding([2, 0])
+                    .style(theme::link_button)
+                    .on_press(Message::EditSubmit),
+            )
+            .push(
+                button(text("Cancel").size(theme::TEXT_SM))
+                    .padding([2, 0])
+                    .style(theme::link_button)
+                    .on_press(Message::EditCancelled),
+            );
+        return container(
+            Column::new()
+                .spacing(theme::SPACE_XS)
+                .push(header)
+                .push(input)
+                .push(actions),
+        )
+        .padding([theme::SPACE_XS, theme::SPACE_MD])
+        .into();
     }
 
     let mut col = Column::new().spacing(theme::SPACE_XS).push(header);

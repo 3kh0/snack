@@ -235,6 +235,7 @@ impl PreparedRequest {
                 "/api/conversations.history?",
                 "/api/conversations.replies?",
                 "/api/conversations.mark?",
+                "/api/search.modules.messages?",
             ]
             .iter()
             .any(|endpoint| self.url.contains(endpoint))

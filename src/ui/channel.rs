@@ -10,6 +10,7 @@ pub fn view<'a>(
     ws: &Workspace,
     channel_id: &str,
     file_previews: &HashMap<String, FilePreview>,
+    editing: Option<(&str, &str)>,
 ) -> Element<'a, Message> {
     let label = ws
         .channels
@@ -28,7 +29,17 @@ pub fn view<'a>(
             let mut col = Column::new().spacing(theme::SPACE_XS);
             for m in &cm.messages {
                 let pending = m.ts.as_deref().map(|ts| cm.is_pending(ts)).unwrap_or(false);
-                col = col.push(message::row(ws, channel_id, m, pending, file_previews));
+                let edit = editing
+                    .filter(|(ts, _)| Some(*ts) == m.ts.as_deref())
+                    .map(|(_, value)| value);
+                col = col.push(message::row(
+                    ws,
+                    channel_id,
+                    m,
+                    pending,
+                    file_previews,
+                    edit,
+                ));
             }
             scrollable(col).height(Fill).into()
         }

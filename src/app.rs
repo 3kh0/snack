@@ -9,11 +9,11 @@ use iced::{Element, Fill, Subscription, Task};
 
 use crate::cache::Cache;
 use crate::config::{self, Session};
-use crate::slack::api::{self, HistoryArgs};
+use crate::slack::api::{self, HistoryArgs, SearchArgs};
 use crate::slack::events::RtEvent;
 use crate::slack::models::{
-    BootData, ChannelId, CountsPage, HistoryPage, Message as SlackMessage, MessageTs, SentMessage,
-    TeamId,
+    BootData, ChannelId, CountsPage, HistoryPage, Message as SlackMessage, MessageTs,
+    SearchMessagesPage, SentMessage, TeamId,
 };
 use crate::slack::realtime::{self, ConnectParams, Connection, RtUpdate};
 use crate::slack::{Error as SlackError, SlackClient, Transport};
@@ -36,6 +36,24 @@ struct DesktopNotification {
     body: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct SearchHit {
+    pub channel: ChannelId,
+    pub channel_label: String,
+    pub message: SlackMessage,
+}
+
+#[derive(Debug, Clone)]
+pub struct SearchState {
+    pub query: String,
+    pub team: TeamId,
+    pub page: u32,
+    pub page_count: u32,
+    pub total: u64,
+    pub hits: Vec<SearchHit>,
+    pub loading: bool,
+}
+
 pub struct App {
     screen: Screen,
     session: Option<Session>,
@@ -49,6 +67,10 @@ pub struct App {
     threads: HashMap<ThreadKey, ChannelMessages>,
     composer_text: String,
     thread_composer_text: String,
+    editing: Option<(ChannelId, MessageTs)>,
+    edit_text: String,
+    search_input: String,
+    search: Option<SearchState>,
     errors: Vec<Toast>,
     send_seq: u64,
     last_typing: HashMap<(TeamId, ChannelId), Instant>,
@@ -92,6 +114,29 @@ pub enum Message {
         client_msg_id: String,
         result: Result<SentMessage, SlackError>,
     },
+    EditPressed {
+        channel: ChannelId,
+        ts: MessageTs,
+    },
+    EditComposerChanged(String),
+    EditSubmit,
+    EditCancelled,
+    MessageEdited {
+        team: TeamId,
+        channel: ChannelId,
+        ts: MessageTs,
+        result: Result<SentMessage, SlackError>,
+    },
+    DeletePressed {
+        channel: ChannelId,
+        ts: MessageTs,
+    },
+    MessageDeleted {
+        team: TeamId,
+        channel: ChannelId,
+        ts: MessageTs,
+        result: Result<(), SlackError>,
+    },
     ReactionPressed {
         channel: ChannelId,
         ts: MessageTs,
@@ -105,6 +150,21 @@ pub enum Message {
         name: String,
         added: bool,
         result: Result<(), SlackError>,
+    },
+    SearchInputChanged(String),
+    SearchSubmitted,
+    SearchCleared,
+    SearchPageRequested(u32),
+    SearchLoaded {
+        team: TeamId,
+        query: String,
+        page: u32,
+        result: Result<SearchMessagesPage, SlackError>,
+    },
+    SearchResultSelected {
+        channel: ChannelId,
+        ts: MessageTs,
+        thread_ts: Option<MessageTs>,
     },
     FileDownloadPressed {
         url: String,
@@ -139,6 +199,10 @@ impl App {
             threads: HashMap::new(),
             composer_text: String::new(),
             thread_composer_text: String::new(),
+            editing: None,
+            edit_text: String::new(),
+            search_input: String::new(),
+            search: None,
             errors: Vec::new(),
             send_seq: 0,
             last_typing: HashMap::new(),
@@ -353,6 +417,15 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::WorkspaceSelected(team) => select_workspace(app, team),
 
         Message::ChannelSelected(id) => {
+            app.search = None;
+            if app
+                .editing
+                .as_ref()
+                .is_some_and(|(channel, _)| channel != &id)
+            {
+                app.editing = None;
+                app.edit_text.clear();
+            }
             app.active_channel = Some(id.clone());
             if let Some(team) = app.active_team.clone() {
                 app.last_active_channels.insert(team, id.clone());
@@ -607,6 +680,70 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
 
+        Message::EditPressed { channel, ts } => {
+            let current = find_message_text(app, &channel, &ts).unwrap_or_default();
+            app.edit_text = current;
+            app.editing = Some((channel, ts));
+            Task::none()
+        }
+
+        Message::EditComposerChanged(value) => {
+            app.edit_text = value;
+            Task::none()
+        }
+
+        Message::EditCancelled => {
+            app.editing = None;
+            app.edit_text.clear();
+            Task::none()
+        }
+
+        Message::EditSubmit => edit_submit(app),
+
+        Message::MessageEdited {
+            team,
+            channel,
+            ts,
+            result,
+        } => {
+            match result {
+                Ok(sent) => {
+                    apply_message_edit(app, &team, &channel, &ts, sent.message.text);
+                    persist_workspace(app, &team);
+                }
+                Err(e) => {
+                    app.toast(format!("edit failed: {e}"));
+                    if is_auth_error(&e) {
+                        app.screen = Screen::Login;
+                    }
+                }
+            }
+            Task::none()
+        }
+
+        Message::DeletePressed { channel, ts } => delete_pressed(app, channel, ts),
+
+        Message::MessageDeleted {
+            team,
+            channel,
+            ts,
+            result,
+        } => {
+            match result {
+                Ok(()) => {
+                    remove_message_everywhere(app, &team, &channel, &ts);
+                    persist_workspace(app, &team);
+                }
+                Err(e) => {
+                    app.toast(format!("delete failed: {e}"));
+                    if is_auth_error(&e) {
+                        app.screen = Screen::Login;
+                    }
+                }
+            }
+            Task::none()
+        }
+
         Message::ReactionPressed { channel, ts, name } => toggle_reaction(app, channel, ts, name),
 
         Message::ReactionUpdated {
@@ -635,6 +772,66 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             }
             Task::none()
         }
+
+        Message::SearchInputChanged(value) => {
+            app.search_input = value;
+            Task::none()
+        }
+
+        Message::SearchSubmitted => search_submitted(app),
+
+        Message::SearchCleared => {
+            app.search = None;
+            Task::none()
+        }
+
+        Message::SearchPageRequested(page) => search_page_requested(app, page),
+
+        Message::SearchLoaded {
+            team,
+            query,
+            page,
+            result,
+        } => {
+            let matches = app
+                .search
+                .as_ref()
+                .is_some_and(|s| s.team == team && s.query == query && s.page == page);
+            if !matches {
+                return Task::none();
+            }
+            match result {
+                Ok(response) => {
+                    if let Some(ws) = app.workspaces.get(&team) {
+                        if let Some(state) = app.search.as_mut() {
+                            state.hits = search_hits(ws, &response);
+                            if let Some(p) = &response.pagination {
+                                state.page = p.page.unwrap_or(page);
+                                state.page_count = p.page_count.unwrap_or(state.page_count);
+                                state.total = p.total_count.unwrap_or(state.total);
+                            }
+                            state.loading = false;
+                        }
+                    }
+                }
+                Err(e) => {
+                    if let Some(state) = app.search.as_mut() {
+                        state.loading = false;
+                    }
+                    app.toast(format!("search failed: {e}"));
+                    if is_auth_error(&e) {
+                        app.screen = Screen::Login;
+                    }
+                }
+            }
+            Task::none()
+        }
+
+        Message::SearchResultSelected {
+            channel,
+            ts,
+            thread_ts,
+        } => open_search_result(app, channel, ts, thread_ts),
 
         Message::FileDownloadPressed { url, filename } => download_file_pressed(app, url, filename),
 
@@ -760,6 +957,10 @@ fn select_workspace(app: &mut App, team: TeamId) -> Task<Message> {
     app.active_team = Some(team.clone());
     app.active_channel = preferred_channel(app, &team);
     app.active_thread = None;
+    app.search = None;
+    app.search_input.clear();
+    app.editing = None;
+    app.edit_text.clear();
     app.composer_text.clear();
     app.thread_composer_text.clear();
 
@@ -1080,6 +1281,300 @@ fn toggle_reaction(
             result,
         },
     )
+}
+
+fn edit_submit(app: &mut App) -> Task<Message> {
+    let text = app.edit_text.trim().to_owned();
+    let Some((channel, ts)) = app.editing.clone() else {
+        return Task::none();
+    };
+    if text.is_empty() {
+        app.toast("message cannot be empty");
+        return Task::none();
+    }
+    let Some(team) = app.active_team.clone() else {
+        return Task::none();
+    };
+
+    app.editing = None;
+    app.edit_text.clear();
+    apply_message_edit(app, &team, &channel, &ts, Some(text.clone()));
+    persist_workspace(app, &team);
+
+    let Some((transport, session)) = app.live() else {
+        return Task::none();
+    };
+    let Some(ws_session) = session.workspaces.get(&team) else {
+        return Task::none();
+    };
+    let transport = transport.clone();
+    let client = app.client.clone();
+    let ws_session = ws_session.clone();
+    let send_channel = channel.clone();
+    let send_ts = ts.clone();
+    Task::perform(
+        async move {
+            api::edit_message(
+                &transport,
+                &client,
+                &ws_session,
+                send_channel,
+                send_ts,
+                text,
+            )
+            .await
+        },
+        move |result| Message::MessageEdited {
+            team: team.clone(),
+            channel: channel.clone(),
+            ts: ts.clone(),
+            result,
+        },
+    )
+}
+
+fn delete_pressed(app: &mut App, channel: ChannelId, ts: MessageTs) -> Task<Message> {
+    let Some(team) = app.active_team.clone() else {
+        return Task::none();
+    };
+    if app.editing.as_ref() == Some(&(channel.clone(), ts.clone())) {
+        app.editing = None;
+        app.edit_text.clear();
+    }
+    let Some((transport, session)) = app.live() else {
+        return Task::none();
+    };
+    let Some(ws_session) = session.workspaces.get(&team) else {
+        return Task::none();
+    };
+    let transport = transport.clone();
+    let client = app.client.clone();
+    let ws_session = ws_session.clone();
+    let send_channel = channel.clone();
+    let send_ts = ts.clone();
+    Task::perform(
+        async move {
+            api::delete_message(&transport, &client, &ws_session, send_channel, send_ts).await
+        },
+        move |result| Message::MessageDeleted {
+            team: team.clone(),
+            channel: channel.clone(),
+            ts: ts.clone(),
+            result,
+        },
+    )
+}
+
+fn find_message_text(app: &App, channel: &str, ts: &str) -> Option<String> {
+    let team = app.active_team.as_deref()?;
+    let ws = app.workspaces.get(team)?;
+    if let Some(text) = ws
+        .messages
+        .get(channel)
+        .and_then(|cm| cm.messages.iter().find(|m| m.ts.as_deref() == Some(ts)))
+        .and_then(|m| m.text.clone())
+    {
+        return Some(text);
+    }
+    app.threads
+        .iter()
+        .filter(|((t, c, _), _)| t == team && c == channel)
+        .find_map(|(_, cm)| {
+            cm.messages
+                .iter()
+                .find(|m| m.ts.as_deref() == Some(ts))
+                .and_then(|m| m.text.clone())
+        })
+}
+
+fn apply_message_edit(app: &mut App, team: &str, channel: &str, ts: &str, text: Option<String>) {
+    if let Some(msg) = app
+        .workspaces
+        .get_mut(team)
+        .and_then(|ws| ws.messages.get_mut(channel))
+        .and_then(|cm| cm.messages.iter_mut().find(|m| m.ts.as_deref() == Some(ts)))
+    {
+        mark_edited(msg, text.clone());
+    }
+    for ((thread_team, thread_channel, _), cm) in &mut app.threads {
+        if thread_team == team && thread_channel == channel {
+            if let Some(msg) = cm.messages.iter_mut().find(|m| m.ts.as_deref() == Some(ts)) {
+                mark_edited(msg, text.clone());
+            }
+        }
+    }
+}
+
+fn mark_edited(msg: &mut SlackMessage, text: Option<String>) {
+    if let Some(text) = text {
+        msg.text = Some(text);
+    }
+    if msg.edited.is_none() {
+        msg.edited = Some(serde_json::json!({ "ts": msg.ts.clone() }));
+    }
+}
+
+fn remove_message_everywhere(app: &mut App, team: &str, channel: &str, ts: &str) {
+    if let Some(cm) = app
+        .workspaces
+        .get_mut(team)
+        .and_then(|ws| ws.messages.get_mut(channel))
+    {
+        cm.remove(ts);
+    }
+    for ((thread_team, thread_channel, _), cm) in &mut app.threads {
+        if thread_team == team && thread_channel == channel {
+            cm.remove(ts);
+        }
+    }
+}
+
+fn search_submitted(app: &mut App) -> Task<Message> {
+    let query = app.search_input.trim().to_owned();
+    if query.is_empty() {
+        return Task::none();
+    }
+    let Some(team) = app.active_team.clone() else {
+        return Task::none();
+    };
+    app.search = Some(SearchState {
+        query: query.clone(),
+        team: team.clone(),
+        page: 1,
+        page_count: 0,
+        total: 0,
+        hits: Vec::new(),
+        loading: true,
+    });
+    run_search(app, &team, query, 1)
+}
+
+fn search_page_requested(app: &mut App, page: u32) -> Task<Message> {
+    let (team, query) = match app.search.as_mut() {
+        Some(state) => {
+            if page < 1 || (state.page_count > 0 && page > state.page_count) {
+                return Task::none();
+            }
+            state.page = page;
+            state.loading = true;
+            (state.team.clone(), state.query.clone())
+        }
+        None => return Task::none(),
+    };
+    run_search(app, &team, query, page)
+}
+
+fn run_search(app: &App, team: &str, query: String, page: u32) -> Task<Message> {
+    let Some((transport, session)) = app.live() else {
+        return Task::none();
+    };
+    let Some(ws_session) = session.workspaces.get(team) else {
+        return Task::none();
+    };
+    let transport = transport.clone();
+    let client = app.client.clone();
+    let ws_session = ws_session.clone();
+    let team = team.to_owned();
+    let args = SearchArgs {
+        query: query.clone(),
+        count: 20,
+        page,
+    };
+    Task::perform(
+        async move { api::fetch_search_messages(&transport, &client, &ws_session, args).await },
+        move |result| Message::SearchLoaded {
+            team: team.clone(),
+            query: query.clone(),
+            page,
+            result,
+        },
+    )
+}
+
+fn search_hits(ws: &Workspace, response: &SearchMessagesPage) -> Vec<SearchHit> {
+    let mut hits = Vec::new();
+    for item in &response.items {
+        let channel_id = item
+            .channel
+            .as_ref()
+            .map(|c| c.id.clone())
+            .or_else(|| item.messages.first().and_then(|m| m.channel.clone()));
+        let Some(channel_id) = channel_id else {
+            continue;
+        };
+        let label = ws
+            .channels
+            .get(&channel_id)
+            .map(crate::state::channel_label)
+            .or_else(|| item.channel.as_ref().map(crate::state::channel_label))
+            .unwrap_or_else(|| channel_id.clone());
+        for msg in &item.messages {
+            let mut msg = msg.clone();
+            if msg.channel.is_none() {
+                msg.channel = Some(channel_id.clone());
+            }
+            hits.push(SearchHit {
+                channel: channel_id.clone(),
+                channel_label: label.clone(),
+                message: msg,
+            });
+        }
+    }
+    hits
+}
+
+fn open_search_result(
+    app: &mut App,
+    channel: ChannelId,
+    ts: MessageTs,
+    thread_ts: Option<MessageTs>,
+) -> Task<Message> {
+    let _ = ts;
+    app.search = None;
+    let Some(team) = app.active_team.clone() else {
+        return Task::none();
+    };
+    app.active_channel = Some(channel.clone());
+    app.last_active_channels
+        .insert(team.clone(), channel.clone());
+    app.editing = None;
+    app.edit_text.clear();
+
+    let mut tasks = Vec::new();
+    let needs_load = app
+        .workspaces
+        .get(&team)
+        .map(|ws| {
+            !ws.messages
+                .get(&channel)
+                .map(|cm| cm.loaded)
+                .unwrap_or(false)
+        })
+        .unwrap_or(true);
+    if app.transport.is_some() && needs_load {
+        tasks.push(app.load_history(&team, &channel));
+    } else {
+        tasks.push(mark_latest_visible(app, &team, &channel));
+        tasks.push(load_visible_file_previews(app, &team, &channel));
+    }
+
+    match thread_ts {
+        Some(root) => {
+            app.active_thread = Some((channel.clone(), root.clone()));
+            let needs_thread = !app
+                .threads
+                .get(&(team.clone(), channel.clone(), root.clone()))
+                .map(|cm| cm.loaded)
+                .unwrap_or(false);
+            if needs_thread && app.transport.is_some() {
+                tasks.push(app.load_thread(&team, &channel, &root));
+            }
+        }
+        None => {
+            app.active_thread = None;
+        }
+    }
+    Task::batch(tasks)
 }
 
 fn download_file_pressed(app: &mut App, url: String, filename: String) -> Task<Message> {
@@ -1576,7 +2071,20 @@ fn main_view(app: &App) -> Element<'_, Message> {
         app.active_team.as_deref(),
         ws,
         app.active_channel.as_deref(),
+        &app.search_input,
     );
+
+    if let Some(state) = app.search.as_ref() {
+        let content = row![ui::search::view(ws, state)].width(Fill).height(Fill);
+        return row![sidebar, content].width(Fill).height(Fill).into();
+    }
+
+    let editing_for = |channel_id: &str| -> Option<(&str, &str)> {
+        app.editing
+            .as_ref()
+            .filter(|(channel, _)| channel == channel_id)
+            .map(|(_, ts)| (ts.as_str(), app.edit_text.as_str()))
+    };
 
     let main: Element<'_, Message> = match app.active_channel.as_deref() {
         Some(channel_id) => {
@@ -1586,7 +2094,13 @@ fn main_view(app: &App) -> Element<'_, Message> {
                 .map(crate::state::channel_label)
                 .unwrap_or_else(|| channel_id.to_owned());
             column![
-                container(ui::channel::view(ws, channel_id, &app.file_previews)).height(Fill),
+                container(ui::channel::view(
+                    ws,
+                    channel_id,
+                    &app.file_previews,
+                    editing_for(channel_id),
+                ))
+                .height(Fill),
                 ui::composer::view(&app.composer_text, &label),
             ]
             .width(Fill)
@@ -1612,6 +2126,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
                 replies,
                 &app.thread_composer_text,
                 &app.file_previews,
+                editing_for(channel),
             )
         ]
         .width(Fill)
@@ -1667,7 +2182,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::slack::models::Channel;
+    use crate::slack::models::{Channel, SearchItem, SearchMessagesPage, SearchPagination};
     use crate::state::ChannelMessages;
 
     const SELF_USER: &str = "U_SELF";
@@ -2127,5 +2642,257 @@ mod tests {
         let _ = update(&mut app, Message::Realtime(team.clone(), 4, ev));
         let after = app.workspaces[&team].messages["C_GENERAL"].messages.len();
         assert_eq!(after, before);
+    }
+
+    #[test]
+    fn edit_pressed_populates_editor_with_current_text() {
+        let mut app = test_app();
+        let _ = update(
+            &mut app,
+            Message::EditPressed {
+                channel: "C_GENERAL".into(),
+                ts: "1783372300.000100".into(),
+            },
+        );
+        assert_eq!(app.edit_text, "morning");
+        assert_eq!(
+            app.editing.as_ref(),
+            Some(&("C_GENERAL".into(), "1783372300.000100".into()))
+        );
+    }
+
+    #[test]
+    fn edit_submit_optimistically_updates_text_and_marks_edited() {
+        let mut app = test_app();
+        let team = app.active_team.clone().unwrap();
+        app.editing = Some(("C_GENERAL".into(), "1783372300.000100".into()));
+        app.edit_text = "morning (updated)".into();
+
+        let _ = update(&mut app, Message::EditSubmit);
+
+        assert!(app.editing.is_none());
+        assert!(app.edit_text.is_empty());
+        let cm = &app.workspaces[&team].messages["C_GENERAL"];
+        let msg = cm
+            .messages
+            .iter()
+            .find(|m| m.ts.as_deref() == Some("1783372300.000100"))
+            .unwrap();
+        assert_eq!(msg.text.as_deref(), Some("morning (updated)"));
+        assert!(msg.edited.is_some());
+    }
+
+    #[test]
+    fn empty_edit_submit_keeps_editor_open() {
+        let mut app = test_app();
+        app.editing = Some(("C_GENERAL".into(), "1783372300.000100".into()));
+        app.edit_text = "   ".into();
+
+        let _ = update(&mut app, Message::EditSubmit);
+
+        assert!(app.editing.is_some());
+    }
+
+    #[test]
+    fn edit_applies_to_open_thread_copy() {
+        let mut app = test_app();
+        let team = app.active_team.clone().unwrap();
+        let root_ts = "1783372300.000100".to_owned();
+        let mut cm = ChannelMessages::default();
+        cm.upsert(msg("U_BOB", "1783372310.000100", "reply"));
+        app.threads
+            .insert((team.clone(), "C_GENERAL".into(), root_ts.clone()), cm);
+
+        app.editing = Some(("C_GENERAL".into(), "1783372310.000100".into()));
+        app.edit_text = "reply (fixed)".into();
+        let _ = update(&mut app, Message::EditSubmit);
+
+        let cm = &app.threads[&(team, "C_GENERAL".into(), root_ts)];
+        assert_eq!(cm.messages[0].text.as_deref(), Some("reply (fixed)"));
+        assert!(cm.messages[0].edited.is_some());
+    }
+
+    #[test]
+    fn message_deleted_ok_removes_from_channel_and_threads() {
+        let mut app = test_app();
+        let team = app.active_team.clone().unwrap();
+        let root_ts = "1783372300.000100".to_owned();
+        let mut cm = ChannelMessages::default();
+        cm.upsert(msg("U_ALICE", &root_ts, "morning"));
+        app.threads
+            .insert((team.clone(), "C_GENERAL".into(), root_ts.clone()), cm);
+
+        let _ = update(
+            &mut app,
+            Message::MessageDeleted {
+                team: team.clone(),
+                channel: "C_GENERAL".into(),
+                ts: root_ts.clone(),
+                result: Ok(()),
+            },
+        );
+
+        assert!(
+            !app.workspaces[&team].messages["C_GENERAL"]
+                .messages
+                .iter()
+                .any(|m| m.ts.as_deref() == Some(root_ts.as_str()))
+        );
+        assert!(
+            app.threads[&(team, "C_GENERAL".into(), root_ts)]
+                .messages
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn selecting_other_channel_cancels_edit() {
+        let mut app = test_app();
+        app.editing = Some(("C_GENERAL".into(), "1783372300.000100".into()));
+        app.edit_text = "in progress".into();
+        let _ = update(&mut app, Message::ChannelSelected("C_DEV".into()));
+        assert!(app.editing.is_none());
+        assert!(app.edit_text.is_empty());
+    }
+
+    fn search_page(page: u32, page_count: u32, total: u64) -> SearchMessagesPage {
+        SearchMessagesPage {
+            items: vec![SearchItem {
+                channel: Some(Channel {
+                    id: "C_GENERAL".into(),
+                    name: Some("general".into()),
+                    is_channel: true,
+                    ..Default::default()
+                }),
+                messages: vec![SlackMessage {
+                    thread_ts: Some("1783372200.000000".into()),
+                    ..msg("U_ALICE", "1783372300.000100", "morning standup")
+                }],
+                ..Default::default()
+            }],
+            pagination: Some(SearchPagination {
+                page: Some(page),
+                page_count: Some(page_count),
+                total_count: Some(total),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn searching(app: &App) -> SearchState {
+        SearchState {
+            query: "standup".into(),
+            team: app.active_team.clone().unwrap(),
+            page: 1,
+            page_count: 0,
+            total: 0,
+            hits: Vec::new(),
+            loading: true,
+        }
+    }
+
+    #[test]
+    fn search_submitted_starts_loading_state() {
+        let mut app = test_app();
+        let _ = update(&mut app, Message::SearchInputChanged("  standup ".into()));
+        let _ = update(&mut app, Message::SearchSubmitted);
+        let state = app.search.as_ref().expect("search active");
+        assert_eq!(state.query, "standup");
+        assert_eq!(state.page, 1);
+        assert!(state.loading);
+    }
+
+    #[test]
+    fn empty_search_is_noop() {
+        let mut app = test_app();
+        app.search_input = "   ".into();
+        let _ = update(&mut app, Message::SearchSubmitted);
+        assert!(app.search.is_none());
+    }
+
+    #[test]
+    fn search_loaded_populates_hits_and_pagination() {
+        let mut app = test_app();
+        let team = app.active_team.clone().unwrap();
+        app.search = Some(searching(&app));
+
+        let _ = update(
+            &mut app,
+            Message::SearchLoaded {
+                team: team.clone(),
+                query: "standup".into(),
+                page: 1,
+                result: Ok(search_page(1, 3, 42)),
+            },
+        );
+
+        let state = app.search.as_ref().unwrap();
+        assert!(!state.loading);
+        assert_eq!(state.hits.len(), 1);
+        assert_eq!(state.hits[0].channel, "C_GENERAL");
+        assert_eq!(state.hits[0].channel_label, "#general");
+        assert_eq!(state.page_count, 3);
+        assert_eq!(state.total, 42);
+    }
+
+    #[test]
+    fn search_loaded_ignores_stale_query() {
+        let mut app = test_app();
+        let team = app.active_team.clone().unwrap();
+        app.search = Some(searching(&app));
+
+        let _ = update(
+            &mut app,
+            Message::SearchLoaded {
+                team,
+                query: "different".into(),
+                page: 1,
+                result: Ok(search_page(1, 3, 42)),
+            },
+        );
+
+        let state = app.search.as_ref().unwrap();
+        assert!(state.hits.is_empty());
+        assert!(state.loading);
+    }
+
+    #[test]
+    fn search_page_request_out_of_bounds_is_noop() {
+        let mut app = test_app();
+        let mut state = searching(&app);
+        state.page = 1;
+        state.page_count = 3;
+        state.loading = false;
+        app.search = Some(state);
+
+        let _ = update(&mut app, Message::SearchPageRequested(9));
+
+        let state = app.search.as_ref().unwrap();
+        assert_eq!(state.page, 1);
+        assert!(!state.loading);
+    }
+
+    #[test]
+    fn search_result_opens_channel_and_thread_and_clears_search() {
+        let mut app = test_app();
+        app.active_channel = Some("C_DEV".into());
+        app.search = Some(searching(&app));
+
+        let _ = update(
+            &mut app,
+            Message::SearchResultSelected {
+                channel: "C_GENERAL".into(),
+                ts: "1783372300.000100".into(),
+                thread_ts: Some("1783372200.000000".into()),
+            },
+        );
+
+        assert!(app.search.is_none());
+        assert_eq!(app.active_channel.as_deref(), Some("C_GENERAL"));
+        assert_eq!(
+            app.active_thread.as_ref(),
+            Some(&("C_GENERAL".into(), "1783372200.000000".into()))
+        );
     }
 }

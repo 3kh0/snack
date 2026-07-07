@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use iced::widget::{Column, button, column, container, scrollable, text};
+use iced::widget::{Column, button, column, container, scrollable, text, text_input};
 use iced::{Element, Fill, Length};
 
 use super::theme;
@@ -61,6 +61,7 @@ pub fn view<'a>(
     active_team: Option<&str>,
     ws: &Workspace,
     active: Option<&str>,
+    search_input: &str,
 ) -> Element<'a, Message> {
     let (rooms, dms) = grouped(ws);
 
@@ -89,7 +90,17 @@ pub fn view<'a>(
     }))
     .padding(theme::SPACE_MD);
 
-    let body = column![header, scrollable(list).height(Fill)]
+    let search = container(
+        text_input("Search messages", search_input)
+            .on_input(Message::SearchInputChanged)
+            .on_submit(Message::SearchSubmitted)
+            .size(theme::TEXT_SM)
+            .padding(theme::SPACE_SM)
+            .width(Fill),
+    )
+    .padding([0.0, theme::SPACE_SM]);
+
+    let body = column![header, search, scrollable(list).height(Fill)]
         .width(Length::Fixed(theme::SIDEBAR_WIDTH))
         .height(Fill);
 
