@@ -1,0 +1,20 @@
+# Rust / Cargo
+/target/
+/captures/
+
+# Backup files created by rustfmt
+**/*.rs.bk
+
+# Debug symbols
+*.pdb
+
+# IDE / editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
