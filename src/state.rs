@@ -426,9 +426,7 @@ pub fn is_channel_timeline_visible(msg: &SlackMessage) -> bool {
         return false;
     }
     match (msg.thread_ts.as_deref(), msg.ts.as_deref()) {
-        (Some(root), Some(ts)) if root != ts => {
-            msg.subtype.as_deref() == Some("thread_broadcast")
-        }
+        (Some(root), Some(ts)) if root != ts => msg.subtype.as_deref() == Some("thread_broadcast"),
         _ => true,
     }
 }
