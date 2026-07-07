@@ -116,12 +116,54 @@ fn entry(account: &str) -> Result<keyring::Entry, AppError> {
     Ok(keyring::Entry::new("com.client.snack", account)?)
 }
 
-#[cfg(not(test))]
+#[cfg(all(not(test), debug_assertions))]
+fn dev_secret_path() -> Result<PathBuf, AppError> {
+    Ok(config_dir()?.join("session.secrets.dev.json"))
+}
+
+#[cfg(all(not(test), debug_assertions))]
+fn read_dev_secrets() -> Result<BTreeMap<String, String>, AppError> {
+    match std::fs::read(dev_secret_path()?) {
+        Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+#[cfg(all(not(test), debug_assertions))]
+fn write_dev_secrets(secrets: &BTreeMap<String, String>) -> Result<(), AppError> {
+    let path = dev_secret_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(secrets)?;
+    std::fs::write(&path, json)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+#[cfg(all(not(test), debug_assertions))]
+fn set_secret(account: &str, value: &str) -> Result<(), AppError> {
+    let mut secrets = read_dev_secrets()?;
+    secrets.insert(account.to_owned(), value.to_owned());
+    write_dev_secrets(&secrets)
+}
+
+#[cfg(all(not(test), not(debug_assertions)))]
 fn set_secret(account: &str, value: &str) -> Result<(), AppError> {
     Ok(entry(account)?.set_password(value)?)
 }
 
-#[cfg(not(test))]
+#[cfg(all(not(test), debug_assertions))]
+fn get_secret(account: &str) -> Result<Option<String>, AppError> {
+    Ok(read_dev_secrets()?.remove(account))
+}
+
+#[cfg(all(not(test), not(debug_assertions)))]
 fn get_secret(account: &str) -> Result<Option<String>, AppError> {
     match entry(account)?.get_password() {
         Ok(value) => Ok(Some(value)),
@@ -130,7 +172,15 @@ fn get_secret(account: &str) -> Result<Option<String>, AppError> {
     }
 }
 
-#[cfg(not(test))]
+#[cfg(all(not(test), debug_assertions))]
+fn delete_secret(account: &str) {
+    if let Ok(mut secrets) = read_dev_secrets() {
+        secrets.remove(account);
+        let _ = write_dev_secrets(&secrets);
+    }
+}
+
+#[cfg(all(not(test), not(debug_assertions)))]
 fn delete_secret(account: &str) {
     if let Ok(e) = entry(account) {
         let _ = e.delete_credential();
