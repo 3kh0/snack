@@ -170,6 +170,69 @@ pub struct Channel {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Team {
+    pub id: TeamId,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub domain: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub enterprise_id: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BootSelf {
+    pub id: UserId,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub profile: Option<UserProfile>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BootData {
+    #[serde(rename = "self", default)]
+    pub self_user: BootSelf,
+    #[serde(default)]
+    pub team: Option<Team>,
+    #[serde(default)]
+    pub channels: Vec<Channel>,
+    #[serde(default)]
+    pub ims: Vec<Channel>,
+    #[serde(default)]
+    pub groups: Vec<Channel>,
+    #[serde(default)]
+    pub mpims: Vec<Channel>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+impl BootData {
+    pub fn all_channels(&self) -> Vec<Channel> {
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for channel in self
+            .channels
+            .iter()
+            .chain(&self.groups)
+            .chain(&self.ims)
+            .chain(&self.mpims)
+        {
+            if seen.insert(channel.id.clone()) {
+                out.push(channel.clone());
+            }
+        }
+        out
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EdgeResults<T> {
     #[serde(default)]
     pub ok: bool,
@@ -189,4 +252,71 @@ pub struct Emoji {
     pub updated: Option<u64>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+#[cfg(test)]
+mod fixture_tests {
+    use super::*;
+
+    #[test]
+    fn deserialize_history_response() {
+        let page: HistoryPage = serde_json::from_str(
+            r#"{
+                "ok": true,
+                "messages": [
+                    {"type":"message","user":"U01234567","text":"fixture message one","ts":"1783372360.741769"},
+                    {"type":"message","user":"U07654321","text":"two","ts":"1783372400.100200",
+                     "reactions":[{"name":"wave","users":["U01234567"],"count":1}]},
+                    {"type":"message","subtype":"channel_join","user":"U01234567","ts":"1783372000.000001"}
+                ],
+                "has_more": true,
+                "pin_count": 2,
+                "response_metadata": {"next_cursor": "bmV4dF9jdXJzb3I="}
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(page.messages.len(), 3);
+        assert!(page.has_more);
+        assert_eq!(page.pin_count, Some(2));
+        assert_eq!(
+            page.response_metadata.as_ref().unwrap().next_cursor.as_deref(),
+            Some("bmV4dF9jdXJzb3I=")
+        );
+        assert_eq!(page.messages[0].text.as_deref(), Some("fixture message one"));
+        assert_eq!(page.messages[1].reactions[0].name, "wave");
+        assert_eq!(page.messages[2].subtype.as_deref(), Some("channel_join"));
+    }
+
+    #[test]
+    fn deserialize_edge_channels_info() {
+        let page: EdgeResults<Channel> = serde_json::from_str(
+            r#"{"ok":true,"results":[
+                {"id":"C0159TSJVH8","name":"general","is_channel":true,"updated":1783372000},
+                {"id":"C09876543","name":"random","is_channel":true,"updated":1783371800}
+            ],"failed_ids":[]}"#,
+        )
+        .unwrap();
+        assert!(page.ok);
+        assert_eq!(page.results.len(), 2);
+        assert_eq!(page.results[0].name.as_deref(), Some("general"));
+        assert!(page.failed_ids.is_empty());
+    }
+
+    #[test]
+    fn deserialize_edge_users_list() {
+        let page: EdgeResults<User> = serde_json::from_str(
+            r#"{"ok":true,"results":[{
+                "id":"U01234567","name":"alice","real_name":"Alice Anderson",
+                "profile":{"display_name":"alice","real_name":"Alice Anderson"}
+            }],"failed_ids":["U_MISSING"]}"#,
+        )
+        .unwrap();
+        assert!(page.ok);
+        assert_eq!(page.results.len(), 1);
+        assert_eq!(
+            page.results[0].profile.as_ref().unwrap().display_name.as_deref(),
+            Some("alice")
+        );
+        assert_eq!(page.failed_ids, vec!["U_MISSING".to_owned()]);
+    }
 }

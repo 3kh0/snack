@@ -8,4 +8,6 @@ pub enum AppError {
     Json(#[from] serde_json::Error),
     #[error("Slack error: {0}")]
     Slack(#[from] crate::slack::Error),
+    #[error("keyring error: {0}")]
+    Keyring(#[from] keyring::Error),
 }
