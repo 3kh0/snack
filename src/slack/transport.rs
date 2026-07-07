@@ -138,6 +138,41 @@ impl Transport {
             .await
             .map_err(|e| Error::Transport(format!("read body: {e}")))
     }
+
+    pub async fn get_bytes(&self, url: &str, user_agent: &str) -> Result<Vec<u8>, Error> {
+        let response = self
+            .http
+            .get(url)
+            .header("User-Agent", user_agent)
+            .header("Cookie", self.cookie())
+            .send()
+            .await
+            .map_err(|e| Error::Transport(format!("send: {e}")))?;
+
+        let status = response.status();
+        let retry_after_secs = retry_after_secs(response.headers());
+        if status.as_u16() == 429 {
+            return Err(Error::RateLimited { retry_after_secs });
+        }
+        if !status.is_success() {
+            tracing::warn!(
+                url = %redact_secrets(url),
+                status = %status,
+                retry_after_secs = ?retry_after_secs,
+                "slack file http error"
+            );
+            return Err(Error::HttpStatus {
+                status: status.as_u16(),
+                retry_after_secs,
+            });
+        }
+
+        response
+            .bytes()
+            .await
+            .map(|bytes| bytes.to_vec())
+            .map_err(|e| Error::Transport(format!("read body: {e}")))
+    }
 }
 
 pub fn retry_after_secs(headers: &HeaderMap) -> Option<u64> {

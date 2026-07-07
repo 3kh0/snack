@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -90,6 +91,11 @@ pub enum Message {
         added: bool,
         result: Result<(), SlackError>,
     },
+    FileDownloadPressed {
+        url: String,
+        filename: String,
+    },
+    FileDownloaded(Result<PathBuf, SlackError>),
     Realtime(TeamId, u64, RtEvent),
     RtConnected(TeamId, u64, Connection),
     RtDisconnected(TeamId, u64),
@@ -595,6 +601,16 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
 
+        Message::FileDownloadPressed { url, filename } => download_file_pressed(app, url, filename),
+
+        Message::FileDownloaded(result) => {
+            match result {
+                Ok(path) => app.toast(format!("downloaded file to {}", path.display())),
+                Err(e) => app.toast(format!("download failed: {e}")),
+            }
+            Task::none()
+        }
+
         Message::Realtime(team, generation, event) => {
             apply_realtime(app, &team, generation, event);
             persist_workspace(app, &team);
@@ -1003,6 +1019,76 @@ fn toggle_reaction(
             result,
         },
     )
+}
+
+fn download_file_pressed(app: &mut App, url: String, filename: String) -> Task<Message> {
+    let Some(transport) = app.transport.clone() else {
+        app.toast("download failed: transport not connected");
+        return Task::none();
+    };
+    Task::perform(
+        async move { download_file_to_disk(transport, url, filename).await },
+        Message::FileDownloaded,
+    )
+}
+
+async fn download_file_to_disk(
+    transport: Arc<Transport>,
+    url: String,
+    filename: String,
+) -> Result<PathBuf, SlackError> {
+    let user_agent = crate::slack::xparams::Identity::from_capture().user_agent;
+    let bytes = transport.get_bytes(&url, &user_agent).await?;
+    let dir = config::data_dir()
+        .map_err(|e| SlackError::Transport(format!("download dir: {e}")))?
+        .join("downloads");
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| SlackError::Transport(format!("create download dir: {e}")))?;
+    let path = unique_download_path(&dir, &filename).await?;
+    tokio::fs::write(&path, bytes)
+        .await
+        .map_err(|e| SlackError::Transport(format!("write download: {e}")))?;
+    Ok(path)
+}
+
+async fn unique_download_path(dir: &Path, filename: &str) -> Result<PathBuf, SlackError> {
+    let filename = if filename.trim().is_empty() {
+        "download"
+    } else {
+        filename
+    };
+    let candidate = dir.join(filename);
+    if !tokio::fs::try_exists(&candidate)
+        .await
+        .map_err(|e| SlackError::Transport(format!("check download path: {e}")))?
+    {
+        return Ok(candidate);
+    }
+
+    let path = Path::new(filename);
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("download");
+    let ext = path.extension().and_then(|s| s.to_str());
+    for i in 1..1000 {
+        let name = match ext {
+            Some(ext) if !ext.is_empty() => format!("{stem}-{i}.{ext}"),
+            _ => format!("{stem}-{i}"),
+        };
+        let candidate = dir.join(name);
+        if !tokio::fs::try_exists(&candidate)
+            .await
+            .map_err(|e| SlackError::Transport(format!("check download path: {e}")))?
+        {
+            return Ok(candidate);
+        }
+    }
+
+    Err(SlackError::Transport(
+        "could not choose download path".to_owned(),
+    ))
 }
 
 fn apply_realtime(app: &mut App, team: &str, generation: u64, event: RtEvent) {
@@ -1421,6 +1507,22 @@ mod tests {
 
         assert_eq!(app.active_team.as_deref(), Some("T_TEST"));
         assert_eq!(app.active_channel.as_deref(), Some("C_DEV"));
+    }
+
+    #[tokio::test]
+    async fn unique_download_path_avoids_overwrite() {
+        let dir = std::env::temp_dir().join(format!("snack-test-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::write(dir.join("report.pdf"), b"old")
+            .await
+            .unwrap();
+
+        let path = unique_download_path(&dir, "report.pdf").await.unwrap();
+
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("report-1.pdf")
+        );
     }
 
     #[test]

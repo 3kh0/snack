@@ -115,16 +115,28 @@ pub fn empty_placeholder<'a>() -> Element<'a, Message> {
 fn file_row<'a>(file: &crate::slack::models::File) -> Element<'a, Message> {
     let title = state::file_title(file);
     let summary = state::file_summary(file);
-    container(
-        Column::new()
-            .spacing(theme::SPACE_XS)
-            .push(text(title).size(theme::TEXT_MD).font(Font {
-                weight: iced::font::Weight::Bold,
-                ..Font::default()
-            }))
-            .push(text(summary).size(theme::TEXT_SM).color(theme::MUTED)),
-    )
-    .padding(theme::SPACE_SM)
-    .style(theme::file_attachment)
-    .into()
+    let mut content = Column::new()
+        .spacing(theme::SPACE_XS)
+        .push(text(title).size(theme::TEXT_MD).font(Font {
+            weight: iced::font::Weight::Bold,
+            ..Font::default()
+        }))
+        .push(text(summary).size(theme::TEXT_SM).color(theme::MUTED));
+
+    if let Some(url) = file.url_private.clone() {
+        content = content.push(
+            button(text("Download").size(theme::TEXT_SM))
+                .padding([2, 0])
+                .style(theme::link_button)
+                .on_press(Message::FileDownloadPressed {
+                    url,
+                    filename: state::file_download_name(file),
+                }),
+        );
+    }
+
+    container(content)
+        .padding(theme::SPACE_SM)
+        .style(theme::file_attachment)
+        .into()
 }

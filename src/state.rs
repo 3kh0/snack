@@ -401,6 +401,38 @@ pub fn file_summary(file: &File) -> String {
     }
 }
 
+pub fn file_download_name(file: &File) -> String {
+    sanitize_file_name(
+        non_empty(file.name.as_deref())
+            .or_else(|| non_empty(file.title.as_deref()))
+            .or_else(|| non_empty(file.id.as_deref()))
+            .unwrap_or("download"),
+    )
+}
+
+fn sanitize_file_name(name: &str) -> String {
+    let sanitized = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_control()
+                || matches!(c, '/' | '\\' | ':' | '*')
+                || matches!(c, '?' | '"' | '<' | '>' | '|')
+            {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect::<String>()
+        .trim_matches(|c| c == ' ' || c == '.')
+        .to_owned();
+    if sanitized.is_empty() {
+        "download".to_owned()
+    } else {
+        sanitized
+    }
+}
+
 pub fn format_file_size(bytes: u64) -> String {
     const KB: f64 = 1024.0;
     const MB: f64 = KB * 1024.0;
@@ -702,6 +734,19 @@ mod tests {
         assert_eq!(file_summary(&file), "PDF - 1.5 MB");
         assert_eq!(format_file_size(512), "512 B");
         assert_eq!(format_file_size(2048), "2.0 KB");
+    }
+
+    #[test]
+    fn file_download_name_sanitizes_paths() {
+        let file = File {
+            name: Some("../bad/name?.png".into()),
+            title: Some("ignored".into()),
+            ..Default::default()
+        };
+        assert_eq!(file_download_name(&file), "_bad_name_.png");
+
+        let fallback = File::default();
+        assert_eq!(file_download_name(&fallback), "download");
     }
 
     #[test]
