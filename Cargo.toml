@@ -3,6 +3,13 @@ name = "snack"
 version = "0.1.0"
 edition = "2024"
 
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
 iced = { git = "https://github.com/iced-rs/iced", rev = "7c6ce8789c4671db81a3920d06e87ab6d8edef1d", features = ["tokio", "image", "svg", "advanced", "lazy"] }
