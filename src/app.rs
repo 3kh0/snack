@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -14,7 +14,7 @@ use crate::slack::api::{self, HistoryArgs, SearchArgs};
 use crate::slack::events::RtEvent;
 use crate::slack::models::{
     BootData, ChannelId, CountsPage, HistoryPage, Message as SlackMessage, MessageTs,
-    SearchMessagesPage, SentMessage, TeamId,
+    SearchMessagesPage, SentMessage, TeamId, User, UserId,
 };
 use crate::slack::realtime::{self, ConnectParams, Connection, RtUpdate};
 use crate::slack::{Error as SlackError, SlackClient, Transport};
@@ -77,6 +77,7 @@ pub struct App {
     last_typing: HashMap<(TeamId, ChannelId), Instant>,
     last_active_channels: HashMap<TeamId, ChannelId>,
     file_previews: HashMap<String, FilePreview>,
+    avatar_previews: HashMap<UserId, FilePreview>,
     pending_scroll_to: Option<(ChannelId, MessageTs)>,
 }
 
@@ -179,6 +180,14 @@ pub enum Message {
         key: String,
         result: Result<Vec<u8>, SlackError>,
     },
+    AvatarLoaded {
+        user: UserId,
+        result: Result<Vec<u8>, SlackError>,
+    },
+    UsersLoaded {
+        team: TeamId,
+        result: Result<Vec<User>, SlackError>,
+    },
     DesktopNotificationShown(Result<(), String>),
     Realtime(TeamId, u64, RtEvent),
     RtConnected(TeamId, u64, Connection),
@@ -212,6 +221,7 @@ impl App {
             last_typing: HashMap::new(),
             last_active_channels: HashMap::new(),
             file_previews: HashMap::new(),
+            avatar_previews: HashMap::new(),
             pending_scroll_to: None,
         }
     }
@@ -413,8 +423,13 @@ impl App {
 pub fn run() -> iced::Result {
     iced::application(App::boot, update, view)
         .subscription(subscription)
+        .theme(theme)
         .title("Snack")
         .run()
+}
+
+fn theme(_app: &App) -> iced::Theme {
+    ui::theme::amoled()
 }
 
 fn update(app: &mut App, message: Message) -> Task<Message> {
@@ -453,8 +468,10 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                     return app.load_history(&team, &id);
                 }
                 return Task::batch([
+                    hydrate_visible_missing_users(app, &team, &id),
                     mark_latest_visible(app, &team, &id),
                     load_visible_file_previews(app, &team, &id),
+                    load_visible_avatar_previews(app, &team, &id),
                 ]);
             }
             Task::none()
@@ -474,7 +491,10 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             if needs_load {
                 app.load_thread(&team, &channel, &ts)
             } else {
-                load_thread_file_previews(app, &team, &channel, &ts)
+                Task::batch([
+                    load_thread_file_previews(app, &team, &channel, &ts),
+                    load_thread_avatar_previews(app, &team, &channel, &ts),
+                ])
             }
         }
 
@@ -495,15 +515,24 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             }
             match result {
                 Ok(page) => {
+                    let messages: Vec<_> = page
+                        .messages
+                        .into_iter()
+                        .map(crate::state::visible_message)
+                        .collect();
                     let key = (team.clone(), channel.clone(), root_ts.clone());
                     let cm = app.threads.entry(key).or_default();
-                    let n = page.messages.len();
-                    for msg in page.messages {
+                    let n = messages.len();
+                    for msg in messages.clone() {
                         cm.upsert(msg);
                     }
                     cm.loaded = true;
                     tracing::info!(%channel, %root_ts, messages = n, "thread loaded");
-                    return load_thread_file_previews(app, &team, &channel, &root_ts);
+                    return Task::batch([
+                        hydrate_missing_users(app, &team, &messages),
+                        load_avatar_previews(app, &team, messages),
+                        load_thread_file_previews(app, &team, &channel, &root_ts),
+                    ]);
                 }
                 Err(e) => {
                     app.toast(format!("thread failed for {channel}/{root_ts}: {e}"));
@@ -617,7 +646,11 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                     .clone()
                     .filter(|_| app.active_team.as_deref() == Some(&team))
                 {
-                    return load_visible_file_previews(app, &team, &channel);
+                    return Task::batch([
+                        hydrate_visible_missing_users(app, &team, &channel),
+                        load_visible_file_previews(app, &team, &channel),
+                        load_visible_avatar_previews(app, &team, &channel),
+                    ]);
                 }
                 Task::none()
             }
@@ -646,17 +679,26 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::HistoryLoaded(team, channel, result) => {
             match result {
                 Ok(page) => {
+                    let messages: Vec<_> = page
+                        .messages
+                        .into_iter()
+                        .map(crate::state::visible_message)
+                        .collect();
                     if let Some(ws) = app.workspaces.get_mut(&team) {
                         let cm = ws.messages.entry(channel.clone()).or_default();
-                        let n = page.messages.len();
-                        for msg in page.messages {
-                            cm.upsert(msg);
+                        let n = messages.len();
+                        for msg in messages.clone() {
+                            if crate::state::is_channel_timeline_visible(&msg) {
+                                cm.upsert(msg);
+                            }
                         }
                         cm.loaded = true;
                         tracing::info!(%channel, messages = n, "history loaded");
                     }
                     persist_workspace(app, &team);
                     return Task::batch([
+                        hydrate_missing_users(app, &team, &messages),
+                        load_avatar_previews(app, &team, messages),
                         mark_latest_visible(app, &team, &channel),
                         load_visible_file_previews(app, &team, &channel),
                         scroll_to_pending(app, &channel),
@@ -872,6 +914,37 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
 
+        Message::AvatarLoaded { user, result } => {
+            match result {
+                Ok(bytes) => {
+                    app.avatar_previews
+                        .insert(user, FilePreview::Loaded(ImageHandle::from_bytes(bytes)));
+                }
+                Err(e) => {
+                    tracing::debug!(%user, error = %e, "avatar failed");
+                    app.avatar_previews.insert(user, FilePreview::Failed);
+                }
+            }
+            Task::none()
+        }
+
+        Message::UsersLoaded { team, result } => {
+            match result {
+                Ok(users) => {
+                    let ids: Vec<_> = users.iter().map(|user| user.id.clone()).collect();
+                    if let Some(ws) = app.workspaces.get_mut(&team) {
+                        for user in users {
+                            ws.users.insert(user.id.clone(), user);
+                        }
+                    }
+                    persist_workspace(app, &team);
+                    return load_user_avatar_previews(app, &team, ids);
+                }
+                Err(e) => tracing::debug!(%team, error = %e, "users info failed"),
+            }
+            Task::none()
+        }
+
         Message::DesktopNotificationShown(result) => {
             if let Err(e) = result {
                 tracing::debug!(error = %e, "desktop notification failed");
@@ -888,8 +961,10 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             }
             if app.active_team.as_deref() == Some(&team) {
                 if let Some(channel) = app.active_channel.clone() {
+                    tasks.push(hydrate_visible_missing_users(app, &team, &channel));
                     tasks.push(mark_latest_visible(app, &team, &channel));
                     tasks.push(load_visible_file_previews(app, &team, &channel));
+                    tasks.push(load_visible_avatar_previews(app, &team, &channel));
                 }
             }
             Task::batch(tasks)
@@ -1524,7 +1599,7 @@ fn search_hits(ws: &Workspace, response: &SearchMessagesPage) -> Vec<SearchHit> 
             .or_else(|| item.channel.as_ref().map(crate::state::channel_label))
             .unwrap_or_else(|| channel_id.clone());
         for msg in &item.messages {
-            let mut msg = msg.clone();
+            let mut msg = crate::state::visible_message(msg.clone());
             if msg.channel.is_none() {
                 msg.channel = Some(channel_id.clone());
             }
@@ -1743,6 +1818,16 @@ fn load_visible_file_previews(app: &mut App, team: &str, channel: &str) -> Task<
     load_file_previews(app, messages)
 }
 
+fn load_visible_avatar_previews(app: &mut App, team: &str, channel: &str) -> Task<Message> {
+    let messages = app
+        .workspaces
+        .get(team)
+        .and_then(|ws| ws.messages.get(channel))
+        .map(|cm| cm.messages.clone())
+        .unwrap_or_default();
+    load_avatar_previews(app, team, messages)
+}
+
 fn load_thread_file_previews(
     app: &mut App,
     team: &str,
@@ -1769,6 +1854,34 @@ fn load_thread_file_previews(
         messages.extend(replies.messages.clone());
     }
     load_file_previews(app, messages)
+}
+
+fn load_thread_avatar_previews(
+    app: &mut App,
+    team: &str,
+    channel: &str,
+    root_ts: &str,
+) -> Task<Message> {
+    let mut messages = Vec::new();
+    if let Some(root) = app
+        .workspaces
+        .get(team)
+        .and_then(|ws| ws.messages.get(channel))
+        .and_then(|cm| {
+            cm.messages
+                .iter()
+                .find(|msg| msg.ts.as_deref() == Some(root_ts))
+        })
+    {
+        messages.push(root.clone());
+    }
+    if let Some(replies) =
+        app.threads
+            .get(&(team.to_owned(), channel.to_owned(), root_ts.to_owned()))
+    {
+        messages.extend(replies.messages.clone());
+    }
+    load_avatar_previews(app, team, messages)
 }
 
 fn load_file_previews(app: &mut App, messages: Vec<SlackMessage>) -> Task<Message> {
@@ -1816,6 +1929,117 @@ fn load_file_previews(app: &mut App, messages: Vec<SlackMessage>) -> Task<Messag
             },
         )
     }))
+}
+
+fn hydrate_missing_users(app: &App, team: &str, messages: &[SlackMessage]) -> Task<Message> {
+    let Some((transport, session)) = app.live() else {
+        return Task::none();
+    };
+    let Some(ws_session) = session.workspaces.get(team) else {
+        return Task::none();
+    };
+    let Some(ws) = app.workspaces.get(team) else {
+        return Task::none();
+    };
+
+    let mut seen = HashSet::new();
+    let users: Vec<_> = messages
+        .iter()
+        .flat_map(message_user_ids)
+        .filter(|user| !user.trim().is_empty())
+        .filter(|user| !ws.users.contains_key(user.as_str()))
+        .filter(|user| seen.insert(user.clone()))
+        .collect();
+
+    if users.is_empty() {
+        return Task::none();
+    }
+
+    let transport = transport.clone();
+    let client = app.client.clone();
+    let ws_session = ws_session.clone();
+    let team = team.to_owned();
+    Task::perform(
+        async move { api::fetch_users_info(&transport, &client, &ws_session, users).await },
+        move |result| Message::UsersLoaded {
+            team: team.clone(),
+            result,
+        },
+    )
+}
+
+fn hydrate_visible_missing_users(app: &App, team: &str, channel: &str) -> Task<Message> {
+    let messages = app
+        .workspaces
+        .get(team)
+        .and_then(|ws| ws.messages.get(channel))
+        .map(|cm| cm.messages.clone())
+        .unwrap_or_default();
+    hydrate_missing_users(app, team, &messages)
+}
+
+fn load_avatar_previews(app: &mut App, team: &str, messages: Vec<SlackMessage>) -> Task<Message> {
+    let mut seen = HashSet::new();
+    let users = messages
+        .iter()
+        .flat_map(message_user_ids)
+        .filter(|user| seen.insert(user.clone()))
+        .collect();
+    load_user_avatar_previews(app, team, users)
+}
+
+fn load_user_avatar_previews(app: &mut App, team: &str, users: Vec<UserId>) -> Task<Message> {
+    let Some(transport) = app.transport.clone() else {
+        return Task::none();
+    };
+    let Some(ws) = app.workspaces.get(team) else {
+        return Task::none();
+    };
+
+    let mut seen = HashSet::new();
+    let requests: Vec<_> = users
+        .into_iter()
+        .filter(|user| !app.avatar_previews.contains_key(user))
+        .filter(|user| seen.insert(user.clone()))
+        .filter_map(|user| ws.avatar_url(&user).map(|url| (user, url)))
+        .collect();
+
+    if requests.is_empty() {
+        return Task::none();
+    }
+
+    for (user, _) in &requests {
+        app.avatar_previews
+            .insert(user.clone(), FilePreview::Loading);
+    }
+
+    let user_agent = crate::slack::xparams::Identity::from_capture().user_agent;
+    Task::batch(requests.into_iter().map(|(user, url)| {
+        let transport = transport.clone();
+        let user_agent = user_agent.clone();
+        Task::perform(
+            async move { transport.get_bytes(&url, &user_agent).await },
+            move |result| Message::AvatarLoaded {
+                user: user.clone(),
+                result,
+            },
+        )
+    }))
+}
+
+fn message_user_ids(msg: &SlackMessage) -> Vec<UserId> {
+    let mut users = Vec::new();
+    if let Some(user) = msg.user.clone() {
+        users.push(user);
+    }
+    if let Some(user) = msg.parent_user_id.clone() {
+        users.push(user);
+    }
+    users.extend(msg.reply_users.clone());
+    for reaction in &msg.reactions {
+        users.extend(reaction.users.clone());
+    }
+    users
 }
 
 fn show_desktop_notification_task(notification: DesktopNotification) -> Task<Message> {
@@ -2194,6 +2418,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
                     ws,
                     channel_id,
                     &app.file_previews,
+                    &app.avatar_previews,
                     editing_for(channel_id),
                 ))
                 .height(Fill),
@@ -2222,6 +2447,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
                 replies,
                 &app.thread_composer_text,
                 &app.file_previews,
+                &app.avatar_previews,
                 editing_for(channel),
             )
         ]

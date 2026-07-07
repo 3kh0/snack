@@ -249,6 +249,10 @@ impl Workspace {
         display_name(self.users.get(user_id), user_id)
     }
 
+    pub fn avatar_url(&self, user_id: &str) -> Option<String> {
+        user_avatar_url(self.users.get(user_id)?).map(str::to_owned)
+    }
+
     pub fn set_typing(&mut self, channel: &str, user: UserId, now: Instant) {
         if user == self.self_user_id {
             return;
@@ -346,6 +350,16 @@ pub fn display_name(user: Option<&User>, user_id: &str) -> String {
     user_id.to_owned()
 }
 
+pub fn user_avatar_url(user: &User) -> Option<&str> {
+    let profile = user.profile.as_ref()?;
+    non_empty(profile.image_48.as_deref())
+        .or_else(|| non_empty(profile.image_72.as_deref()))
+        .or_else(|| non_empty(profile.image_32.as_deref()))
+        .or_else(|| non_empty(profile.image_24.as_deref()))
+        .or_else(|| non_empty(profile.image_192.as_deref()))
+        .or_else(|| non_empty(profile.image_512.as_deref()))
+}
+
 pub fn channel_label(channel: &Channel) -> String {
     if let Some(name) = non_empty(channel.name.as_deref()) {
         if channel.is_im {
@@ -373,6 +387,50 @@ pub fn message_text(msg: &SlackMessage) -> String {
         return "[rich message]".to_owned();
     }
     "[no text]".to_owned()
+}
+
+pub fn visible_message(msg: SlackMessage) -> SlackMessage {
+    if msg.subtype.as_deref() != Some("message_replied") {
+        return msg;
+    }
+
+    let Some(nested) = msg.message.clone() else {
+        return msg;
+    };
+    let mut nested = *nested;
+    nested.team = nested.team.or(msg.team);
+    nested.channel = nested.channel.or(msg.channel);
+    nested.reply_count = nested.reply_count.or(msg.reply_count);
+    nested.reply_users_count = nested.reply_users_count.or(msg.reply_users_count);
+    nested.latest_reply = nested.latest_reply.or(msg.latest_reply);
+    if nested.reply_users.is_empty() {
+        nested.reply_users = msg.reply_users;
+    }
+    if nested.reactions.is_empty() {
+        nested.reactions = msg.reactions;
+    }
+    if nested.files.is_empty() {
+        nested.files = msg.files;
+    }
+    if nested.attachments.is_empty() {
+        nested.attachments = msg.attachments;
+    }
+    nested
+}
+
+/// A message belongs in the channel timeline unless it is a thread reply that
+/// was not also broadcast to the channel, or a leftover `message_replied`
+/// envelope (a metadata-only bump that carries no displayable message).
+pub fn is_channel_timeline_visible(msg: &SlackMessage) -> bool {
+    if msg.subtype.as_deref() == Some("message_replied") {
+        return false;
+    }
+    match (msg.thread_ts.as_deref(), msg.ts.as_deref()) {
+        (Some(root), Some(ts)) if root != ts => {
+            msg.subtype.as_deref() == Some("thread_broadcast")
+        }
+        _ => true,
+    }
 }
 
 pub fn file_title(file: &File) -> String {
@@ -553,7 +611,11 @@ fn merge_message(existing: &mut SlackMessage, update: SlackMessage) {
     if !update.files.is_empty() {
         existing.files = update.files;
     }
+    if !update.attachments.is_empty() {
+        existing.attachments = update.attachments;
+    }
     existing.edited = update.edited.or_else(|| existing.edited.take());
+    existing.message = update.message.or_else(|| existing.message.take());
     existing.extra.extend(update.extra);
 }
 
@@ -697,6 +759,35 @@ mod tests {
     }
 
     #[test]
+    fn user_avatar_url_prefers_profile_image_48() {
+        let user = User {
+            id: "U1".into(),
+            profile: Some(UserProfile {
+                image_32: Some("https://example.test/32.png".into()),
+                image_48: Some("https://example.test/48.png".into()),
+                image_72: Some("https://example.test/72.png".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(user_avatar_url(&user), Some("https://example.test/48.png"));
+
+        let fallback = User {
+            id: "U2".into(),
+            profile: Some(UserProfile {
+                image_48: Some(" ".into()),
+                image_32: Some("https://example.test/32.png".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            user_avatar_url(&fallback),
+            Some("https://example.test/32.png")
+        );
+    }
+
+    #[test]
     fn channel_label_variants() {
         let public = Channel {
             id: "C1".into(),
@@ -748,6 +839,68 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(message_text(&bare), "[no text]");
+    }
+
+    #[test]
+    fn visible_message_unwraps_message_replied_envelope() {
+        let envelope = SlackMessage {
+            subtype: Some("message_replied".into()),
+            channel: Some("C1".into()),
+            reply_count: Some(2),
+            message: Some(Box::new(SlackMessage {
+                user: Some("U1".into()),
+                ts: Some("1.0".into()),
+                text: Some("actual".into()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+
+        let visible = visible_message(envelope);
+        assert_eq!(visible.user.as_deref(), Some("U1"));
+        assert_eq!(visible.text.as_deref(), Some("actual"));
+        assert_eq!(visible.channel.as_deref(), Some("C1"));
+        assert_eq!(visible.reply_count, Some(2));
+        assert_ne!(visible.subtype.as_deref(), Some("message_replied"));
+    }
+
+    #[test]
+    fn channel_timeline_hides_thread_replies_but_keeps_roots_and_broadcasts() {
+        let root = SlackMessage {
+            ts: Some("100.0".into()),
+            thread_ts: Some("100.0".into()),
+            reply_count: Some(3),
+            ..Default::default()
+        };
+        assert!(is_channel_timeline_visible(&root));
+
+        let plain = SlackMessage {
+            ts: Some("101.0".into()),
+            ..Default::default()
+        };
+        assert!(is_channel_timeline_visible(&plain));
+
+        let reply = SlackMessage {
+            ts: Some("102.0".into()),
+            thread_ts: Some("100.0".into()),
+            ..Default::default()
+        };
+        assert!(!is_channel_timeline_visible(&reply));
+
+        let broadcast = SlackMessage {
+            ts: Some("103.0".into()),
+            thread_ts: Some("100.0".into()),
+            subtype: Some("thread_broadcast".into()),
+            ..Default::default()
+        };
+        assert!(is_channel_timeline_visible(&broadcast));
+
+        let replied_envelope = SlackMessage {
+            ts: Some("104.0".into()),
+            subtype: Some("message_replied".into()),
+            ..Default::default()
+        };
+        assert!(!is_channel_timeline_visible(&replied_envelope));
     }
 
     #[test]

@@ -12,6 +12,7 @@ pub fn view<'a>(
     ws: &Workspace,
     channel_id: &str,
     file_previews: &HashMap<String, FilePreview>,
+    avatar_previews: &HashMap<String, FilePreview>,
     editing: Option<(&str, &str)>,
 ) -> Element<'a, Message> {
     let label = ws
@@ -30,6 +31,9 @@ pub fn view<'a>(
         Some(cm) if !cm.messages.is_empty() => {
             let mut col = Column::new().spacing(theme::SPACE_XS);
             for m in &cm.messages {
+                if !state::is_channel_timeline_visible(m) {
+                    continue;
+                }
                 let pending = m.ts.as_deref().map(|ts| cm.is_pending(ts)).unwrap_or(false);
                 let edit = editing
                     .filter(|(ts, _)| Some(*ts) == m.ts.as_deref())
@@ -40,6 +44,7 @@ pub fn view<'a>(
                     m,
                     pending,
                     file_previews,
+                    avatar_previews,
                     edit,
                 ));
             }

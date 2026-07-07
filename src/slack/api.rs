@@ -3,8 +3,8 @@ use crate::config::WorkspaceSession;
 use super::Error;
 use super::client::{PreparedRequest, SlackClient};
 use super::models::{
-    BootData, ChannelId, CountsPage, HistoryPage, MessageTs, SearchInlinePage, SearchMessagesPage,
-    SentMessage,
+    BootData, ChannelId, CountsPage, EdgeResults, HistoryPage, MessageTs, SearchInlinePage,
+    SearchMessagesPage, SentMessage, User,
 };
 use super::transport::Transport;
 pub fn user_boot(client: &SlackClient, workspace: &WorkspaceSession) -> PreparedRequest {
@@ -313,6 +313,19 @@ pub async fn fetch_counts(
 ) -> Result<CountsPage, Error> {
     let value = transport.execute(client_counts(client, workspace)).await?;
     decode(value, "client.counts")
+}
+
+pub async fn fetch_users_info(
+    transport: &Transport,
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    user_ids: Vec<String>,
+) -> Result<Vec<User>, Error> {
+    let request = super::edge::users_info(client, workspace, &user_ids)
+        .map_err(|e| Error::Transport(format!("build users/info: {e}")))?;
+    let value = transport.execute(request).await?;
+    let page: EdgeResults<User> = decode(value, "users/info")?;
+    Ok(page.results)
 }
 
 pub async fn send_message(

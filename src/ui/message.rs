@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use iced::widget::{Column, Row, button, container, image, text, text_input};
-use iced::{ContentFit, Element, Font, Length};
+use iced::{Alignment, Background, Border, Color, ContentFit, Element, Fill, Font, Length, Theme};
 
 use super::{blocks, theme};
 use crate::app::{FilePreview, Message};
@@ -14,6 +14,7 @@ pub fn row<'a>(
     msg: &SlackMessage,
     pending: bool,
     file_previews: &HashMap<String, FilePreview>,
+    avatar_previews: &HashMap<String, FilePreview>,
     edit_text: Option<&str>,
 ) -> Element<'a, Message> {
     let author = msg
@@ -28,9 +29,16 @@ pub fn row<'a>(
         .map(state::format_ts_hm)
         .unwrap_or_default();
 
+    let avatar = avatar(
+        msg.user.as_deref(),
+        ws,
+        avatar_previews,
+        author.chars().next(),
+    );
+
     let mut header = Row::new()
         .spacing(theme::SPACE_SM)
-        .push(text(author).size(theme::TEXT_MD).font(Font {
+        .push(text(author.clone()).size(theme::TEXT_MD).font(Font {
             weight: iced::font::Weight::Bold,
             ..Font::default()
         }))
@@ -92,12 +100,17 @@ pub fn row<'a>(
                     .style(theme::link_button)
                     .on_press(Message::EditCancelled),
             );
+        let content = Column::new()
+            .spacing(theme::SPACE_XS)
+            .push(header)
+            .push(input)
+            .push(actions);
         return container(
-            Column::new()
-                .spacing(theme::SPACE_XS)
-                .push(header)
-                .push(input)
-                .push(actions),
+            Row::new()
+                .spacing(theme::SPACE_SM)
+                .align_y(Alignment::Start)
+                .push(avatar)
+                .push(container(content).width(Fill)),
         )
         .padding([theme::SPACE_XS, theme::SPACE_MD])
         .into();
@@ -178,9 +191,15 @@ pub fn row<'a>(
         col = col.push(chips);
     }
 
-    container(col)
-        .padding([theme::SPACE_XS, theme::SPACE_MD])
-        .into()
+    container(
+        Row::new()
+            .spacing(theme::SPACE_SM)
+            .align_y(Alignment::Start)
+            .push(avatar)
+            .push(container(col).width(Fill)),
+    )
+    .padding([theme::SPACE_XS, theme::SPACE_MD])
+    .into()
 }
 
 pub fn empty_placeholder<'a>() -> Element<'a, Message> {
@@ -264,6 +283,51 @@ fn attachment_row<'a>(
 
 fn non_empty(s: Option<&str>) -> Option<&str> {
     s.map(str::trim).filter(|s| !s.is_empty())
+}
+
+fn avatar<'a>(
+    user_id: Option<&str>,
+    ws: &Workspace,
+    avatar_previews: &HashMap<String, FilePreview>,
+    fallback: Option<char>,
+) -> Element<'a, Message> {
+    const SIZE: f32 = 32.0;
+    if let Some(user_id) = user_id {
+        if ws.avatar_url(user_id).is_some() {
+            if let Some(FilePreview::Loaded(handle)) = avatar_previews.get(user_id) {
+                return image::Image::new(handle.clone())
+                    .width(Length::Fixed(SIZE))
+                    .height(Length::Fixed(SIZE))
+                    .content_fit(ContentFit::Cover)
+                    .border_radius(SIZE / 2.0)
+                    .into();
+            }
+        }
+    }
+
+    let initial = fallback
+        .filter(|c| !c.is_whitespace())
+        .map(|c| c.to_uppercase().collect::<String>())
+        .unwrap_or_else(|| "?".to_owned());
+    container(text(initial).size(theme::TEXT_SM).font(Font {
+        weight: iced::font::Weight::Bold,
+        ..Font::default()
+    }))
+    .width(Length::Fixed(SIZE))
+    .height(Length::Fixed(SIZE))
+    .center_x(Length::Fixed(SIZE))
+    .center_y(Length::Fixed(SIZE))
+    .style(avatar_placeholder)
+    .into()
+}
+
+fn avatar_placeholder(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(Color::from_rgb(0.82, 0.84, 0.88))),
+        text_color: Some(Color::from_rgb(0.18, 0.20, 0.24)),
+        border: Border::default().rounded(16.0),
+        ..container::Style::default()
+    }
 }
 
 fn file_row<'a>(

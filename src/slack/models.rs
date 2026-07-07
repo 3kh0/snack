@@ -118,6 +118,8 @@ pub struct Message {
     pub attachments: Vec<Attachment>,
     #[serde(default)]
     pub edited: Option<Value>,
+    #[serde(default)]
+    pub message: Option<Box<Message>>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -677,5 +679,30 @@ mod fixture_tests {
         assert_eq!(file.pretty_type.as_deref(), Some("PNG"));
         assert_eq!(file.size, Some(2048));
         assert_eq!(file.extra["mode"].as_str(), Some("hosted"));
+    }
+
+    #[test]
+    fn deserialize_message_replied_envelope() {
+        let page: HistoryPage = serde_json::from_str(
+            r#"{"ok":true,"messages":[{
+                "type":"message",
+                "subtype":"message_replied",
+                "channel":"C1",
+                "ts":"1783372700.000100",
+                "message":{
+                    "type":"message",
+                    "user":"U1",
+                    "text":"actual root",
+                    "ts":"1783372600.000100",
+                    "reply_count":1
+                }
+            }]}"#,
+        )
+        .unwrap();
+        let envelope = &page.messages[0];
+        let nested = envelope.message.as_ref().unwrap();
+        assert_eq!(envelope.subtype.as_deref(), Some("message_replied"));
+        assert_eq!(nested.user.as_deref(), Some("U1"));
+        assert_eq!(nested.text.as_deref(), Some("actual root"));
     }
 }

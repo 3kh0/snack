@@ -179,6 +179,12 @@ pub fn parse_event(text: &str) -> Option<RtEvent> {
                     message.channel.get_or_insert(channel.clone());
                     Some(RtEvent::MessageChanged { channel, message })
                 }
+                Some("message_replied") => {
+                    let nested = value.get("message")?.clone();
+                    let mut message: SlackMessage = serde_json::from_value(nested).ok()?;
+                    message.channel.get_or_insert(channel);
+                    Some(RtEvent::Message(message))
+                }
                 Some("message_deleted") => {
                     let deleted_ts = value.get("deleted_ts").and_then(Value::as_str)?.to_owned();
                     Some(RtEvent::MessageDeleted {
@@ -294,6 +300,20 @@ mod tests {
                 assert_eq!(deleted_ts, "1.2");
             }
             other => panic!("expected MessageDeleted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_message_replied_as_nested_message() {
+        let replied = r#"{"type":"message","subtype":"message_replied","channel":"C1","message":{"type":"message","user":"U1","text":"actual","ts":"1.2"}}"#;
+        match parse_event(replied) {
+            Some(RtEvent::Message(message)) => {
+                assert_eq!(message.user.as_deref(), Some("U1"));
+                assert_eq!(message.text.as_deref(), Some("actual"));
+                assert_eq!(message.channel.as_deref(), Some("C1"));
+                assert_ne!(message.subtype.as_deref(), Some("message_replied"));
+            }
+            other => panic!("expected nested Message, got {other:?}"),
         }
     }
 

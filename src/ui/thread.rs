@@ -14,6 +14,7 @@ pub fn view<'a>(
     replies: Option<&ChannelMessages>,
     value: &str,
     file_previews: &HashMap<String, FilePreview>,
+    avatar_previews: &HashMap<String, FilePreview>,
     editing: Option<(&str, &str)>,
 ) -> Element<'a, Message> {
     let header = row![
@@ -43,6 +44,7 @@ pub fn view<'a>(
                     msg,
                     pending,
                     file_previews,
+                    avatar_previews,
                     edit,
                 ));
             }
@@ -60,6 +62,7 @@ pub fn view<'a>(
                     root,
                     false,
                     file_previews,
+                    avatar_previews,
                     edit,
                 ));
             }
