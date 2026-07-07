@@ -260,6 +260,8 @@ pub struct UserProfile {
     #[serde(default)]
     pub image_512: Option<String>,
     #[serde(default)]
+    pub image_original: Option<String>,
+    #[serde(default)]
     pub status_text: Option<String>,
     #[serde(default)]
     pub status_emoji: Option<String>,

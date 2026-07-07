@@ -9,6 +9,7 @@ use crate::slack::models::{Channel, Message as SlackMessage, User};
 use crate::state::{ChannelMessages, RealtimeStatus, Workspace};
 
 const SCHEMA_VERSION: i64 = 1;
+const MAX_CACHED_MESSAGES_PER_CHANNEL: usize = 200;
 
 pub struct Cache {
     conn: Connection,
@@ -177,7 +178,14 @@ impl Cache {
                     cm.mention_count
                 ],
             )?;
-            for msg in &cm.messages {
+            let mut cached_messages: Vec<_> = cm
+                .messages
+                .iter()
+                .rev()
+                .take(MAX_CACHED_MESSAGES_PER_CHANNEL)
+                .collect();
+            cached_messages.reverse();
+            for msg in cached_messages {
                 let Some(ts) = msg.ts.as_deref() else {
                     continue;
                 };

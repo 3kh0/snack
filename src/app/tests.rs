@@ -2,12 +2,12 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde_json::json;
 
-use super::update::{notification_for_message, unique_download_path, update};
+use super::update::{needs_user_hydration, notification_for_message, unique_download_path, update};
 use super::*;
 use crate::slack::events::RtEvent;
 use crate::slack::models::{
     Channel, HistoryPage, Message as SlackMessage, SearchItem, SearchMessagesPage,
-    SearchPagination, SentMessage,
+    SearchPagination, SentMessage, User, UserProfile,
 };
 use crate::slack::realtime::Connection;
 use crate::state::{ChannelMessages, RealtimeStatus};
@@ -183,6 +183,64 @@ fn channel_selection_preserves_loaded_messages() {
     let ws = app.active_workspace().unwrap();
     assert!(!ws.messages.get("C_GENERAL").unwrap().messages.is_empty());
     assert!(!ws.messages.get("C_DEV").unwrap().messages.is_empty());
+}
+
+#[test]
+fn known_user_without_avatar_still_gets_profile_hydration() {
+    let mut app = test_app();
+    let team = app.active_team.clone().unwrap();
+    let ws = app.workspaces.get_mut(&team).unwrap();
+    ws.users.insert(
+        "U_ALICE".into(),
+        User {
+            id: "U_ALICE".into(),
+            profile: Some(UserProfile {
+                display_name: Some("Alice".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+
+    let ws = app.workspaces.get(&team).unwrap();
+    assert!(needs_user_hydration(
+        ws,
+        &app.avatar_profile_hydrated,
+        "U_ALICE"
+    ));
+
+    app.avatar_profile_hydrated.insert("U_ALICE".into());
+    let ws = app.workspaces.get(&team).unwrap();
+    assert!(!needs_user_hydration(
+        ws,
+        &app.avatar_profile_hydrated,
+        "U_ALICE"
+    ));
+}
+
+#[test]
+fn known_user_with_avatar_skips_profile_hydration() {
+    let mut app = test_app();
+    let team = app.active_team.clone().unwrap();
+    let ws = app.workspaces.get_mut(&team).unwrap();
+    ws.users.insert(
+        "U_ALICE".into(),
+        User {
+            id: "U_ALICE".into(),
+            profile: Some(UserProfile {
+                image_48: Some("https://example.test/alice.png".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+
+    let ws = app.workspaces.get(&team).unwrap();
+    assert!(!needs_user_hydration(
+        ws,
+        &app.avatar_profile_hydrated,
+        "U_ALICE"
+    ));
 }
 
 #[test]

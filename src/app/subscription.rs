@@ -8,7 +8,12 @@ use crate::slack::realtime::{self, ConnectParams, RtUpdate};
 use super::{App, Message};
 
 pub(super) fn subscription(app: &App) -> Subscription<Message> {
-    let mut subs = vec![iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick)];
+    let needs_tick =
+        !app.cache_dirty.is_empty() || app.workspaces.values().any(|ws| !ws.typing.is_empty());
+    let mut subs = Vec::new();
+    if needs_tick {
+        subs.push(iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick));
+    }
 
     if let Some(session) = &app.session {
         let user_agent = crate::slack::xparams::Identity::from_capture().user_agent;

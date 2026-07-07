@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -86,7 +86,10 @@ pub struct App {
     last_active_channels: HashMap<TeamId, ChannelId>,
     file_previews: HashMap<String, FilePreview>,
     avatar_previews: HashMap<UserId, FilePreview>,
+    avatar_profile_hydrated: HashSet<UserId>,
     pending_scroll_to: Option<(ChannelId, MessageTs)>,
+    cache_dirty: HashMap<TeamId, Instant>,
+    cache_saving: HashMap<TeamId, Instant>,
 }
 
 #[derive(Debug, Clone)]
@@ -197,6 +200,11 @@ pub enum Message {
         result: Result<Vec<User>, SlackError>,
     },
     DesktopNotificationShown(Result<(), String>),
+    CacheSaved {
+        team: TeamId,
+        started_at: Instant,
+        result: Result<(), String>,
+    },
     Realtime(TeamId, u64, RtEvent),
     RtConnected(TeamId, u64, Connection),
     RtDisconnected(TeamId, u64),
@@ -230,7 +238,10 @@ impl App {
             last_active_channels: HashMap::new(),
             file_previews: HashMap::new(),
             avatar_previews: HashMap::new(),
+            avatar_profile_hydrated: HashSet::new(),
             pending_scroll_to: None,
+            cache_dirty: HashMap::new(),
+            cache_saving: HashMap::new(),
         }
     }
 

@@ -358,6 +358,7 @@ pub fn user_avatar_url(user: &User) -> Option<&str> {
         .or_else(|| non_empty(profile.image_24.as_deref()))
         .or_else(|| non_empty(profile.image_192.as_deref()))
         .or_else(|| non_empty(profile.image_512.as_deref()))
+        .or_else(|| non_empty(profile.image_original.as_deref()))
 }
 
 pub fn channel_label(channel: &Channel) -> String {
@@ -782,6 +783,19 @@ mod tests {
         assert_eq!(
             user_avatar_url(&fallback),
             Some("https://example.test/32.png")
+        );
+
+        let original_only = User {
+            id: "U3".into(),
+            profile: Some(UserProfile {
+                image_original: Some("https://example.test/original.png".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            user_avatar_url(&original_only),
+            Some("https://example.test/original.png")
         );
     }
 

@@ -7,6 +7,7 @@ use crate::state::{self, Workspace};
 use std::collections::HashMap;
 
 pub const CHANNEL_SCROLLABLE_ID: &str = "channel-messages";
+pub const VISIBLE_MESSAGE_LIMIT: usize = 200;
 
 pub fn view<'a>(
     ws: &Workspace,
@@ -30,10 +31,15 @@ pub fn view<'a>(
     let list: Element<'a, Message> = match ws.messages.get(channel_id) {
         Some(cm) if !cm.messages.is_empty() => {
             let mut col = Column::new().spacing(theme::SPACE_XS);
-            for m in &cm.messages {
-                if !state::is_channel_timeline_visible(m) {
-                    continue;
-                }
+            let mut visible: Vec<_> = cm
+                .messages
+                .iter()
+                .rev()
+                .filter(|m| state::is_channel_timeline_visible(m))
+                .take(VISIBLE_MESSAGE_LIMIT)
+                .collect();
+            visible.reverse();
+            for m in visible {
                 let pending = m.ts.as_deref().map(|ts| cm.is_pending(ts)).unwrap_or(false);
                 let edit = editing
                     .filter(|(ts, _)| Some(*ts) == m.ts.as_deref())

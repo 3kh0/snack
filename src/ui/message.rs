@@ -292,6 +292,7 @@ fn avatar<'a>(
     fallback: Option<char>,
 ) -> Element<'a, Message> {
     const SIZE: f32 = 32.0;
+    const RADIUS: f32 = 7.0;
     if let Some(user_id) = user_id {
         if ws.avatar_url(user_id).is_some() {
             if let Some(FilePreview::Loaded(handle)) = avatar_previews.get(user_id) {
@@ -299,7 +300,7 @@ fn avatar<'a>(
                     .width(Length::Fixed(SIZE))
                     .height(Length::Fixed(SIZE))
                     .content_fit(ContentFit::Cover)
-                    .border_radius(SIZE / 2.0)
+                    .border_radius(RADIUS)
                     .into();
             }
         }
@@ -325,7 +326,7 @@ fn avatar_placeholder(_theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(Color::from_rgb(0.82, 0.84, 0.88))),
         text_color: Some(Color::from_rgb(0.18, 0.20, 0.24)),
-        border: Border::default().rounded(16.0),
+        border: Border::default().rounded(7.0),
         ..container::Style::default()
     }
 }

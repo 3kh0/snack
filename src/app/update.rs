@@ -7,6 +7,7 @@ use iced::Task;
 use iced::widget::image::Handle as ImageHandle;
 use iced::widget::operation::{self, RelativeOffset};
 
+use crate::cache::Cache;
 use crate::config;
 use crate::slack::api::{self, SearchArgs};
 use crate::slack::events::RtEvent;
@@ -19,6 +20,8 @@ use crate::state::{ChannelMessages, Presence, RealtimeStatus, Screen, Workspace}
 use crate::ui;
 
 use super::{App, DesktopNotification, FilePreview, Message, SearchHit, SearchState, ThreadKey};
+
+const CACHE_SAVE_DEBOUNCE: Duration = Duration::from_millis(750);
 
 pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
     match message {
@@ -204,7 +207,7 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                             },
                         );
                     }
-                    persist_workspace(app, &team);
+                    mark_workspace_dirty(app, &team);
                 }
                 Err(e) => app.toast(format!("send failed: {e}")),
             }
@@ -217,7 +220,7 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                     ws.apply_boot(boot);
                     tracing::info!(%team, channels = ws.channels.len(), "boot ok");
                 }
-                persist_workspace(app, &team);
+                mark_workspace_dirty(app, &team);
                 app.screen = Screen::Main;
                 if app.active_team.as_deref() == Some(&team) && app.active_channel.is_none() {
                     if let Some(first) = app
@@ -257,7 +260,7 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                     if let Some(ws) = app.workspaces.get_mut(&team) {
                         ws.apply_counts(counts);
                     }
-                    persist_workspace(app, &team);
+                    mark_workspace_dirty(app, &team);
                 }
                 Err(e) => tracing::warn!(%team, error = %e, "counts failed"),
             }
@@ -283,7 +286,7 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                         cm.loaded = true;
                         tracing::info!(%channel, messages = n, "history loaded");
                     }
-                    persist_workspace(app, &team);
+                    mark_workspace_dirty(app, &team);
                     return Task::batch([
                         hydrate_missing_users(app, &team, &messages),
                         load_avatar_previews(app, &team, messages),
@@ -309,7 +312,7 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                         cm.unread_count = 0;
                         cm.mention_count = 0;
                     }
-                    persist_workspace(app, &team);
+                    mark_workspace_dirty(app, &team);
                 }
                 Err(e) => tracing::warn!(%team, %channel, error = %e, "mark failed"),
             }
@@ -345,7 +348,7 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
             match result {
                 Ok(sent) => {
                     apply_message_edit(app, &team, &channel, &ts, sent.message.text);
-                    persist_workspace(app, &team);
+                    mark_workspace_dirty(app, &team);
                 }
                 Err(e) => {
                     app.toast(format!("edit failed: {e}"));
@@ -368,7 +371,7 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
             match result {
                 Ok(()) => {
                     remove_message_everywhere(app, &team, &channel, &ts);
-                    persist_workspace(app, &team);
+                    mark_workspace_dirty(app, &team);
                 }
                 Err(e) => {
                     app.toast(format!("delete failed: {e}"));
@@ -404,7 +407,7 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                 if is_auth_error(&e) {
                     app.screen = Screen::Login;
                 }
-                persist_workspace(app, &team);
+                mark_workspace_dirty(app, &team);
             }
             Task::none()
         }
@@ -520,12 +523,13 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
             match result {
                 Ok(users) => {
                     let ids: Vec<_> = users.iter().map(|user| user.id.clone()).collect();
+                    app.avatar_profile_hydrated.extend(ids.iter().cloned());
                     if let Some(ws) = app.workspaces.get_mut(&team) {
                         for user in users {
                             ws.users.insert(user.id.clone(), user);
                         }
                     }
-                    persist_workspace(app, &team);
+                    mark_workspace_dirty(app, &team);
                     return load_user_avatar_previews(app, &team, ids);
                 }
                 Err(e) => tracing::debug!(%team, error = %e, "users info failed"),
@@ -540,9 +544,37 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
 
+        Message::CacheSaved {
+            team,
+            started_at,
+            result,
+        } => {
+            app.cache_saving.remove(&team);
+            match result {
+                Ok(()) => {
+                    let clean = app
+                        .cache_dirty
+                        .get(&team)
+                        .is_some_and(|dirty_at| *dirty_at <= started_at);
+                    if clean {
+                        app.cache_dirty.remove(&team);
+                    }
+                }
+                Err(e) => tracing::warn!(%team, error = %e, "cache save failed"),
+            }
+            flush_due_cache(app, Instant::now())
+        }
+
         Message::Realtime(team, generation, event) => {
+            let cacheable = app
+                .workspaces
+                .get(&team)
+                .is_some_and(|ws| ws.rt_generation == generation)
+                && workspace_cacheable_event(&event);
             let notification = apply_realtime(app, &team, generation, event);
-            persist_workspace(app, &team);
+            if cacheable {
+                mark_workspace_dirty(app, &team);
+            }
             let mut tasks = Vec::new();
             if let Some(notification) = notification {
                 tasks.push(show_desktop_notification_task(notification));
@@ -612,7 +644,7 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
             if let Some(ws) = app.active_workspace_mut() {
                 ws.prune_typing(now, Duration::from_secs(4));
             }
-            Task::none()
+            flush_due_cache(app, now)
         }
     }
 }
@@ -767,7 +799,7 @@ fn send_pressed(app: &mut App) -> Task<Message> {
     cm.upsert(pending);
     cm.pending.push(ts);
     app.composer_text.clear();
-    persist_workspace(app, &team);
+    mark_workspace_dirty(app, &team);
 
     let Some((transport, session)) = app.live() else {
         return Task::none();
@@ -920,7 +952,7 @@ fn toggle_reaction(
             }
         }
     }
-    persist_workspace(app, &team);
+    mark_workspace_dirty(app, &team);
 
     let send_channel = channel.clone();
     let send_ts = ts.clone();
@@ -977,7 +1009,7 @@ fn edit_submit(app: &mut App) -> Task<Message> {
     app.editing = None;
     app.edit_text.clear();
     apply_message_edit(app, &team, &channel, &ts, Some(text.clone()));
-    persist_workspace(app, &team);
+    mark_workspace_dirty(app, &team);
 
     let Some((transport, session)) = app.live() else {
         return Task::none();
@@ -1400,22 +1432,12 @@ pub(super) async fn unique_download_path(
 }
 
 fn load_visible_file_previews(app: &mut App, team: &str, channel: &str) -> Task<Message> {
-    let messages = app
-        .workspaces
-        .get(team)
-        .and_then(|ws| ws.messages.get(channel))
-        .map(|cm| cm.messages.clone())
-        .unwrap_or_default();
+    let messages = visible_channel_messages(app, team, channel);
     load_file_previews(app, messages)
 }
 
 fn load_visible_avatar_previews(app: &mut App, team: &str, channel: &str) -> Task<Message> {
-    let messages = app
-        .workspaces
-        .get(team)
-        .and_then(|ws| ws.messages.get(channel))
-        .map(|cm| cm.messages.clone())
-        .unwrap_or_default();
+    let messages = visible_channel_messages(app, team, channel);
     load_avatar_previews(app, team, messages)
 }
 
@@ -1538,7 +1560,7 @@ fn hydrate_missing_users(app: &App, team: &str, messages: &[SlackMessage]) -> Ta
         .iter()
         .flat_map(message_user_ids)
         .filter(|user| !user.trim().is_empty())
-        .filter(|user| !ws.users.contains_key(user.as_str()))
+        .filter(|user| needs_user_hydration(ws, &app.avatar_profile_hydrated, user))
         .filter(|user| seen.insert(user.clone()))
         .collect();
 
@@ -1559,14 +1581,39 @@ fn hydrate_missing_users(app: &App, team: &str, messages: &[SlackMessage]) -> Ta
     )
 }
 
+pub(super) fn needs_user_hydration(
+    ws: &Workspace,
+    avatar_profile_hydrated: &HashSet<UserId>,
+    user_id: &str,
+) -> bool {
+    let Some(user) = ws.users.get(user_id) else {
+        return true;
+    };
+    ws.avatar_url(user_id).is_none() && !avatar_profile_hydrated.contains(user.id.as_str())
+}
+
 fn hydrate_visible_missing_users(app: &App, team: &str, channel: &str) -> Task<Message> {
-    let messages = app
+    let messages = visible_channel_messages(app, team, channel);
+    hydrate_missing_users(app, team, &messages)
+}
+
+fn visible_channel_messages(app: &App, team: &str, channel: &str) -> Vec<SlackMessage> {
+    let mut messages: Vec<_> = app
         .workspaces
         .get(team)
         .and_then(|ws| ws.messages.get(channel))
-        .map(|cm| cm.messages.clone())
+        .map(|cm| {
+            cm.messages
+                .iter()
+                .rev()
+                .filter(|msg| crate::state::is_channel_timeline_visible(msg))
+                .take(ui::channel::VISIBLE_MESSAGE_LIMIT)
+                .cloned()
+                .collect()
+        })
         .unwrap_or_default();
-    hydrate_missing_users(app, team, &messages)
+    messages.reverse();
+    messages
 }
 
 fn load_avatar_previews(app: &mut App, team: &str, messages: Vec<SlackMessage>) -> Task<Message> {
@@ -1939,11 +1986,62 @@ fn reaction_has_user_in(cm: &ChannelMessages, ts: &str, name: &str, user: &str) 
     Some(crate::state::reaction_has_user(reaction, user))
 }
 
-fn persist_workspace(app: &App, team: &str) {
-    let (Some(cache), Some(ws)) = (app.cache.as_ref(), app.workspaces.get(team)) else {
+fn workspace_cacheable_event(event: &RtEvent) -> bool {
+    matches!(
+        event,
+        RtEvent::Message(_)
+            | RtEvent::MessageChanged { .. }
+            | RtEvent::MessageDeleted { .. }
+            | RtEvent::ReactionAdded { .. }
+            | RtEvent::ReactionRemoved { .. }
+    )
+}
+
+fn mark_workspace_dirty(app: &mut App, team: &str) {
+    if app.cache.is_none() || !app.workspaces.contains_key(team) {
         return;
     };
-    if let Err(e) = cache.save_workspace(ws) {
-        tracing::warn!(%team, error = %e, "cache save failed");
+    app.cache_dirty.insert(team.to_owned(), Instant::now());
+}
+
+fn flush_due_cache(app: &mut App, now: Instant) -> Task<Message> {
+    if app.cache.is_none() {
+        app.cache_dirty.clear();
+        app.cache_saving.clear();
+        return Task::none();
     }
+
+    let due: Vec<_> = app
+        .cache_dirty
+        .iter()
+        .filter(|(team, dirty_at)| {
+            now.duration_since(**dirty_at) >= CACHE_SAVE_DEBOUNCE
+                && !app.cache_saving.contains_key(*team)
+        })
+        .map(|(team, _)| team.clone())
+        .collect();
+
+    let tasks = due.into_iter().filter_map(|team| {
+        let workspace = app.workspaces.get(&team)?.clone();
+        let started_at = now;
+        app.cache_saving.insert(team.clone(), started_at);
+        Some(Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    Cache::open_default()
+                        .and_then(|cache| cache.save_workspace(&workspace))
+                        .map_err(|e| e.to_string())
+                })
+                .await
+                .unwrap_or_else(|e| Err(format!("cache save task failed: {e}")))
+            },
+            move |result| Message::CacheSaved {
+                team: team.clone(),
+                started_at,
+                result,
+            },
+        ))
+    });
+
+    Task::batch(tasks)
 }
