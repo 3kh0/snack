@@ -13,13 +13,13 @@
 
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::renderer;
+use iced::advanced::text::Renderer as _;
 use iced::advanced::text::{
     Alignment, Difference, Ellipsis, LineHeight, Paragraph, Shaping, Span, Text, Wrapping,
 };
 use iced::advanced::widget::text::{Style as TextStyle, draw as draw_paragraph};
 use iced::advanced::widget::{Widget, tree};
 use iced::advanced::{Renderer as _, Shell, clipboard, mouse};
-use iced::advanced::text::Renderer as _;
 use iced::{
     Background, Color, Element, Event, Font, Length, Pixels, Point, Rectangle, Size, Vector,
     alignment, keyboard,
@@ -347,7 +347,8 @@ impl Widget<Message, Theme, Renderer> for SelectableText {
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 let anchor = tree.state.downcast_ref::<State>().drag_anchor;
                 if let Some(anchor) = anchor {
-                    if let Some(index) = self.locate(tree.state.downcast_ref::<State>(), layout, cursor)
+                    if let Some(index) =
+                        self.locate(tree.state.downcast_ref::<State>(), layout, cursor)
                     {
                         let selection = Some((anchor.min(index), anchor.max(index)));
                         let state = tree.state.downcast_mut::<State>();
