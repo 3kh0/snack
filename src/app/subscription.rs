@@ -19,7 +19,7 @@ pub(super) fn subscription(app: &App) -> Subscription<Message> {
         .values()
         .any(|preview| matches!(preview, super::FilePreview::Animated { .. }))
     {
-        subs.push(iced::time::every(Duration::from_millis(100)).map(|_| Message::AnimationTick));
+        subs.push(iced::time::every(Duration::from_millis(50)).map(|_| Message::AnimationTick));
     }
 
     if app.sidebar_resizing {

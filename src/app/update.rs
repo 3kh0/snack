@@ -2010,15 +2010,39 @@ fn decode_gif_preview(bytes: &[u8]) -> Option<FilePreview> {
     let mut options = gif::DecodeOptions::new();
     options.set_color_output(gif::ColorOutput::RGBA);
     let mut decoder = options.read_info(std::io::Cursor::new(bytes)).ok()?;
+
+    let width = decoder.width() as usize;
+    let height = decoder.height() as usize;
+    if width == 0 || height == 0 {
+        return None;
+    }
+
     let mut frames = Vec::new();
     let mut delays = Vec::new();
+    let mut canvas = vec![0u8; width * height * 4];
     while let Some(frame) = decoder.read_next_frame().ok()? {
+        let snapshot = matches!(frame.dispose, gif::DisposalMethod::Previous)
+            .then(|| canvas.clone());
+
+        composite_frame(&mut canvas, width, height, frame);
         frames.push(ImageHandle::from_rgba(
-            frame.width.into(),
-            frame.height.into(),
-            frame.buffer.to_vec(),
+            width as u32,
+            height as u32,
+            canvas.clone(),
         ));
         delays.push(gif_delay(frame.delay));
+
+        match frame.dispose {
+            gif::DisposalMethod::Background => {
+                clear_frame_rect(&mut canvas, width, height, frame);
+            }
+            gif::DisposalMethod::Previous => {
+                if let Some(prev) = snapshot {
+                    canvas = prev;
+                }
+            }
+            gif::DisposalMethod::Keep | gif::DisposalMethod::Any => {}
+        }
     }
 
     match frames.len() {
@@ -2040,6 +2064,47 @@ fn gif_delay(delay_cs: u16) -> Duration {
         Duration::from_millis(100)
     } else {
         Duration::from_millis((delay_cs as u64 * 10).max(20))
+    }
+}
+
+fn composite_frame(canvas: &mut [u8], width: usize, height: usize, frame: &gif::Frame) {
+    let fx = frame.left as usize;
+    let fy = frame.top as usize;
+    let fw = frame.width as usize;
+    let fh = frame.height as usize;
+    for row in 0..fh {
+        let cy = fy + row;
+        if cy >= height {
+            break;
+        }
+        for col in 0..fw {
+            let cx = fx + col;
+            if cx >= width {
+                break;
+            }
+            let src = (row * fw + col) * 4;
+            if frame.buffer[src + 3] == 0 {
+                continue;
+            }
+            let dst = (cy * width + cx) * 4;
+            canvas[dst..dst + 4].copy_from_slice(&frame.buffer[src..src + 4]);
+        }
+    }
+}
+
+fn clear_frame_rect(canvas: &mut [u8], width: usize, height: usize, frame: &gif::Frame) {
+    let fx = frame.left as usize;
+    let fy = frame.top as usize;
+    let fw = frame.width as usize;
+    let fh = frame.height as usize;
+    for row in 0..fh {
+        let cy = fy + row;
+        if cy >= height {
+            break;
+        }
+        let start = (cy * width + fx.min(width)) * 4;
+        let end = (cy * width + (fx + fw).min(width)) * 4;
+        canvas[start..end].fill(0);
     }
 }
 
