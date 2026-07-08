@@ -1,4 +1,4 @@
-use iced::widget::{button, column, container, row, text};
+use iced::widget::{button, column, container, opaque, row, text};
 use iced::{Element, Fill};
 
 use crate::state::Screen;
@@ -187,7 +187,7 @@ fn with_account_menu<'a>(app: &'a App, base: Element<'a, Message>) -> Element<'a
     };
     iced::widget::stack![
         base,
-        container(ui::rail::account_menu(ws, &app.avatar_previews))
+        container(opaque(ui::rail::account_menu(ws, &app.avatar_previews)))
             .align_left(Fill)
             .align_bottom(Fill)
             .padding([

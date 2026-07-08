@@ -70,19 +70,24 @@ pub fn account_menu<'a>(ws: &'a Workspace, avatars: &'a AvatarPreviews) -> Eleme
     .spacing(theme::SPACE_SM)
     .align_y(Alignment::Center);
 
+    let presence_action = if presence == Presence::Active {
+        menu_button(
+            "Set offline",
+            false,
+            Message::SelfPresenceSelected(Presence::Away),
+        )
+    } else {
+        menu_button(
+            "Set active",
+            false,
+            Message::SelfPresenceSelected(Presence::Active),
+        )
+    };
+
     let menu = column![
         header,
         theme::divider(),
-        menu_button(
-            "Set active",
-            presence == Presence::Active,
-            Message::SelfPresenceSelected(Presence::Active),
-        ),
-        menu_button(
-            "Set offline",
-            matches!(presence, Presence::Away | Presence::Unknown),
-            Message::SelfPresenceSelected(Presence::Away),
-        ),
+        presence_action,
         theme::divider(),
         menu_button("Settings", false, Message::SettingsOpened),
         menu_button("Sign out", false, Message::SignOutPressed),
