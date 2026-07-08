@@ -3,7 +3,8 @@ use std::collections::{BTreeMap, HashMap};
 use serde_json::json;
 
 use super::update::{
-    emoji_preview_from_bytes, needs_user_hydration, notification_for_message, preferred_channel,
+    channel_open_scroll_target, emoji_preview_from_bytes, needs_user_hydration,
+    notification_for_message, pending_target_ts, preferred_channel, should_load_older_history,
     unique_download_path, update,
 };
 use super::*;
@@ -230,6 +231,94 @@ fn channel_selection_records_last_active_channel() {
     let ws = &app.workspaces[&team];
     assert_eq!(ws.last_active_channel.as_deref(), Some("C_DEV"));
     assert_eq!(preferred_channel(&app, &team).as_deref(), Some("C_DEV"));
+}
+
+#[test]
+fn unread_channel_open_targets_first_unread_message() {
+    let mut app = test_app();
+    let team = app.active_team.clone().unwrap();
+    let ws = app.workspaces.get_mut(&team).unwrap();
+    let cm = ws.messages.get_mut("C_DEV").unwrap();
+    cm.last_read = Some("1783370000.000100".into());
+    cm.unread_count = 2;
+    cm.upsert(msg("U_ALICE", "1783370001.000100", "first unread"));
+    cm.upsert(msg("U_ALICE", "1783370002.000100", "second unread"));
+
+    assert_eq!(
+        channel_open_scroll_target(&app, &team, &"C_DEV".into()),
+        Some(PendingScrollTarget::FirstUnreadAfter(
+            "1783370000.000100".into()
+        ))
+    );
+    assert_eq!(
+        pending_target_ts(
+            &app.workspaces[&team].messages["C_DEV"].messages,
+            PendingScrollTarget::FirstUnreadAfter("1783370000.000100".into())
+        ),
+        Some("1783370001.000100".into())
+    );
+}
+
+#[test]
+fn read_channel_open_targets_latest_message() {
+    let app = test_app();
+    let team = app.active_team.clone().unwrap();
+
+    assert_eq!(
+        channel_open_scroll_target(&app, &team, &"C_DEV".into()),
+        Some(PendingScrollTarget::Latest)
+    );
+}
+
+#[test]
+fn merge_history_pages_dedupes_anchor_message() {
+    let merged = merge_history_pages(
+        HistoryPage {
+            messages: vec![
+                msg("U_ALICE", "1783370001.000100", "newer"),
+                msg("U_ALICE", "1783370000.000100", "anchor"),
+            ],
+            ..Default::default()
+        },
+        HistoryPage {
+            messages: vec![
+                msg("U_ALICE", "1783370002.000100", "newest"),
+                msg("U_ALICE", "1783370001.000100", "newer duplicate"),
+            ],
+            ..Default::default()
+        },
+    );
+
+    let ts: Vec<_> = merged
+        .messages
+        .iter()
+        .filter_map(|message| message.ts.as_deref())
+        .collect();
+    assert_eq!(
+        ts,
+        vec![
+            "1783370001.000100",
+            "1783370000.000100",
+            "1783370002.000100"
+        ]
+    );
+}
+
+#[test]
+fn top_scroll_loads_older_only_when_available() {
+    let mut cm = loaded_channel("U_ALICE", "1783370001.000100", "newer");
+    cm.has_more_older = true;
+
+    assert!(should_load_older_history(&cm, 0.0));
+    assert!(should_load_older_history(&cm, 48.0));
+    assert!(!should_load_older_history(&cm, 49.0));
+
+    cm.history_loading_older = true;
+    assert!(!should_load_older_history(&cm, 0.0));
+
+    cm.history_loading_older = false;
+    cm.has_more_older = false;
+    assert!(!should_load_older_history(&cm, 0.0));
 }
 
 #[test]

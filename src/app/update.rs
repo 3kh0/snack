@@ -21,9 +21,13 @@ use crate::state::{ChannelMessages, Presence, RealtimeStatus, Screen, Workspace}
 use crate::ui;
 
 use super::palette::{self, PaletteEntry, PaletteState, PaletteTarget};
-use super::{App, DesktopNotification, FilePreview, Message, SearchHit, SearchState, ThreadKey};
+use super::{
+    App, DesktopNotification, FilePreview, HistoryLoadKind, Message, PendingScrollTarget,
+    SearchHit, SearchState, ThreadKey,
+};
 
 const CACHE_SAVE_DEBOUNCE: Duration = Duration::from_millis(750);
+const LOAD_OLDER_SCROLL_TOP_PX: f32 = 48.0;
 
 pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
     match message {
@@ -31,6 +35,7 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
 
         Message::ChannelSelected(id) => {
             app.search = None;
+            let same_channel = app.active_channel.as_deref() == Some(id.as_str());
             if app
                 .editing
                 .as_ref()
@@ -47,6 +52,10 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                     ws.touch_recent(&id);
                 }
                 mark_workspace_dirty(app, &team);
+                if !same_channel {
+                    app.pending_scroll_to = channel_open_scroll_target(app, &team, &id)
+                        .map(|target| (id.clone(), target));
+                }
             }
             if app
                 .active_thread
@@ -72,6 +81,7 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                     load_visible_avatar_previews(app, &team, &id),
                     hydrate_visible_emojis(app, &team, &id),
                     load_visible_emoji_previews(app, &team, &id),
+                    scroll_to_pending(app, &id),
                 ]);
             }
             Task::none()
@@ -250,6 +260,8 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                         if let Some(ws) = app.workspaces.get_mut(&team) {
                             ws.last_active_channel = Some(channel.clone());
                         }
+                        app.pending_scroll_to = channel_open_scroll_target(app, &team, &channel)
+                            .map(|target| (channel.clone(), target));
                         tasks.push(app.load_history(&team, &channel));
                     }
                 }
@@ -308,9 +320,10 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
 
-        Message::HistoryLoaded(team, channel, result) => {
+        Message::HistoryLoaded(team, channel, kind, result) => {
             match result {
                 Ok(page) => {
+                    let has_more = page.has_more;
                     let messages: Vec<_> = page
                         .messages
                         .into_iter()
@@ -325,23 +338,57 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                             }
                         }
                         cm.loaded = true;
+                        if matches!(
+                            kind,
+                            HistoryLoadKind::Latest
+                                | HistoryLoadKind::Around
+                                | HistoryLoadKind::Older
+                        ) {
+                            cm.has_more_older = has_more;
+                        }
+                        if kind == HistoryLoadKind::Older {
+                            cm.history_loading_older = false;
+                        }
                         tracing::info!(%channel, messages = n, "history loaded");
                     }
                     mark_workspace_dirty(app, &team);
-                    return Task::batch([
+                    let mut tasks = vec![
                         hydrate_missing_users(app, &team, &messages),
                         hydrate_emojis(app, &team, &messages),
                         load_avatar_previews(app, &team, messages),
-                        mark_latest_visible(app, &team, &channel),
                         load_visible_file_previews(app, &team, &channel),
                         load_visible_emoji_previews(app, &team, &channel),
                         scroll_to_pending(app, &channel),
-                    ]);
+                    ];
+                    if kind != HistoryLoadKind::Older {
+                        tasks.push(mark_latest_visible(app, &team, &channel));
+                    }
+                    return Task::batch(tasks);
                 }
-                Err(e) => app.toast(format!("history failed for {channel}: {e}")),
+                Err(e) => {
+                    if kind == HistoryLoadKind::Older {
+                        if let Some(cm) = app
+                            .workspaces
+                            .get_mut(&team)
+                            .and_then(|ws| ws.messages.get_mut(&channel))
+                        {
+                            cm.history_loading_older = false;
+                        }
+                        if app
+                            .pending_scroll_to
+                            .as_ref()
+                            .is_some_and(|(pending_channel, _)| pending_channel == &channel)
+                        {
+                            app.pending_scroll_to = None;
+                        }
+                    }
+                    app.toast(format!("history failed for {channel}: {e}"));
+                }
             }
             Task::none()
         }
+
+        Message::ChannelScrolled { channel, y } => channel_scrolled(app, channel, y),
 
         Message::ChannelMarked(team, channel, ts, result) => {
             match result {
@@ -929,6 +976,8 @@ fn select_workspace(app: &mut App, team: TeamId) -> Task<Message> {
     let Some(channel) = app.active_channel.clone() else {
         return Task::none();
     };
+    app.pending_scroll_to =
+        channel_open_scroll_target(app, &team, &channel).map(|target| (channel.clone(), target));
     let needs_load = app
         .workspaces
         .get(&team)
@@ -942,7 +991,10 @@ fn select_workspace(app: &mut App, team: TeamId) -> Task<Message> {
     if app.transport.is_some() && needs_load {
         app.load_history(&team, &channel)
     } else {
-        mark_latest_visible(app, &team, &channel)
+        Task::batch([
+            mark_latest_visible(app, &team, &channel),
+            scroll_to_pending(app, &channel),
+        ])
     }
 }
 
@@ -1589,7 +1641,7 @@ fn open_search_result(
     mark_workspace_dirty(app, &team);
     app.editing = None;
     app.edit_text.clear();
-    app.pending_scroll_to = Some((channel.clone(), ts));
+    app.pending_scroll_to = Some((channel.clone(), PendingScrollTarget::Message(ts)));
 
     let mut tasks = Vec::new();
     let needs_load = app
@@ -1814,8 +1866,53 @@ fn dm_opened(
     Task::done(Message::ChannelSelected(channel))
 }
 
+fn channel_scrolled(app: &mut App, channel: ChannelId, y: f32) -> Task<Message> {
+    if app.active_channel.as_deref() != Some(channel.as_str()) {
+        return Task::none();
+    }
+    let Some(team) = app.active_team.clone() else {
+        return Task::none();
+    };
+    if app.transport.is_none() {
+        return Task::none();
+    }
+    if app
+        .pending_scroll_to
+        .as_ref()
+        .is_some_and(|(pending_channel, _)| pending_channel == &channel)
+    {
+        return Task::none();
+    }
+    let oldest = {
+        let Some(cm) = app
+            .workspaces
+            .get_mut(&team)
+            .and_then(|ws| ws.messages.get_mut(&channel))
+        else {
+            return Task::none();
+        };
+        if !should_load_older_history(cm, y) {
+            return Task::none();
+        }
+        let Some(oldest) = cm.oldest_ts() else {
+            return Task::none();
+        };
+        cm.history_loading_older = true;
+        oldest
+    };
+    app.pending_scroll_to = Some((
+        channel.clone(),
+        PendingScrollTarget::Message(oldest.clone()),
+    ));
+    app.load_older_history(&team, &channel, oldest)
+}
+
+pub(super) fn should_load_older_history(cm: &ChannelMessages, y: f32) -> bool {
+    y <= LOAD_OLDER_SCROLL_TOP_PX && cm.loaded && cm.has_more_older && !cm.history_loading_older
+}
+
 fn scroll_to_pending(app: &mut App, channel: &ChannelId) -> Task<Message> {
-    let Some((pending_channel, ts)) = app.pending_scroll_to.clone() else {
+    let Some((pending_channel, target)) = app.pending_scroll_to.clone() else {
         return Task::none();
     };
     if pending_channel != *channel {
@@ -1833,15 +1930,62 @@ fn scroll_to_pending(app: &mut App, channel: &ChannelId) -> Task<Message> {
     let Some(messages) = loaded_messages else {
         return Task::none();
     };
+    let Some(ts) = pending_target_ts(messages, target) else {
+        return Task::none();
+    };
     match crate::state::scroll_ratio_for_ts(messages, &ts) {
         Some(ratio) => {
             app.pending_scroll_to = None;
             operation::snap_to(
-                ui::channel::CHANNEL_SCROLLABLE_ID,
+                ui::channel::scrollable_id(channel),
                 RelativeOffset { x: 0.0, y: ratio },
             )
         }
         None => Task::none(),
+    }
+}
+
+pub(super) fn channel_open_scroll_target(
+    app: &App,
+    team: &str,
+    channel: &ChannelId,
+) -> Option<PendingScrollTarget> {
+    let ws = app.workspaces.get(team)?;
+    let cm = ws.messages.get(channel);
+    let unread = ws
+        .channels
+        .get(channel)
+        .map(|channel| ws.unread_total(channel) > 0)
+        .unwrap_or_else(|| cm.is_some_and(|cm| cm.unread_count > 0 || cm.mention_count > 0));
+    if unread {
+        if let Some(last_read) = cm.and_then(|cm| cm.last_read.clone()) {
+            return Some(PendingScrollTarget::FirstUnreadAfter(last_read));
+        }
+    }
+    Some(PendingScrollTarget::Latest)
+}
+
+pub(super) fn pending_target_ts(
+    messages: &[SlackMessage],
+    target: PendingScrollTarget,
+) -> Option<MessageTs> {
+    match target {
+        PendingScrollTarget::Message(ts) => Some(ts),
+        PendingScrollTarget::FirstUnreadAfter(last_read) => messages
+            .iter()
+            .filter_map(|message| message.ts.as_deref())
+            .find(|ts| crate::state::ts_key(ts) > crate::state::ts_key(&last_read))
+            .map(str::to_owned)
+            .or_else(|| {
+                messages
+                    .iter()
+                    .filter_map(|message| message.ts.clone())
+                    .last()
+            }),
+        PendingScrollTarget::Latest => messages
+            .iter()
+            .filter_map(|message| message.ts.clone())
+            .last(),
     }
 }
 

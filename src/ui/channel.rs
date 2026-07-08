@@ -1,4 +1,4 @@
-use iced::widget::{Column, column, container, mouse_area, scrollable, text};
+use iced::widget::{Column, Id, column, container, mouse_area, scrollable, text};
 use iced::{Element, Fill};
 
 use super::{message, theme};
@@ -7,8 +7,11 @@ use crate::state::{self, Workspace};
 use std::collections::HashMap;
 use std::time::Duration;
 
-pub const CHANNEL_SCROLLABLE_ID: &str = "channel-messages";
 pub const VISIBLE_MESSAGE_LIMIT: usize = 200;
+
+pub fn scrollable_id(channel_id: &str) -> Id {
+    Id::from(format!("channel-messages:{channel_id}"))
+}
 
 pub fn view<'a>(
     ws: &Workspace,
@@ -78,7 +81,14 @@ pub fn view<'a>(
                 col = col.push(row);
             }
             scrollable(col)
-                .id(CHANNEL_SCROLLABLE_ID)
+                .id(scrollable_id(channel_id))
+                .on_scroll({
+                    let channel_id = channel_id.to_owned();
+                    move |viewport| Message::ChannelScrolled {
+                        channel: channel_id.clone(),
+                        y: viewport.absolute_offset().y,
+                    }
+                })
                 .style(theme::scrollbar)
                 .height(Fill)
                 .into()

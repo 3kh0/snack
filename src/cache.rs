@@ -115,6 +115,7 @@ impl Cache {
             let cm = ws.messages.entry(channel_id).or_default();
             cm.upsert(msg);
             cm.loaded = true;
+            cm.has_more_older = true;
             if pending {
                 cm.pending.push(ts);
             }

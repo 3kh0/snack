@@ -56,6 +56,8 @@ impl Presence {
 pub struct ChannelMessages {
     pub messages: Vec<SlackMessage>,
     pub loaded: bool,
+    pub has_more_older: bool,
+    pub history_loading_older: bool,
     pub pending: Vec<MessageTs>,
     pub last_read: Option<MessageTs>,
     pub unread_count: u32,
@@ -164,6 +166,13 @@ impl ChannelMessages {
             .iter()
             .filter_map(|m| m.ts.clone())
             .max_by(|a, b| ts_key(a).cmp(&ts_key(b)))
+    }
+
+    pub fn oldest_ts(&self) -> Option<MessageTs> {
+        self.messages
+            .iter()
+            .filter_map(|m| m.ts.clone())
+            .min_by(|a, b| ts_key(a).cmp(&ts_key(b)))
     }
 
     pub fn apply_reaction(&mut self, ts: &str, user: &str, name: &str, added: bool) -> bool {

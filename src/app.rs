@@ -34,6 +34,21 @@ use view::view;
 type ActiveThreadKey = (ChannelId, MessageTs);
 type ThreadKey = (TeamId, ChannelId, MessageTs);
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PendingScrollTarget {
+    Message(MessageTs),
+    FirstUnreadAfter(MessageTs),
+    Latest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryLoadKind {
+    Latest,
+    Since,
+    Around,
+    Older,
+}
+
 #[derive(Debug, Clone)]
 pub enum FilePreview {
     Loading,
@@ -99,7 +114,7 @@ pub struct App {
     emoji_animation_started: Instant,
     emoji_hydrated: HashSet<(TeamId, String)>,
     avatar_profile_hydrated: HashSet<UserId>,
-    pending_scroll_to: Option<(ChannelId, MessageTs)>,
+    pending_scroll_to: Option<(ChannelId, PendingScrollTarget)>,
     cache_dirty: HashMap<TeamId, Instant>,
     cache_saving: HashMap<TeamId, Instant>,
     settings: config::Settings,
@@ -124,7 +139,16 @@ pub enum Message {
     BootLoaded(TeamId, Result<BootData, SlackError>),
     CountsLoaded(TeamId, Result<CountsPage, SlackError>),
     SidebarDmsLoaded(TeamId, Result<SidebarDmsPage, SlackError>),
-    HistoryLoaded(TeamId, ChannelId, Result<HistoryPage, SlackError>),
+    HistoryLoaded(
+        TeamId,
+        ChannelId,
+        HistoryLoadKind,
+        Result<HistoryPage, SlackError>,
+    ),
+    ChannelScrolled {
+        channel: ChannelId,
+        y: f32,
+    },
     ChannelMarked(TeamId, ChannelId, MessageTs, Result<(), SlackError>),
     ThreadOpened {
         channel: ChannelId,
@@ -431,13 +455,112 @@ impl App {
     }
 
     fn load_history(&self, team: &str, channel: &ChannelId) -> Task<Message> {
-        self.load_history_since(team, channel, None)
+        if let Some(anchor) = self.unread_anchor(team, channel) {
+            return self.load_history_around(team, channel, anchor);
+        }
+        self.load_history_page(team, channel, HistoryLoadKind::Latest, None, None)
+    }
+
+    fn unread_anchor(&self, team: &str, channel: &ChannelId) -> Option<MessageTs> {
+        let ws = self.workspaces.get(team)?;
+        let unread = ws
+            .channels
+            .get(channel)
+            .map(|c| ws.unread_total(c) > 0)
+            .unwrap_or_else(|| {
+                ws.messages
+                    .get(channel)
+                    .is_some_and(|cm| cm.unread_count > 0 || cm.mention_count > 0)
+            });
+        if !unread {
+            return None;
+        }
+        ws.messages.get(channel)?.last_read.clone()
+    }
+
+    fn load_history_around(
+        &self,
+        team: &str,
+        channel: &ChannelId,
+        anchor: MessageTs,
+    ) -> Task<Message> {
+        let Some((transport, session)) = self.live() else {
+            return Task::none();
+        };
+        let Some(ws) = session.workspaces.get(team) else {
+            return Task::none();
+        };
+        let transport = transport.clone();
+        let client = self.client.clone();
+        let ws = ws.clone();
+        let team = team.to_owned();
+        let channel = channel.clone();
+        let fetch_channel = channel.clone();
+        Task::perform(
+            async move {
+                let before = api::fetch_history(
+                    &transport,
+                    &client,
+                    &ws,
+                    HistoryArgs {
+                        channel: fetch_channel.clone(),
+                        latest: Some(anchor.clone()),
+                        limit: Some(50),
+                        inclusive: true,
+                        ..Default::default()
+                    },
+                )
+                .await?;
+                let after = api::fetch_history(
+                    &transport,
+                    &client,
+                    &ws,
+                    HistoryArgs {
+                        channel: fetch_channel,
+                        oldest: Some(anchor),
+                        limit: Some(50),
+                        inclusive: true,
+                        ..Default::default()
+                    },
+                )
+                .await?;
+                Ok(merge_history_pages(before, after))
+            },
+            move |result| {
+                Message::HistoryLoaded(
+                    team.clone(),
+                    channel.clone(),
+                    HistoryLoadKind::Around,
+                    result,
+                )
+            },
+        )
     }
 
     fn load_history_since(
         &self,
         team: &str,
         channel: &ChannelId,
+        oldest: Option<MessageTs>,
+    ) -> Task<Message> {
+        self.load_history_page(team, channel, HistoryLoadKind::Since, None, oldest)
+    }
+
+    fn load_older_history(
+        &self,
+        team: &str,
+        channel: &ChannelId,
+        latest: MessageTs,
+    ) -> Task<Message> {
+        self.load_history_page(team, channel, HistoryLoadKind::Older, Some(latest), None)
+    }
+
+    fn load_history_page(
+        &self,
+        team: &str,
+        channel: &ChannelId,
+        kind: HistoryLoadKind,
+        latest: Option<MessageTs>,
         oldest: Option<MessageTs>,
     ) -> Task<Message> {
         let Some((transport, session)) = self.live() else {
@@ -453,13 +576,14 @@ impl App {
         let channel = channel.clone();
         let args = HistoryArgs {
             channel: channel.clone(),
+            latest,
             oldest,
             limit: Some(50),
             ..Default::default()
         };
         Task::perform(
             async move { api::fetch_history(&transport, &client, &ws, args).await },
-            move |result| Message::HistoryLoaded(team.clone(), channel.clone(), result),
+            move |result| Message::HistoryLoaded(team.clone(), channel.clone(), kind, result),
         )
     }
 
@@ -531,6 +655,24 @@ impl App {
         tracing::warn!(%text, "toast");
         self.errors.push(Toast { text });
     }
+}
+
+fn merge_history_pages(mut before: HistoryPage, after: HistoryPage) -> HistoryPage {
+    let mut seen: HashSet<_> = before
+        .messages
+        .iter()
+        .filter_map(|message| message.ts.clone())
+        .collect();
+    before.messages.extend(
+        after
+            .messages
+            .into_iter()
+            .filter(|message| message.ts.as_ref().is_none_or(|ts| seen.insert(ts.clone()))),
+    );
+    before.has_more |= after.has_more;
+    before.latest_updates.extend(after.latest_updates);
+    before.unchanged_messages.extend(after.unchanged_messages);
+    before
 }
 
 pub fn run() -> iced::Result {
