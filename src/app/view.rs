@@ -17,7 +17,9 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
 fn login_view() -> Element<'static, Message> {
     let card = container(
         column![
-            text("Snack").size(ui::theme::TEXT_LG).color(ui::theme::TEXT_1),
+            text("Snack")
+                .size(ui::theme::TEXT_LG)
+                .color(ui::theme::TEXT_1),
             text("Sign in to your Slack workspace.")
                 .size(ui::theme::TEXT_MD)
                 .color(ui::theme::TEXT_2),
@@ -49,6 +51,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
         return center_text("No workspace");
     };
 
+    let rail = ui::rail::view();
     let sidebar = ui::sidebar::view(
         &app.workspaces,
         app.active_team.as_deref(),
@@ -62,7 +65,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
             .width(Fill)
             .height(Fill)
             .style(ui::theme::panel);
-        return shell(row![sidebar, content]);
+        return with_modal(app, shell(row![rail, sidebar, content]));
     }
 
     let editing_for = |channel_id: &str| -> Option<(&str, &str)> {
@@ -112,30 +115,41 @@ fn main_view(app: &App) -> Element<'_, Message> {
             .threads
             .get(&(team.clone(), channel.clone(), root_ts.clone()));
         let root = ui::thread::root_message(ws, channel, root_ts);
-        shell(row![
-            sidebar,
-            main,
-            ui::thread::view(
-                ws,
-                channel,
-                root,
-                replies,
-                &app.thread_composer_text,
-                &app.file_previews,
-                &app.avatar_previews,
-                editing_for(channel),
-            )
-        ])
+        with_modal(
+            app,
+            shell(row![
+                rail,
+                sidebar,
+                main,
+                ui::thread::view(
+                    ws,
+                    channel,
+                    root,
+                    replies,
+                    &app.thread_composer_text,
+                    &app.file_previews,
+                    &app.avatar_previews,
+                    editing_for(channel),
+                )
+            ]),
+        )
     } else {
-        shell(row![sidebar, main])
+        with_modal(app, shell(row![rail, sidebar, main]))
     }
 }
 
-/// Wrap the panel row in the bg-4 shell with gaps between panels.
+fn with_modal<'a>(app: &'a App, base: Element<'a, Message>) -> Element<'a, Message> {
+    if app.show_settings {
+        ui::settings::modal(base, &app.settings)
+    } else {
+        base
+    }
+}
+
 fn shell(content: iced::widget::Row<'_, Message>) -> Element<'_, Message> {
-    container(content.spacing(ui::theme::GAP).width(Fill).height(Fill))
+    container(content.spacing(ui::theme::gap()).width(Fill).height(Fill))
         .style(ui::theme::root)
-        .padding(ui::theme::GAP)
+        .padding(ui::theme::gap())
         .width(Fill)
         .height(Fill)
         .into()

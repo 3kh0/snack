@@ -1,8 +1,11 @@
+use std::sync::{LazyLock, RwLock};
+
 use iced::theme::palette::Seed;
 use iced::widget::{button, container, scrollable, text_input};
 use iced::{Background, Border, Color, Element, Length, Theme};
 
-// Layout metrics (midnight: --gap 12px, rounded panels, thin borders).
+use crate::config::{AccentColor, Settings};
+
 pub const SPACE_XS: f32 = 4.0;
 pub const SPACE_SM: f32 = 8.0;
 pub const SPACE_MD: f32 = 12.0;
@@ -15,44 +18,129 @@ pub const TEXT_LG: f32 = 16.0;
 pub const SIDEBAR_WIDTH: f32 = 240.0;
 pub const THREAD_WIDTH: f32 = 360.0;
 
-/// Gap between panels (mirrors midnight's `--gap`).
-pub const GAP: f32 = 12.0;
-/// Corner radius of the main panels.
-pub const PANEL_RADIUS: f32 = 12.0;
-/// Corner radius of buttons / inputs / chips.
 pub const CONTROL_RADIUS: f32 = 8.0;
 
-// --- midnight palette (converted from midnight.theme.css) ---
+// midnight theme (converted from https://github.com/refact0r/midnight-discord)
 
-// Backgrounds (bg-4 base .. bg-1 elevated).
 pub const BG_BASE: Color = Color::from_rgb(0.085, 0.095, 0.115); // bg-4, window + gaps
 pub const BG_PANEL: Color = Color::from_rgb(0.110, 0.123, 0.150); // bg-3, panels
 pub const BG_ELEV: Color = Color::from_rgb(0.136, 0.152, 0.184); // bg-2, buttons/inputs
 pub const BG_ELEV_HI: Color = Color::from_rgb(0.170, 0.190, 0.230); // bg-1, pressed
 
-// Text hierarchy (text-1 brightest .. text-5 dimmest).
 pub const TEXT_1: Color = Color::from_rgb(0.930, 0.943, 0.973); // bright white text
 pub const TEXT_2: Color = Color::from_rgb(0.625, 0.675, 0.775); // headings / important
 pub const TEXT_3: Color = Color::from_rgb(0.520, 0.573, 0.680); // normal text
 pub const TEXT_4: Color = Color::from_rgb(0.340, 0.380, 0.460); // channels / icons
 pub const TEXT_5: Color = Color::from_rgb(0.213, 0.238, 0.288); // muted / timestamps
 
-// Accent (blue/cyan — blue-1 .. blue-5).
-pub const ACCENT: Color = Color::from_rgb(0.274, 0.683, 0.773); // blue-2
-pub const ACCENT_BRIGHT: Color = Color::from_rgb(0.344, 0.745, 0.837); // blue-1
-pub const ACCENT_3: Color = Color::from_rgb(0.200, 0.621, 0.710); // blue-3
-pub const ACCENT_4: Color = Color::from_rgb(0.107, 0.560, 0.649); // blue-4
-pub const ACCENT_5: Color = Color::from_rgb(0.000, 0.502, 0.588); // blue-5
-
 pub const ONLINE: Color = Color::from_rgb(0.289, 0.707, 0.580); // green-2
 
-// Semantic aliases kept for existing call sites.
 pub const MUTED: Color = TEXT_5;
 pub const SIDEBAR_FG: Color = TEXT_3;
-/// Accent used for links / channel labels / attachment titles.
-pub const SIDEBAR_ACTIVE_BG: Color = ACCENT;
 
-// Translucent overlays (hover / active) — hsla(220,19%,40%,a).
+#[derive(Clone, Copy)]
+struct Vars {
+    accent: [Color; 5],
+    gap: f32,
+    panel_radius: f32,
+    border_thickness: f32,
+}
+
+impl Default for Vars {
+    fn default() -> Self {
+        Vars {
+            accent: accent_ramp(AccentColor::Blue),
+            gap: 12.0,
+            panel_radius: 12.0,
+            border_thickness: 1.0,
+        }
+    }
+}
+
+static VARS: LazyLock<RwLock<Vars>> = LazyLock::new(|| RwLock::new(Vars::default()));
+
+fn vars() -> Vars {
+    *VARS.read().expect("theme vars poisoned")
+}
+
+pub fn apply(settings: &Settings) {
+    *VARS.write().expect("theme vars poisoned") = Vars {
+        accent: accent_ramp(settings.accent),
+        gap: settings.gap,
+        panel_radius: settings.panel_radius,
+        border_thickness: settings.border_thickness,
+    };
+}
+
+pub fn accent() -> Color {
+    vars().accent[1]
+}
+pub fn accent_bright() -> Color {
+    vars().accent[0]
+}
+pub fn accent_3() -> Color {
+    vars().accent[2]
+}
+pub fn accent_4() -> Color {
+    vars().accent[3]
+}
+pub fn accent_5() -> Color {
+    vars().accent[4]
+}
+pub fn gap() -> f32 {
+    vars().gap
+}
+pub fn panel_radius() -> f32 {
+    vars().panel_radius
+}
+pub fn border_thickness() -> f32 {
+    vars().border_thickness
+}
+
+pub fn accent_swatch(color: AccentColor) -> Color {
+    accent_ramp(color)[1]
+}
+
+fn accent_ramp(color: AccentColor) -> [Color; 5] {
+    let (chroma, hue, lightness) = match color {
+        AccentColor::Blue => (0.10, 215.0, [75.0, 70.0, 65.0, 60.0, 55.0]),
+        AccentColor::Red => (0.12, 0.0, [75.0, 70.0, 65.0, 60.0, 55.0]),
+        AccentColor::Green => (0.11, 170.0, [75.0, 70.0, 65.0, 60.0, 55.0]),
+        AccentColor::Yellow => (0.11, 90.0, [80.0, 75.0, 70.0, 65.0, 60.0]),
+        AccentColor::Purple => (0.11, 310.0, [75.0, 70.0, 65.0, 60.0, 55.0]),
+    };
+    std::array::from_fn(|i| oklch_to_color(lightness[i] / 100.0, chroma, hue))
+}
+
+fn oklch_to_color(l: f32, c: f32, hue_deg: f32) -> Color {
+    let h = hue_deg.to_radians();
+    let a = c * h.cos();
+    let b = c * h.sin();
+
+    let l_ = l + 0.396_337_78 * a + 0.215_803_76 * b;
+    let m_ = l - 0.105_561_346 * a - 0.063_854_17 * b;
+    let s_ = l - 0.089_484_18 * a - 1.291_485_5 * b;
+
+    let l3 = l_ * l_ * l_;
+    let m3 = m_ * m_ * m_;
+    let s3 = s_ * s_ * s_;
+
+    let r = 4.076_741_7 * l3 - 3.307_711_6 * m3 + 0.230_969_94 * s3;
+    let g = -1.268_438 * l3 + 2.609_757_4 * m3 - 0.341_319_38 * s3;
+    let b = -0.004_196_086 * l3 - 0.703_418_6 * m3 + 1.707_614_7 * s3;
+
+    Color::from_rgb(linear_to_srgb(r), linear_to_srgb(g), linear_to_srgb(b))
+}
+
+fn linear_to_srgb(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    if x <= 0.003_130_8 {
+        12.92 * x
+    } else {
+        1.055 * x.powf(1.0 / 2.4) - 0.055
+    }
+}
+
 const OVERLAY: (f32, f32, f32) = (0.33, 0.38, 0.48);
 pub const HOVER: Color = Color {
     r: OVERLAY.0,
@@ -66,7 +154,6 @@ pub const ACTIVE: Color = Color {
     b: OVERLAY.2,
     a: 0.20,
 };
-/// Subtle border used around panels and controls.
 pub const BORDER: Color = Color {
     r: OVERLAY.0,
     g: OVERLAY.1,
@@ -74,14 +161,13 @@ pub const BORDER: Color = Color {
     a: 0.22,
 };
 
-/// Root midnight theme: navy-dark background, blue accent.
 pub fn midnight() -> Theme {
     Theme::custom(
         "Midnight".to_owned(),
         Seed {
             background: BG_BASE,
             text: TEXT_1,
-            primary: ACCENT,
+            primary: accent(),
             success: ONLINE,
             warning: Color::from_rgb(0.80, 0.66, 0.36),
             danger: Color::from_rgb(0.78, 0.42, 0.42),
@@ -89,7 +175,6 @@ pub fn midnight() -> Theme {
     )
 }
 
-/// Window/background layer behind the panels (the gap color).
 pub fn root(_theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(BG_BASE)),
@@ -98,21 +183,19 @@ pub fn root(_theme: &Theme) -> container::Style {
     }
 }
 
-/// A rounded, bordered panel (sidebar / chat / thread).
 pub fn panel(_theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(BG_PANEL)),
         text_color: Some(TEXT_3),
         border: Border {
             color: BORDER,
-            width: 1.0,
-            radius: PANEL_RADIUS.into(),
+            width: border_thickness(),
+            radius: panel_radius().into(),
         },
         ..container::Style::default()
     }
 }
 
-/// Backwards-compatible alias used by the sidebar.
 pub fn sidebar(theme: &Theme) -> container::Style {
     panel(theme)
 }
@@ -162,10 +245,10 @@ pub fn reaction_button(active: bool) -> impl Fn(&Theme, button::Status) -> butto
             (
                 Color {
                     a: 0.20,
-                    ..ACCENT
+                    ..accent()
                 },
-                ACCENT,
-                ACCENT_BRIGHT,
+                accent(),
+                accent_bright(),
             )
         } else if hovered {
             (BG_ELEV_HI, BORDER, TEXT_1)
@@ -202,16 +285,19 @@ pub fn link_button(_theme: &Theme, status: button::Status) -> button::Style {
     let hovered = matches!(status, button::Status::Hovered);
     button::Style {
         background: None,
-        text_color: if hovered { ACCENT_BRIGHT } else { ACCENT },
+        text_color: if hovered { accent_bright() } else { accent() },
         ..button::Style::default()
     }
 }
 
-/// Secondary (outlined) button, e.g. thread "Close".
 pub fn secondary_button(_theme: &Theme, status: button::Status) -> button::Style {
     let hovered = matches!(status, button::Status::Hovered);
     button::Style {
-        background: Some(Background::Color(if hovered { BG_ELEV_HI } else { BG_ELEV })),
+        background: Some(Background::Color(if hovered {
+            BG_ELEV_HI
+        } else {
+            BG_ELEV
+        })),
         text_color: TEXT_2,
         border: Border {
             color: BORDER,
@@ -222,21 +308,23 @@ pub fn secondary_button(_theme: &Theme, status: button::Status) -> button::Style
     }
 }
 
-/// Filled accent button (primary actions).
 pub fn primary_button(_theme: &Theme, status: button::Status) -> button::Style {
     let hovered = matches!(status, button::Status::Hovered);
     button::Style {
-        background: Some(Background::Color(if hovered { ACCENT_4 } else { ACCENT_5 })),
+        background: Some(Background::Color(if hovered {
+            accent_4()
+        } else {
+            accent_5()
+        })),
         text_color: TEXT_1,
         border: Border::default().rounded(CONTROL_RADIUS),
         ..button::Style::default()
     }
 }
 
-/// Rounded, bg-2 text input matching the midnight chatbar.
 pub fn input(_theme: &Theme, status: text_input::Status) -> text_input::Style {
     let border_color = match status {
-        text_input::Status::Focused { .. } => ACCENT,
+        text_input::Status::Focused { .. } => accent(),
         text_input::Status::Hovered => Color { a: 0.35, ..BORDER },
         _ => BORDER,
     };
@@ -250,21 +338,104 @@ pub fn input(_theme: &Theme, status: text_input::Status) -> text_input::Style {
         icon: TEXT_4,
         placeholder: TEXT_4,
         value: TEXT_1,
-        selection: Color { a: 0.30, ..ACCENT },
+        selection: Color {
+            a: 0.30,
+            ..accent()
+        },
     }
 }
 
-/// Circular/rounded avatar placeholder background.
 pub fn avatar_placeholder(_theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(BG_ELEV_HI)),
-        text_color: Some(ACCENT_BRIGHT),
+        text_color: Some(accent_bright()),
         border: Border::default().rounded(8.0),
         ..container::Style::default()
     }
 }
 
-/// A 1px horizontal divider line using the panel border color.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn close(a: f32, b: f32) -> bool {
+        (a - b).abs() < 0.02
+    }
+
+    #[test]
+    fn oklch_matches_midnight_blue_ramp() {
+        let c = accent_swatch(AccentColor::Blue);
+        assert!(close(c.r, 0.274), "r={}", c.r);
+        assert!(close(c.g, 0.683), "g={}", c.g);
+        assert!(close(c.b, 0.773), "b={}", c.b);
+    }
+
+    #[test]
+    fn accent_families_differ_in_hue() {
+        let blue = accent_swatch(AccentColor::Blue);
+        let red = accent_swatch(AccentColor::Red);
+        assert!(red.r > red.b);
+        assert!(blue.b > blue.r);
+    }
+}
+
+pub fn rail_icon_placeholder(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(BG_ELEV_HI)),
+        text_color: Some(TEXT_4),
+        border: Border {
+            color: BORDER,
+            width: 1.0,
+            radius: CONTROL_RADIUS.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+pub fn rail_button(_theme: &Theme, status: button::Status) -> button::Style {
+    let hovered = matches!(status, button::Status::Hovered);
+    button::Style {
+        background: hovered.then_some(Background::Color(HOVER)),
+        text_color: if hovered { accent_bright() } else { TEXT_3 },
+        border: Border::default().rounded(CONTROL_RADIUS),
+        ..button::Style::default()
+    }
+}
+
+pub fn overlay_dim(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(Color {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.55,
+        })),
+        ..container::Style::default()
+    }
+}
+
+pub fn swatch(color: Color, selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let hovered = matches!(status, button::Status::Hovered);
+        let border_color = if selected {
+            TEXT_1
+        } else if hovered {
+            Color { a: 0.6, ..TEXT_2 }
+        } else {
+            Color { a: 0.0, ..color }
+        };
+        button::Style {
+            background: Some(Background::Color(color)),
+            border: Border {
+                color: border_color,
+                width: if selected { 2.5 } else { 1.5 },
+                radius: CONTROL_RADIUS.into(),
+            },
+            ..button::Style::default()
+        }
+    }
+}
+
 pub fn divider<'a, Message: 'a>() -> Element<'a, Message> {
     container(iced::widget::Space::new().width(Length::Fill).height(1.0))
         .width(Length::Fill)
@@ -276,7 +447,6 @@ pub fn divider<'a, Message: 'a>() -> Element<'a, Message> {
         .into()
 }
 
-/// Subtle scrollbar that blends into the panels.
 pub fn scrollbar(theme: &Theme, status: scrollable::Status) -> scrollable::Style {
     let dragged = matches!(
         status,

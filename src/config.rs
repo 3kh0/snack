@@ -69,6 +69,94 @@ impl From<&Session> for SessionSecrets {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AccentColor {
+    #[default]
+    Blue,
+    Red,
+    Green,
+    Yellow,
+    Purple,
+}
+
+impl AccentColor {
+    pub const ALL: [AccentColor; 5] = [
+        AccentColor::Blue,
+        AccentColor::Red,
+        AccentColor::Green,
+        AccentColor::Yellow,
+        AccentColor::Purple,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AccentColor::Blue => "Blue",
+            AccentColor::Red => "Red",
+            AccentColor::Green => "Green",
+            AccentColor::Yellow => "Yellow",
+            AccentColor::Purple => "Purple",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Settings {
+    #[serde(default)]
+    pub accent: AccentColor,
+    #[serde(default = "default_gap")]
+    pub gap: f32,
+    #[serde(default = "default_panel_radius")]
+    pub panel_radius: f32,
+    /// Border thickness around the main panels (`--border-thickness`).
+    #[serde(default = "default_border_thickness")]
+    pub border_thickness: f32,
+}
+
+fn default_gap() -> f32 {
+    12.0
+}
+fn default_panel_radius() -> f32 {
+    12.0
+}
+fn default_border_thickness() -> f32 {
+    1.0
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            accent: AccentColor::default(),
+            gap: default_gap(),
+            panel_radius: default_panel_radius(),
+            border_thickness: default_border_thickness(),
+        }
+    }
+}
+
+fn settings_path() -> Result<PathBuf, AppError> {
+    Ok(config_dir()?.join("settings.json"))
+}
+
+/// Load appearance settings, falling back to defaults on any error.
+pub fn load_settings() -> Settings {
+    let Ok(path) = settings_path() else {
+        return Settings::default();
+    };
+    match std::fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        Err(_) => Settings::default(),
+    }
+}
+
+pub fn save_settings(settings: &Settings) -> Result<(), AppError> {
+    let dir = config_dir()?;
+    std::fs::create_dir_all(&dir)?;
+    let json = serde_json::to_string_pretty(settings)?;
+    std::fs::write(settings_path()?, json)?;
+    Ok(())
+}
+
 pub fn config_dir() -> Result<PathBuf, AppError> {
     #[cfg(test)]
     {

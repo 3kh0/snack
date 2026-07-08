@@ -1,0 +1,138 @@
+use iced::widget::{Space, button, column, container, mouse_area, row, slider, stack, text};
+use iced::{Alignment, Element, Fill, Length};
+
+use super::theme;
+use crate::app::Message;
+use crate::config::{AccentColor, Settings};
+
+const CARD_WIDTH: f32 = 420.0;
+const SWATCH_SIZE: f32 = 34.0;
+
+pub fn modal<'a>(base: Element<'a, Message>, settings: &Settings) -> Element<'a, Message> {
+    let scrim = mouse_area(
+        container(Space::new())
+            .width(Fill)
+            .height(Fill)
+            .style(theme::overlay_dim),
+    )
+    .on_press(Message::SettingsClosed);
+
+    let centered = container(card(settings))
+        .center_x(Fill)
+        .center_y(Fill)
+        .padding(theme::SPACE_LG);
+
+    stack![base, scrim, centered].into()
+}
+
+fn card<'a>(s: &Settings) -> Element<'a, Message> {
+    let title = text("Settings")
+        .size(theme::TEXT_LG)
+        .color(theme::TEXT_1)
+        .font(iced::Font {
+            weight: iced::font::Weight::Bold,
+            ..iced::Font::default()
+        });
+
+    let body = column![
+        title,
+        theme::divider(),
+        accent_section(s.accent),
+        slider_row(
+            "Panel gap",
+            format!("{} px", s.gap as i32),
+            4.0..=24.0,
+            s.gap,
+            Message::SettingsGapChanged,
+        ),
+        slider_row(
+            "Corner radius",
+            format!("{} px", s.panel_radius as i32),
+            0.0..=20.0,
+            s.panel_radius,
+            Message::SettingsRadiusChanged,
+        ),
+        slider_row(
+            "Border thickness",
+            format!("{} px", s.border_thickness as i32),
+            0.0..=4.0,
+            s.border_thickness,
+            Message::SettingsBorderChanged,
+        ),
+        theme::divider(),
+        actions(),
+    ]
+    .spacing(theme::SPACE_LG)
+    .width(Fill);
+
+    container(body)
+        .width(Length::Fixed(CARD_WIDTH))
+        .padding(theme::SPACE_LG)
+        .style(theme::panel)
+        .into()
+}
+
+fn accent_section<'a>(selected: AccentColor) -> Element<'a, Message> {
+    let mut swatches = row![].spacing(theme::SPACE_SM).align_y(Alignment::Center);
+    for color in AccentColor::ALL {
+        swatches = swatches.push(
+            button(Space::new())
+                .width(Length::Fixed(SWATCH_SIZE))
+                .height(Length::Fixed(SWATCH_SIZE))
+                .style(theme::swatch(
+                    theme::accent_swatch(color),
+                    color == selected,
+                ))
+                .on_press(Message::SettingsAccentSelected(color)),
+        );
+    }
+
+    column![label("Accent color"), swatches]
+        .spacing(theme::SPACE_SM)
+        .width(Fill)
+        .into()
+}
+
+fn slider_row<'a>(
+    name: &str,
+    value_label: String,
+    range: std::ops::RangeInclusive<f32>,
+    value: f32,
+    on_change: impl Fn(f32) -> Message + 'a,
+) -> Element<'a, Message> {
+    let header = row![
+        label(name),
+        Space::new().width(Fill),
+        text(value_label).size(theme::TEXT_SM).color(theme::TEXT_2),
+    ]
+    .align_y(Alignment::Center);
+
+    column![header, slider(range, value, on_change).step(1.0_f32)]
+        .spacing(theme::SPACE_SM)
+        .width(Fill)
+        .into()
+}
+
+fn actions<'a>() -> Element<'a, Message> {
+    row![
+        button(text("Reset").size(theme::TEXT_SM))
+            .padding([theme::SPACE_XS, theme::SPACE_MD])
+            .style(theme::secondary_button)
+            .on_press(Message::SettingsReset),
+        Space::new().width(Fill),
+        button(text("Done").size(theme::TEXT_SM))
+            .padding([theme::SPACE_XS, theme::SPACE_MD])
+            .style(theme::primary_button)
+            .on_press(Message::SettingsClosed),
+    ]
+    .align_y(Alignment::Center)
+    .width(Fill)
+    .into()
+}
+
+fn label<'a>(name: &str) -> Element<'a, Message> {
+    text(name.to_owned())
+        .size(theme::TEXT_MD)
+        .color(theme::TEXT_2)
+        .into()
+}

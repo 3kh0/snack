@@ -90,6 +90,8 @@ pub struct App {
     pending_scroll_to: Option<(ChannelId, MessageTs)>,
     cache_dirty: HashMap<TeamId, Instant>,
     cache_saving: HashMap<TeamId, Instant>,
+    settings: config::Settings,
+    show_settings: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -215,11 +217,20 @@ pub enum Message {
     RtDisconnected(TeamId, u64),
     SignInPressed,
     RetryAuth,
+    SettingsOpened,
+    SettingsClosed,
+    SettingsAccentSelected(config::AccentColor),
+    SettingsGapChanged(f32),
+    SettingsRadiusChanged(f32),
+    SettingsBorderChanged(f32),
+    SettingsReset,
     Tick,
 }
 
 impl App {
     fn empty() -> Self {
+        let settings = config::load_settings();
+        ui::theme::apply(&settings);
         App {
             screen: Screen::Login,
             session: None,
@@ -247,6 +258,8 @@ impl App {
             pending_scroll_to: None,
             cache_dirty: HashMap::new(),
             cache_saving: HashMap::new(),
+            settings,
+            show_settings: false,
         }
     }
 

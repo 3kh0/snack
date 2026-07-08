@@ -22,15 +22,12 @@ pub fn view<'a>(
         .map(state::channel_label)
         .unwrap_or_else(|| channel_id.to_owned());
 
-    let header = container(
-        text(label)
-            .size(theme::TEXT_LG)
-            .color(theme::TEXT_1)
-            .font(iced::Font {
-                weight: iced::font::Weight::Bold,
-                ..iced::Font::default()
-            }),
-    )
+    let header = container(text(label).size(theme::TEXT_LG).color(theme::TEXT_1).font(
+        iced::Font {
+            weight: iced::font::Weight::Bold,
+            ..iced::Font::default()
+        },
+    ))
     .padding(theme::SPACE_MD)
     .width(Fill);
 

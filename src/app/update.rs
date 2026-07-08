@@ -674,6 +674,46 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
 
         Message::RetryAuth => app.load_session(),
 
+        Message::SettingsOpened => {
+            app.show_settings = true;
+            Task::none()
+        }
+
+        Message::SettingsClosed => {
+            app.show_settings = false;
+            Task::none()
+        }
+
+        Message::SettingsAccentSelected(accent) => {
+            app.settings.accent = accent;
+            apply_settings(app);
+            Task::none()
+        }
+
+        Message::SettingsGapChanged(value) => {
+            app.settings.gap = value;
+            apply_settings(app);
+            Task::none()
+        }
+
+        Message::SettingsRadiusChanged(value) => {
+            app.settings.panel_radius = value;
+            apply_settings(app);
+            Task::none()
+        }
+
+        Message::SettingsBorderChanged(value) => {
+            app.settings.border_thickness = value;
+            apply_settings(app);
+            Task::none()
+        }
+
+        Message::SettingsReset => {
+            app.settings = config::Settings::default();
+            apply_settings(app);
+            Task::none()
+        }
+
         Message::Tick => {
             let now = Instant::now();
             if let Some(ws) = app.active_workspace_mut() {
@@ -681,6 +721,13 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
             }
             flush_due_cache(app, now)
         }
+    }
+}
+
+fn apply_settings(app: &mut App) {
+    ui::theme::apply(&app.settings);
+    if let Err(e) = config::save_settings(&app.settings) {
+        app.toast(format!("could not save settings: {e}"));
     }
 }
 

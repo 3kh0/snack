@@ -81,7 +81,7 @@ fn hit_row<'a>(ws: &Workspace, hit: &SearchHit) -> Element<'a, Message> {
         .push(
             text(hit.channel_label.clone())
                 .size(theme::TEXT_SM)
-                .color(theme::SIDEBAR_ACTIVE_BG),
+                .color(theme::accent()),
         )
         .push(text(author).size(theme::TEXT_SM).font(Font {
             weight: iced::font::Weight::Bold,

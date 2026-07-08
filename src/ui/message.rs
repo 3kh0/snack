@@ -245,7 +245,7 @@ fn attachment_row<'a>(
             ..Font::default()
         });
         let widget: Element<'a, Message> = match non_empty(att.title_link.as_deref()) {
-            Some(link) => button(styled.color(theme::SIDEBAR_ACTIVE_BG))
+            Some(link) => button(styled.color(theme::accent()))
                 .padding(0)
                 .style(theme::link_button)
                 .on_press(Message::OpenUrl(link.to_owned()))

@@ -553,9 +553,6 @@ pub fn visible_message(msg: SlackMessage) -> SlackMessage {
     nested
 }
 
-/// A message belongs in the channel timeline unless it is a thread reply that
-/// was not also broadcast to the channel, or a leftover `message_replied`
-/// envelope (a metadata-only bump that carries no displayable message).
 pub fn is_channel_timeline_visible(msg: &SlackMessage) -> bool {
     if msg.subtype.as_deref() == Some("message_replied") {
         return false;
