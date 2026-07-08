@@ -70,6 +70,7 @@ fn test_workspace() -> Workspace {
         recent_channels: Vec::new(),
         last_active_channel: None,
         priority_scores: BTreeMap::new(),
+        frecency: BTreeMap::new(),
         hide_read_channels_unless_starred: false,
         priority_sidebar_section: false,
         users: HashMap::new(),

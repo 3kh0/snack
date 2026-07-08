@@ -33,10 +33,10 @@ impl Cache {
         &self,
         session: &WorkspaceSession,
     ) -> Result<Option<Workspace>, AppError> {
-        let Some((name, url, self_user_id, last_active_channel, recent_channels)) = self
+        let Some((name, url, self_user_id, last_active_channel, recent_channels, frecency)) = self
             .conn
             .query_row(
-                "select name, url, self_user_id, last_active_channel, recent_channels from workspaces where team_id = ?1",
+                "select name, url, self_user_id, last_active_channel, recent_channels, frecency from workspaces where team_id = ?1",
                 params![session.team_id],
                 |row| {
                     Ok((
@@ -45,6 +45,7 @@ impl Cache {
                         row.get::<_, String>(2)?,
                         row.get::<_, Option<String>>(3)?,
                         row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
                     ))
                 },
             )
@@ -56,6 +57,10 @@ impl Cache {
         let recent_channels = recent_channels
             .as_deref()
             .and_then(|json| serde_json::from_str::<Vec<String>>(json).ok())
+            .unwrap_or_default();
+        let frecency = frecency
+            .as_deref()
+            .and_then(|json| serde_json::from_str(json).ok())
             .unwrap_or_default();
 
         let mut ws = Workspace {
@@ -69,6 +74,7 @@ impl Cache {
             recent_channels,
             last_active_channel,
             priority_scores: Default::default(),
+            frecency,
             hide_read_channels_unless_starred: false,
             priority_sidebar_section: false,
             users: HashMap::new(),
@@ -146,14 +152,15 @@ impl Cache {
     pub fn save_workspace(&self, ws: &Workspace) -> Result<(), AppError> {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute(
-            "insert into workspaces (team_id, name, url, self_user_id, last_active_channel, recent_channels)
-             values (?1, ?2, ?3, ?4, ?5, ?6)
+            "insert into workspaces (team_id, name, url, self_user_id, last_active_channel, recent_channels, frecency)
+             values (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              on conflict(team_id) do update set
                name = excluded.name,
                url = excluded.url,
                self_user_id = excluded.self_user_id,
                last_active_channel = excluded.last_active_channel,
-               recent_channels = excluded.recent_channels",
+               recent_channels = excluded.recent_channels,
+               frecency = excluded.frecency",
             params![
                 ws.team_id,
                 ws.name,
@@ -161,6 +168,7 @@ impl Cache {
                 ws.self_user_id,
                 ws.last_active_channel,
                 serde_json::to_string(&ws.recent_channels)?,
+                serde_json::to_string(&ws.frecency)?,
             ],
         )?;
 
@@ -285,6 +293,9 @@ impl Cache {
         let _ = self
             .conn
             .execute("alter table workspaces add column recent_channels text", []);
+        let _ = self
+            .conn
+            .execute("alter table workspaces add column frecency text", []);
         self.conn.execute(
             "insert into meta (key, value) values ('schema_version', ?1)
              on conflict(key) do update set value = excluded.value",
@@ -336,6 +347,7 @@ mod tests {
         ws.messages.insert("C1".into(), cm);
         ws.last_active_channel = Some("C1".into());
         ws.touch_recent(&"C1".into());
+        ws.record_visit(&"C1".into(), 1_000_000);
 
         cache.save_workspace(&ws).unwrap();
         let loaded = cache.load_workspace(&session).unwrap().unwrap();
@@ -348,5 +360,6 @@ mod tests {
         assert_eq!(loaded.messages["C1"].last_read.as_deref(), Some("1.000001"));
         assert_eq!(loaded.last_active_channel.as_deref(), Some("C1"));
         assert_eq!(loaded.recent_channels, vec!["C1".to_string()]);
+        assert_eq!(loaded.frecency_score("C1", 1_000_000), 1.0);
     }
 }

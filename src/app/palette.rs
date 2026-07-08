@@ -46,6 +46,47 @@ fn match_score(haystack: &str, needle: &str) -> Option<i32> {
     None
 }
 
+const PRIORITY_WEIGHT: f64 = 600.0;
+
+struct FrecencyCtx {
+    now: i64,
+    max_priority: f64,
+    max_local: f64,
+}
+
+impl FrecencyCtx {
+    fn new(ws: &Workspace) -> Self {
+        let now = state::now_secs();
+        Self {
+            now,
+            max_priority: ws.priority_scores.values().copied().fold(0.0, f64::max),
+            max_local: ws.max_frecency_score(now),
+        }
+    }
+
+    fn bonus(&self, ws: &Workspace, channel_id: Option<&str>) -> i32 {
+        let Some(id) = channel_id else { return 0 };
+        let slack = if self.max_priority > 0.0 {
+            ws.priority_score(id).unwrap_or(0.0).max(0.0) / self.max_priority
+        } else {
+            0.0
+        };
+        let local = if self.max_local > 0.0 {
+            ws.frecency_score(id, self.now) / self.max_local
+        } else {
+            0.0
+        };
+        let usage_bonus = (slack.max(local) * PRIORITY_WEIGHT) as i32;
+        let recent_bonus = ws
+            .recent_channels
+            .iter()
+            .position(|c| c == id)
+            .map(|idx| 200i32.saturating_sub(idx as i32 * 10).max(0))
+            .unwrap_or(0);
+        usage_bonus + recent_bonus
+    }
+}
+
 struct Scored {
     score: i32,
     unread: u32,
@@ -99,6 +140,7 @@ pub fn rank(ws: &Workspace, query: &str) -> Vec<PaletteEntry> {
 
     let mut scored: Vec<Scored> = Vec::new();
     let mut im_by_user: HashMap<&str, &ChannelId> = HashMap::new();
+    let frecency = FrecencyCtx::new(ws);
 
     for channel in ws.channels.values() {
         if channel.is_archived {
@@ -118,7 +160,7 @@ pub fn rank(ws: &Workspace, query: &str) -> Vec<PaletteEntry> {
             .max();
         if let Some(score) = score {
             scored.push(Scored {
-                score,
+                score: score + frecency.bonus(ws, Some(channel.id.as_str())),
                 unread: ws.unread_total(channel),
                 sort_label: label.to_lowercase(),
                 entry: PaletteEntry {
@@ -148,7 +190,7 @@ pub fn rank(ws: &Workspace, query: &str) -> Vec<PaletteEntry> {
             .map(|c| ws.unread_total(c))
             .unwrap_or(0);
         scored.push(Scored {
-            score,
+            score: score + frecency.bonus(ws, dm.as_deref()),
             unread,
             sort_label: label.to_lowercase(),
             entry: PaletteEntry {
@@ -192,6 +234,7 @@ mod tests {
             recent_channels: Vec::new(),
             last_active_channel: None,
             priority_scores: BTreeMap::new(),
+            frecency: BTreeMap::new(),
             hide_read_channels_unless_starred: false,
             priority_sidebar_section: false,
             users: HashMap::new(),

@@ -50,6 +50,7 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                 if let Some(ws) = app.workspaces.get_mut(&team) {
                     ws.last_active_channel = Some(id.clone());
                     ws.touch_recent(&id);
+                    ws.record_visit(&id, crate::state::now_secs());
                 }
                 mark_workspace_dirty(app, &team);
                 if !same_channel {

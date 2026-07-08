@@ -9,6 +9,26 @@ use crate::slack::realtime::Connection;
 
 pub const RECENT_CHANNELS_MAX: usize = 20;
 
+pub const FRECENCY_HALF_LIFE_SECS: f64 = 7.0 * 24.0 * 3600.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FrecencyEntry {
+    pub score: f64,
+    pub last_visit: i64,
+}
+
+pub fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn decayed(score: f64, last_visit: i64, now: i64) -> f64 {
+    let elapsed = (now - last_visit).max(0) as f64;
+    score * 0.5_f64.powf(elapsed / FRECENCY_HALF_LIFE_SECS)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Login,
@@ -201,6 +221,7 @@ pub struct Workspace {
     pub recent_channels: Vec<ChannelId>,
     pub last_active_channel: Option<ChannelId>,
     pub priority_scores: BTreeMap<ChannelId, f64>,
+    pub frecency: BTreeMap<ChannelId, FrecencyEntry>,
     pub hide_read_channels_unless_starred: bool,
     pub priority_sidebar_section: bool,
     pub users: HashMap<UserId, User>,
@@ -225,6 +246,7 @@ impl Workspace {
             recent_channels: Vec::new(),
             last_active_channel: None,
             priority_scores: BTreeMap::new(),
+            frecency: BTreeMap::new(),
             hide_read_channels_unless_starred: false,
             priority_sidebar_section: false,
             users: HashMap::new(),
@@ -422,6 +444,29 @@ impl Workspace {
         self.recent_channels.retain(|existing| existing != id);
         self.recent_channels.insert(0, id.clone());
         self.recent_channels.truncate(RECENT_CHANNELS_MAX);
+    }
+
+    pub fn record_visit(&mut self, id: &ChannelId, now: i64) {
+        let entry = self.frecency.entry(id.clone()).or_insert(FrecencyEntry {
+            score: 0.0,
+            last_visit: now,
+        });
+        entry.score = decayed(entry.score, entry.last_visit, now) + 1.0;
+        entry.last_visit = now;
+    }
+
+    pub fn frecency_score(&self, id: &str, now: i64) -> f64 {
+        self.frecency
+            .get(id)
+            .map(|e| decayed(e.score, e.last_visit, now))
+            .unwrap_or(0.0)
+    }
+
+    pub fn max_frecency_score(&self, now: i64) -> f64 {
+        self.frecency
+            .values()
+            .map(|e| decayed(e.score, e.last_visit, now))
+            .fold(0.0, f64::max)
     }
 
     pub fn is_starred_channel(&self, channel: &Channel) -> bool {
@@ -1385,6 +1430,7 @@ mod tests {
             recent_channels: Vec::new(),
             last_active_channel: None,
             priority_scores: BTreeMap::new(),
+            frecency: BTreeMap::new(),
             hide_read_channels_unless_starred: false,
             priority_sidebar_section: false,
             users: HashMap::new(),
@@ -1684,6 +1730,7 @@ mod tests {
             recent_channels: Vec::new(),
             last_active_channel: None,
             priority_scores: BTreeMap::new(),
+            frecency: BTreeMap::new(),
             hide_read_channels_unless_starred: false,
             priority_sidebar_section: false,
             users: HashMap::new(),
