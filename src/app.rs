@@ -93,6 +93,7 @@ pub struct App {
     cache_saving: HashMap<TeamId, Instant>,
     settings: config::Settings,
     show_settings: bool,
+    show_account_menu: bool,
     sidebar_resizing: bool,
     sidebar_resize_prev_x: Option<f32>,
 }
@@ -226,6 +227,15 @@ pub enum Message {
     RtDisconnected(TeamId, u64),
     SignInPressed,
     RetryAuth,
+    AccountMenuToggled,
+    SelfPresenceSelected(crate::state::Presence),
+    SelfPresenceUpdated {
+        team: TeamId,
+        presence: crate::state::Presence,
+        previous: Option<crate::state::Presence>,
+        result: Result<(), SlackError>,
+    },
+    SignOutPressed,
     SettingsOpened,
     SettingsClosed,
     SettingsAccentSelected(config::AccentColor),
@@ -273,6 +283,7 @@ impl App {
             cache_saving: HashMap::new(),
             settings,
             show_settings: false,
+            show_account_menu: false,
             sidebar_resizing: false,
             sidebar_resize_prev_x: None,
         }

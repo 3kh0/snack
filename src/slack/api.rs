@@ -94,6 +94,14 @@ pub fn sidebar_dms(client: &SlackClient, workspace: &WorkspaceSession) -> Prepar
     client.rest_form(workspace, "sidebar.dms", Vec::new())
 }
 
+pub fn users_set_presence(
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    presence: String,
+) -> PreparedRequest {
+    client.rest_form(workspace, "users.setPresence", vec![("presence", presence)])
+}
+
 pub fn chat_post_message(
     client: &SlackClient,
     workspace: &WorkspaceSession,
@@ -341,6 +349,18 @@ pub async fn fetch_sidebar_dms(
 ) -> Result<SidebarDmsPage, Error> {
     let value = transport.execute(sidebar_dms(client, workspace)).await?;
     decode(value, "sidebar.dms")
+}
+
+pub async fn set_presence(
+    transport: &Transport,
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    presence: String,
+) -> Result<(), Error> {
+    transport
+        .execute(users_set_presence(client, workspace, presence))
+        .await?;
+    Ok(())
 }
 
 pub async fn fetch_users_info(
@@ -738,5 +758,14 @@ mod tests {
         let request = sidebar_dms(&SlackClient::default(), &workspace());
         assert!(request.url.contains("/api/sidebar.dms?"));
         assert!(form_fields(&request).contains(&("token".into(), "xoxc-test-token".into())));
+    }
+
+    #[test]
+    fn set_presence_request_includes_presence_value() {
+        let request = users_set_presence(&SlackClient::default(), &workspace(), "away".into());
+        let fields = form_fields(&request);
+        assert!(request.url.contains("/api/users.setPresence?"));
+        assert!(fields.contains(&("presence".into(), "away".into())));
+        assert!(fields.contains(&("token".into(), "xoxc-test-token".into())));
     }
 }

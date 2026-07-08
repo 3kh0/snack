@@ -51,7 +51,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
         return center_text("No workspace");
     };
 
-    let rail = ui::rail::view();
+    let rail = ui::rail::view(ws, &app.avatar_previews);
     let sidebar_panel = ui::sidebar::view(
         &app.workspaces,
         app.active_team.as_deref(),
@@ -74,7 +74,10 @@ fn main_view(app: &App) -> Element<'_, Message> {
             .width(Fill)
             .height(Fill)
             .style(ui::theme::panel);
-        return with_modal(app, shell(row![rail, sidebar, content]));
+        return with_modal(
+            app,
+            with_account_menu(app, shell(row![rail, sidebar, content])),
+        );
     }
 
     let editing_for = |channel_id: &str| -> Option<(&str, &str)> {
@@ -134,25 +137,31 @@ fn main_view(app: &App) -> Element<'_, Message> {
         let root = ui::thread::root_message(ws, channel, root_ts);
         with_modal(
             app,
-            shell(row![
-                rail,
-                sidebar,
-                main,
-                ui::thread::view(
-                    ws,
-                    channel,
-                    root,
-                    replies,
-                    &app.thread_composer_text,
-                    &app.file_previews,
-                    &app.avatar_previews,
-                    editing_for(channel),
-                    hovered_for(true),
-                )
-            ]),
+            with_account_menu(
+                app,
+                shell(row![
+                    rail,
+                    sidebar,
+                    main,
+                    ui::thread::view(
+                        ws,
+                        channel,
+                        root,
+                        replies,
+                        &app.thread_composer_text,
+                        &app.file_previews,
+                        &app.avatar_previews,
+                        editing_for(channel),
+                        hovered_for(true),
+                    )
+                ]),
+            ),
         )
     } else {
-        with_modal(app, shell(row![rail, sidebar, main]))
+        with_modal(
+            app,
+            with_account_menu(app, shell(row![rail, sidebar, main])),
+        )
     }
 }
 
@@ -170,6 +179,23 @@ fn with_modal<'a>(app: &'a App, base: Element<'a, Message>) -> Element<'a, Messa
     } else {
         base
     }
+}
+
+fn with_account_menu<'a>(app: &'a App, base: Element<'a, Message>) -> Element<'a, Message> {
+    let Some(ws) = app.active_workspace().filter(|_| app.show_account_menu) else {
+        return base;
+    };
+    iced::widget::stack![
+        base,
+        container(ui::rail::account_menu(ws, &app.avatar_previews))
+            .align_left(Fill)
+            .align_bottom(Fill)
+            .padding([
+                ui::theme::gap() + ui::rail::ICON_SIZE + ui::theme::SPACE_LG,
+                ui::theme::gap() + ui::theme::SPACE_SM,
+            ]),
+    ]
+    .into()
 }
 
 fn shell(content: iced::widget::Row<'_, Message>) -> Element<'_, Message> {

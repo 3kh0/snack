@@ -220,6 +220,22 @@ impl Workspace {
     }
 
     pub fn apply_boot(&mut self, boot: crate::slack::models::BootData) {
+        let self_user = if boot.self_user.id.is_empty() {
+            None
+        } else {
+            Some(User {
+                id: boot.self_user.id.clone(),
+                name: boot.self_user.name.clone(),
+                real_name: boot
+                    .self_user
+                    .profile
+                    .as_ref()
+                    .and_then(|profile| profile.real_name.clone()),
+                profile: boot.self_user.profile.clone(),
+                extra: boot.self_user.extra.clone(),
+                ..Default::default()
+            })
+        };
         if !boot.self_user.id.is_empty() {
             self.self_user_id = boot.self_user.id.clone();
         }
@@ -250,6 +266,9 @@ impl Workspace {
             }
         }
         for user in boot.users {
+            self.users.insert(user.id.clone(), user);
+        }
+        if let Some(user) = self_user {
             self.users.insert(user.id.clone(), user);
         }
     }
@@ -801,7 +820,7 @@ pub fn scroll_ratio_for_ts(messages: &[SlackMessage], ts: &str) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::slack::models::{Reaction, UserProfile};
+    use crate::slack::models::{BootData, BootSelf, Reaction, UserProfile};
 
     fn msg(ts: &str, text: &str) -> SlackMessage {
         SlackMessage {
@@ -937,6 +956,47 @@ mod tests {
         assert_eq!(
             user_avatar_url(&original_only),
             Some("https://example.test/original.png")
+        );
+    }
+
+    #[test]
+    fn boot_self_user_provides_self_avatar_url() {
+        let mut ws = Workspace {
+            team_id: "T1".into(),
+            name: "test".into(),
+            url: "https://t".into(),
+            self_user_id: "U_SESSION".into(),
+            channels: BTreeMap::new(),
+            starred_order: Vec::new(),
+            dm_order: Vec::new(),
+            priority_scores: BTreeMap::new(),
+            hide_read_channels_unless_starred: false,
+            priority_sidebar_section: false,
+            users: HashMap::new(),
+            messages: HashMap::new(),
+            typing: HashMap::new(),
+            presence: HashMap::new(),
+            rt: RealtimeStatus::default(),
+            rt_generation: 0,
+        };
+
+        ws.apply_boot(BootData {
+            self_user: BootSelf {
+                id: "U_SELF".into(),
+                name: Some("rowan".into()),
+                profile: Some(UserProfile {
+                    image_48: Some("https://example.test/self.png".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+        assert_eq!(ws.self_user_id, "U_SELF");
+        assert_eq!(
+            ws.avatar_url("U_SELF"),
+            Some("https://example.test/self.png".into())
         );
     }
 

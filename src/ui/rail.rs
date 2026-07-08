@@ -1,33 +1,39 @@
-use iced::widget::{Space, button, column, container, text};
-use iced::{Alignment, Element, Length};
+use std::collections::HashMap;
+
+use iced::widget::{Space, button, column, container, image, row, text};
+use iced::{Alignment, ContentFit, Element, Fill, Length, font};
 
 use super::theme;
-use crate::app::Message;
+use crate::app::{FilePreview, Message};
+use crate::slack::models::UserId;
+use crate::state::{Presence, Workspace};
 
-pub const RAIL_WIDTH: f32 = 60.0;
+pub const RAIL_WIDTH: f32 = 40.0;
 
-const ICON_SIZE: f32 = 40.0;
+pub const ICON_SIZE: f32 = 28.0;
+const AVATAR_RADIUS: f32 = 8.0;
+const RAIL_PADDING: f32 = 6.0;
+const MENU_WIDTH: f32 = 220.0;
 
-pub fn view<'a>() -> Element<'a, Message> {
+type AvatarPreviews = HashMap<UserId, FilePreview>;
+
+pub fn view<'a>(ws: &'a Workspace, avatars: &'a AvatarPreviews) -> Element<'a, Message> {
     let placeholder = container(Space::new())
         .width(Length::Fixed(ICON_SIZE))
         .height(Length::Fixed(ICON_SIZE))
         .style(theme::rail_icon_placeholder);
 
-    let cog = button(
-        container(text("⚙").size(theme::TEXT_LG))
-            .center_x(Length::Fill)
-            .center_y(Length::Fill),
-    )
-    .width(Length::Fixed(ICON_SIZE))
-    .height(Length::Fixed(ICON_SIZE))
-    .style(theme::rail_button)
-    .on_press(Message::SettingsOpened);
+    let account = button(account_avatar(ws, avatars))
+        .width(Length::Fixed(ICON_SIZE))
+        .height(Length::Fixed(ICON_SIZE))
+        .padding(0)
+        .style(theme::rail_button)
+        .on_press(Message::AccountMenuToggled);
 
-    let body = column![placeholder, cog]
+    let body = column![placeholder, Space::new().height(Fill), account]
         .spacing(theme::SPACE_SM)
         .align_x(Alignment::Center)
-        .padding(theme::SPACE_SM)
+        .padding(RAIL_PADDING)
         .width(Length::Fill)
         .height(Length::Fill);
 
@@ -36,4 +42,134 @@ pub fn view<'a>() -> Element<'a, Message> {
         .height(Length::Fill)
         .style(theme::panel)
         .into()
+}
+
+pub fn account_menu<'a>(ws: &'a Workspace, avatars: &'a AvatarPreviews) -> Element<'a, Message> {
+    let presence = ws
+        .presence
+        .get(&ws.self_user_id)
+        .copied()
+        .unwrap_or(Presence::Unknown);
+    let display_name = ws.display_name(&ws.self_user_id);
+    let status = presence_label(presence);
+
+    let header = row![
+        user_avatar(ws, avatars, 44.0, 10.0),
+        column![
+            text(display_name)
+                .size(theme::TEXT_MD)
+                .color(theme::TEXT_1)
+                .font(iced::Font {
+                    weight: font::Weight::Semibold,
+                    ..iced::Font::default()
+                }),
+            text(status).size(theme::TEXT_SM).color(theme::TEXT_3),
+        ]
+        .spacing(theme::SPACE_XS),
+    ]
+    .spacing(theme::SPACE_SM)
+    .align_y(Alignment::Center);
+
+    let menu = column![
+        header,
+        theme::divider(),
+        menu_button(
+            "Set active",
+            presence == Presence::Active,
+            Message::SelfPresenceSelected(Presence::Active),
+        ),
+        menu_button(
+            "Set offline",
+            matches!(presence, Presence::Away | Presence::Unknown),
+            Message::SelfPresenceSelected(Presence::Away),
+        ),
+        theme::divider(),
+        menu_button("Settings", false, Message::SettingsOpened),
+        menu_button("Sign out", false, Message::SignOutPressed),
+    ]
+    .spacing(theme::SPACE_SM);
+
+    container(menu)
+        .width(Length::Fixed(MENU_WIDTH))
+        .padding(theme::SPACE_MD)
+        .style(theme::account_menu)
+        .into()
+}
+
+fn account_avatar<'a>(ws: &'a Workspace, avatars: &'a AvatarPreviews) -> Element<'a, Message> {
+    user_avatar(ws, avatars, ICON_SIZE, AVATAR_RADIUS)
+}
+
+fn user_avatar<'a>(
+    ws: &'a Workspace,
+    avatars: &'a AvatarPreviews,
+    size_px: f32,
+    radius: f32,
+) -> Element<'a, Message> {
+    let size = Length::Fixed(size_px);
+    if ws.avatar_url(&ws.self_user_id).is_some() {
+        if let Some(FilePreview::Loaded(handle)) = avatars.get(&ws.self_user_id) {
+            return image(handle.clone())
+                .width(size)
+                .height(size)
+                .content_fit(ContentFit::Cover)
+                .border_radius(radius)
+                .into();
+        }
+    }
+
+    let initial = ws
+        .display_name(&ws.self_user_id)
+        .chars()
+        .find(|ch| ch.is_alphanumeric())
+        .map(|ch| ch.to_uppercase().collect::<String>())
+        .unwrap_or_else(|| "?".to_owned());
+
+    container(
+        text(initial)
+            .size(theme::TEXT_LG)
+            .color(theme::TEXT_1)
+            .font(iced::Font {
+                weight: font::Weight::Bold,
+                ..iced::Font::default()
+            }),
+    )
+    .width(size)
+    .height(size)
+    .center_x(size)
+    .center_y(size)
+    .style(theme::account_avatar_placeholder)
+    .into()
+}
+
+fn menu_button<'a>(label: &str, selected: bool, message: Message) -> Element<'a, Message> {
+    let marker = if selected { "●" } else { " " };
+    button(
+        row![
+            text(marker)
+                .size(theme::TEXT_SM)
+                .color(if selected {
+                    theme::ONLINE
+                } else {
+                    theme::TEXT_4
+                })
+                .width(Length::Fixed(16.0)),
+            text(label.to_owned()).size(theme::TEXT_MD),
+        ]
+        .spacing(theme::SPACE_SM)
+        .align_y(Alignment::Center),
+    )
+    .width(Fill)
+    .padding([theme::SPACE_SM, theme::SPACE_SM])
+    .style(theme::account_menu_button)
+    .on_press(message)
+    .into()
+}
+
+fn presence_label(presence: Presence) -> &'static str {
+    match presence {
+        Presence::Active => "Active",
+        Presence::Away => "Offline",
+        Presence::Unknown => "Offline",
+    }
 }

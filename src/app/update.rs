@@ -216,8 +216,10 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
 
         Message::BootLoaded(team, result) => match result {
             Ok(boot) => {
+                let mut self_user = None;
                 if let Some(ws) = app.workspaces.get_mut(&team) {
                     ws.apply_boot(boot);
+                    self_user = Some(ws.self_user_id.clone());
                     tracing::info!(%team, channels = ws.channels.len(), "boot ok");
                 }
                 mark_workspace_dirty(app, &team);
@@ -226,6 +228,9 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                     hydrate_sidebar_channels(app, &team),
                     hydrate_sidebar_dm_users(app, &team),
                 ];
+                if let Some(self_user) = self_user {
+                    tasks.push(load_user_avatar_previews(app, &team, vec![self_user]));
+                }
                 if app.active_team.as_deref() == Some(&team) && app.active_channel.is_none() {
                     if let Some(first) = app
                         .workspaces
@@ -686,7 +691,43 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
 
         Message::RetryAuth => app.load_session(),
 
+        Message::AccountMenuToggled => {
+            app.show_account_menu = !app.show_account_menu;
+            Task::none()
+        }
+
+        Message::SelfPresenceSelected(presence) => set_self_presence(app, presence),
+
+        Message::SelfPresenceUpdated {
+            team,
+            presence,
+            previous,
+            result,
+        } => {
+            if let Err(e) = result {
+                if let Some(ws) = app.workspaces.get_mut(&team) {
+                    if let Some(previous) = previous {
+                        ws.set_presence(ws.self_user_id.clone(), previous);
+                    } else {
+                        let self_user = ws.self_user_id.clone();
+                        ws.presence.remove(&self_user);
+                    }
+                }
+                app.toast(format!("presence update failed: {e}"));
+                if is_auth_error(&e) {
+                    app.screen = Screen::Login;
+                }
+                mark_workspace_dirty(app, &team);
+            } else {
+                tracing::debug!(%team, ?presence, "presence updated");
+            }
+            Task::none()
+        }
+
+        Message::SignOutPressed => sign_out(app),
+
         Message::SettingsOpened => {
+            app.show_account_menu = false;
             app.show_settings = true;
             Task::none()
         }
@@ -788,6 +829,7 @@ fn select_workspace(app: &mut App, team: TeamId) -> Task<Message> {
     }
 
     app.active_team = Some(team.clone());
+    app.show_account_menu = false;
     app.active_channel = preferred_channel(app, &team);
     app.active_thread = None;
     app.search = None;
@@ -814,6 +856,82 @@ fn select_workspace(app: &mut App, team: TeamId) -> Task<Message> {
         app.load_history(&team, &channel)
     } else {
         mark_latest_visible(app, &team, &channel)
+    }
+}
+
+fn sign_out(app: &mut App) -> Task<Message> {
+    if let Err(e) = config::clear_session() {
+        app.toast(format!("could not sign out: {e}"));
+        return Task::none();
+    }
+
+    app.session = None;
+    app.cache = None;
+    app.transport = None;
+    app.active_team = None;
+    app.active_channel = None;
+    app.active_thread = None;
+    app.workspaces.clear();
+    app.threads.clear();
+    app.composer_text.clear();
+    app.thread_composer_text.clear();
+    app.editing = None;
+    app.edit_text.clear();
+    app.hovered_message = None;
+    app.search_input.clear();
+    app.search = None;
+    app.file_previews.clear();
+    app.avatar_previews.clear();
+    app.avatar_profile_hydrated.clear();
+    app.pending_scroll_to = None;
+    app.cache_dirty.clear();
+    app.cache_saving.clear();
+    app.show_account_menu = false;
+    app.show_settings = false;
+    app.screen = Screen::Login;
+    Task::none()
+}
+
+fn set_self_presence(app: &mut App, presence: Presence) -> Task<Message> {
+    let Some(team) = app.active_team.clone() else {
+        app.show_account_menu = false;
+        return Task::none();
+    };
+    let previous = app
+        .workspaces
+        .get(&team)
+        .and_then(|ws| ws.presence.get(&ws.self_user_id).copied());
+    if let Some(ws) = app.workspaces.get_mut(&team) {
+        ws.set_presence(ws.self_user_id.clone(), presence);
+    }
+    app.show_account_menu = false;
+    mark_workspace_dirty(app, &team);
+
+    let Some((transport, session)) = app.live() else {
+        return Task::none();
+    };
+    let Some(ws_session) = session.workspaces.get(&team) else {
+        return Task::none();
+    };
+    let transport = transport.clone();
+    let client = app.client.clone();
+    let ws_session = ws_session.clone();
+    let slack_presence = slack_presence_value(presence).to_owned();
+    Task::perform(
+        async move { api::set_presence(&transport, &client, &ws_session, slack_presence).await },
+        move |result| Message::SelfPresenceUpdated {
+            team: team.clone(),
+            presence,
+            previous,
+            result,
+        },
+    )
+}
+
+fn slack_presence_value(presence: Presence) -> &'static str {
+    match presence {
+        Presence::Active => "auto",
+        Presence::Away | Presence::Unknown => "away",
     }
 }
 

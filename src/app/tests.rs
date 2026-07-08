@@ -10,7 +10,7 @@ use crate::slack::models::{
     SearchPagination, SentMessage, User, UserProfile,
 };
 use crate::slack::realtime::Connection;
-use crate::state::{ChannelMessages, RealtimeStatus};
+use crate::state::{ChannelMessages, Presence, RealtimeStatus};
 
 const SELF_USER: &str = "U_SELF";
 
@@ -106,6 +106,30 @@ fn add_second_workspace(app: &mut App) {
         loaded_channel("U_SECOND", "1783375000.000100", "second workspace"),
     )]);
     app.workspaces.insert(ws.team_id.clone(), ws);
+}
+
+#[test]
+fn account_menu_toggles_and_closes_for_settings() {
+    let mut app = test_app();
+
+    let _ = update(&mut app, Message::AccountMenuToggled);
+    assert!(app.show_account_menu);
+
+    let _ = update(&mut app, Message::SettingsOpened);
+    assert!(!app.show_account_menu);
+    assert!(app.show_settings);
+}
+
+#[test]
+fn self_presence_selection_updates_active_workspace() {
+    let mut app = test_app();
+    app.show_account_menu = true;
+
+    let _ = update(&mut app, Message::SelfPresenceSelected(Presence::Active));
+
+    let ws = app.active_workspace().unwrap();
+    assert_eq!(ws.presence.get(SELF_USER), Some(&Presence::Active));
+    assert!(!app.show_account_menu);
 }
 
 #[test]

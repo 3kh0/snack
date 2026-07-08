@@ -412,6 +412,15 @@ pub fn avatar_placeholder(_theme: &Theme) -> container::Style {
     }
 }
 
+pub fn account_avatar_placeholder(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(accent_5())),
+        text_color: Some(TEXT_1),
+        border: Border::default().rounded(8.0),
+        ..container::Style::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -456,6 +465,34 @@ pub fn rail_button(_theme: &Theme, status: button::Status) -> button::Style {
         background: hovered.then_some(Background::Color(HOVER)),
         text_color: if hovered { accent_bright() } else { TEXT_3 },
         border: Border::default().rounded(CONTROL_RADIUS),
+        ..button::Style::default()
+    }
+}
+
+pub fn account_menu(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(BG_ELEV)),
+        text_color: Some(TEXT_2),
+        border: Border {
+            color: BORDER,
+            width: 1.0,
+            radius: CONTROL_RADIUS.into(),
+        },
+        shadow: Shadow {
+            color: Color { a: 0.35, ..BG_BASE },
+            offset: Vector::new(0.0, 4.0),
+            blur_radius: 16.0,
+        },
+        ..container::Style::default()
+    }
+}
+
+pub fn account_menu_button(_theme: &Theme, status: button::Status) -> button::Style {
+    let hovered = matches!(status, button::Status::Hovered);
+    button::Style {
+        background: hovered.then_some(Background::Color(HOVER)),
+        text_color: if hovered { TEXT_1 } else { TEXT_2 },
+        border: Border::default().rounded(CONTROL_RADIUS - 2.0),
         ..button::Style::default()
     }
 }
