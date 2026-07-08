@@ -208,12 +208,11 @@ pub fn view<'a>(
 fn sidebar_label(ws: &Workspace, c: &Channel) -> String {
     let mut label = if c.is_im || c.is_mpim {
         dm_label(ws, c)
+    } else if c.is_private || c.is_group {
+        format!("🔒 {}", channel_name(c))
     } else {
         state::channel_label(c)
     };
-    if !(c.is_im || c.is_mpim) && (c.is_private || c.is_group) {
-        label = label.replacen('#', "lock ", 1);
-    }
     if c.is_im || c.is_mpim {
         label = format!("{} {label}", presence_marker(ws.presence_for_channel(c)));
     }
@@ -224,6 +223,15 @@ fn sidebar_label(ws: &Workspace, c: &Channel) -> String {
         }
     }
     label
+}
+
+fn channel_name(c: &Channel) -> String {
+    c.name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(c.id.as_str())
+        .to_owned()
 }
 
 fn dm_label(ws: &Workspace, c: &Channel) -> String {
@@ -430,6 +438,23 @@ mod tests {
     }
 
     #[test]
+    fn channel_labels_use_symbols_not_lock_text() {
+        let public = channel("C_PUBLIC", "public-room");
+        let mut private = channel("G_PRIVATE", "private-room");
+        private.is_private = true;
+        let ws = workspace(vec![public, private], &[]);
+
+        assert_eq!(
+            sidebar_label(&ws, ws.channels.get("C_PUBLIC").unwrap()),
+            "#public-room"
+        );
+        assert_eq!(
+            sidebar_label(&ws, ws.channels.get("G_PRIVATE").unwrap()),
+            "🔒 private-room"
+        );
+    }
+
+    #[test]
     fn dm_labels_do_not_use_private_channel_formatting() {
         let mut mpdm = dm("G_MPDM", "mpdm-aarav54897--echo--alanlichen1-1");
         mpdm.is_im = false;
@@ -442,6 +467,7 @@ mod tests {
 
         assert_eq!(label.trim(), "aarav54897, echo, alanlichen1");
         assert!(!label.contains("lock"));
+        assert!(!label.contains("🔒"));
         assert!(!label.contains("mpdm-"));
     }
 }
