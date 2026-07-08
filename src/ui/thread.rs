@@ -18,12 +18,20 @@ pub fn view<'a>(
     editing: Option<(&str, &str)>,
 ) -> Element<'a, Message> {
     let header = row![
-        text("Thread").size(theme::TEXT_LG).font(Font {
-            weight: iced::font::Weight::Bold,
-            ..Font::default()
-        }),
-        button(text("Close").size(theme::TEXT_SM)).on_press(Message::ThreadClosed),
+        text("Thread")
+            .size(theme::TEXT_LG)
+            .color(theme::TEXT_1)
+            .font(Font {
+                weight: iced::font::Weight::Bold,
+                ..Font::default()
+            })
+            .width(Fill),
+        button(text("Close").size(theme::TEXT_SM))
+            .style(theme::secondary_button)
+            .padding([theme::SPACE_XS, theme::SPACE_SM])
+            .on_press(Message::ThreadClosed),
     ]
+    .align_y(iced::Alignment::Center)
     .spacing(theme::SPACE_MD);
 
     let list: Element<'a, Message> = match replies {
@@ -48,7 +56,7 @@ pub fn view<'a>(
                     edit,
                 ));
             }
-            scrollable(col).height(Fill).into()
+            scrollable(col).style(theme::scrollbar).height(Fill).into()
         }
         _ => {
             let mut col = Column::new().spacing(theme::SPACE_XS);
@@ -75,18 +83,20 @@ pub fn view<'a>(
                 container(text(status).size(theme::TEXT_MD).color(theme::MUTED))
                     .padding(theme::SPACE_MD),
             );
-            scrollable(col).height(Fill).into()
+            scrollable(col).style(theme::scrollbar).height(Fill).into()
         }
     };
 
     let input = text_input("Reply in thread", value)
         .on_input(Message::ThreadComposerChanged)
         .on_submit(Message::ThreadSendPressed)
+        .style(theme::input)
         .padding(theme::SPACE_SM)
         .width(Fill);
 
     container(column![
         container(header).padding(theme::SPACE_MD),
+        theme::divider(),
         container(list).height(Fill),
         container(input).padding(theme::SPACE_MD),
     ])

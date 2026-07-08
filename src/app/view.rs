@@ -15,19 +15,33 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
 }
 
 fn login_view() -> Element<'static, Message> {
-    container(
+    let card = container(
         column![
-            text("Snack").size(ui::theme::TEXT_LG),
-            text("Sign in to your Slack workspace.").size(ui::theme::TEXT_MD),
-            text("Opens a new window for the Slack sign-in flow.").size(ui::theme::TEXT_SM),
-            button(text("Sign in").size(ui::theme::TEXT_MD)).on_press(Message::SignInPressed),
-            button(text("Reload session").size(ui::theme::TEXT_SM)).on_press(Message::RetryAuth),
+            text("Snack").size(ui::theme::TEXT_LG).color(ui::theme::TEXT_1),
+            text("Sign in to your Slack workspace.")
+                .size(ui::theme::TEXT_MD)
+                .color(ui::theme::TEXT_2),
+            text("Opens a new window for the Slack sign-in flow.")
+                .size(ui::theme::TEXT_SM)
+                .color(ui::theme::TEXT_4),
+            button(text("Sign in").size(ui::theme::TEXT_MD))
+                .style(ui::theme::primary_button)
+                .padding([ui::theme::SPACE_SM, ui::theme::SPACE_LG])
+                .on_press(Message::SignInPressed),
+            button(text("Reload session").size(ui::theme::TEXT_SM))
+                .style(ui::theme::link_button)
+                .on_press(Message::RetryAuth),
         ]
-        .spacing(12),
+        .spacing(ui::theme::SPACE_MD),
     )
-    .center_x(Fill)
-    .center_y(Fill)
-    .into()
+    .padding(ui::theme::SPACE_LG * 2.0)
+    .style(ui::theme::panel);
+
+    container(container(card).center_x(Fill).center_y(Fill))
+        .style(ui::theme::root)
+        .width(Fill)
+        .height(Fill)
+        .into()
 }
 
 fn main_view(app: &App) -> Element<'_, Message> {
@@ -44,8 +58,11 @@ fn main_view(app: &App) -> Element<'_, Message> {
     );
 
     if let Some(state) = app.search.as_ref() {
-        let content = row![ui::search::view(ws, state)].width(Fill).height(Fill);
-        return row![sidebar, content].width(Fill).height(Fill).into();
+        let content = container(ui::search::view(ws, state))
+            .width(Fill)
+            .height(Fill)
+            .style(ui::theme::panel);
+        return shell(row![sidebar, content]);
     }
 
     let editing_for = |channel_id: &str| -> Option<(&str, &str)> {
@@ -62,7 +79,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
                 .get(channel_id)
                 .map(crate::state::channel_label)
                 .unwrap_or_else(|| channel_id.to_owned());
-            column![
+            let chat = column![
                 container(ui::channel::view(
                     ws,
                     channel_id,
@@ -74,20 +91,29 @@ fn main_view(app: &App) -> Element<'_, Message> {
                 ui::composer::view(&app.composer_text, &label),
             ]
             .width(Fill)
-            .height(Fill)
-            .into()
+            .height(Fill);
+            container(chat)
+                .width(Fill)
+                .height(Fill)
+                .style(ui::theme::panel)
+                .into()
         }
-        None => center_text("Select a channel"),
+        None => container(center_text("Select a channel"))
+            .width(Fill)
+            .height(Fill)
+            .style(ui::theme::panel)
+            .into(),
     };
 
-    let content = if let (Some(team), Some((channel, root_ts))) =
+    if let (Some(team), Some((channel, root_ts))) =
         (app.active_team.as_ref(), app.active_thread.as_ref())
     {
         let replies = app
             .threads
             .get(&(team.clone(), channel.clone(), root_ts.clone()));
         let root = ui::thread::root_message(ws, channel, root_ts);
-        row![
+        shell(row![
+            sidebar,
             main,
             ui::thread::view(
                 ws,
@@ -99,19 +125,29 @@ fn main_view(app: &App) -> Element<'_, Message> {
                 &app.avatar_previews,
                 editing_for(channel),
             )
-        ]
+        ])
+    } else {
+        shell(row![sidebar, main])
+    }
+}
+
+/// Wrap the panel row in the bg-4 shell with gaps between panels.
+fn shell(content: iced::widget::Row<'_, Message>) -> Element<'_, Message> {
+    container(content.spacing(ui::theme::GAP).width(Fill).height(Fill))
+        .style(ui::theme::root)
+        .padding(ui::theme::GAP)
         .width(Fill)
         .height(Fill)
-    } else {
-        row![main].width(Fill).height(Fill)
-    };
-
-    row![sidebar, content].width(Fill).height(Fill).into()
+        .into()
 }
 
 fn center_text(label: &str) -> Element<'_, Message> {
-    container(text(label.to_owned()).size(ui::theme::TEXT_LG))
-        .center_x(Fill)
-        .center_y(Fill)
-        .into()
+    container(
+        text(label.to_owned())
+            .size(ui::theme::TEXT_LG)
+            .color(ui::theme::TEXT_3),
+    )
+    .center_x(Fill)
+    .center_y(Fill)
+    .into()
 }

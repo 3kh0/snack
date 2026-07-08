@@ -462,5 +462,5 @@ pub fn run() -> iced::Result {
 }
 
 fn theme(_app: &App) -> iced::Theme {
-    ui::theme::amoled()
+    ui::theme::midnight()
 }

@@ -8,6 +8,7 @@ pub fn view<'a>(value: &str, placeholder_label: &str) -> Element<'a, Message> {
     let input = text_input(&format!("Message {placeholder_label}"), value)
         .on_input(Message::ComposerChanged)
         .on_submit(Message::SendPressed)
+        .style(theme::input)
         .padding(theme::SPACE_SM)
         .width(Fill);
 

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use iced::widget::{Column, Row, button, container, image, text, text_input};
-use iced::{Alignment, Background, Border, Color, ContentFit, Element, Fill, Font, Length, Theme};
+use iced::{Alignment, ContentFit, Element, Fill, Font, Length};
 
 use super::{blocks, theme};
 use crate::app::{FilePreview, Message};
@@ -38,11 +38,17 @@ pub fn row<'a>(
 
     let mut header = Row::new()
         .spacing(theme::SPACE_SM)
-        .push(text(author.clone()).size(theme::TEXT_MD).font(Font {
-            weight: iced::font::Weight::Bold,
-            ..Font::default()
-        }))
-        .push(text(time).size(theme::TEXT_SM).color(theme::MUTED));
+        .align_y(Alignment::Center)
+        .push(
+            text(author.clone())
+                .size(theme::TEXT_MD)
+                .color(theme::TEXT_1)
+                .font(Font {
+                    weight: iced::font::Weight::Bold,
+                    ..Font::default()
+                }),
+        )
+        .push(text(time).size(theme::TEXT_SM).color(theme::TEXT_5));
 
     if msg.edited.is_some() {
         header = header.push(text("(edited)").size(theme::TEXT_SM).color(theme::MUTED));
@@ -84,6 +90,7 @@ pub fn row<'a>(
         let input = text_input("Edit message", value)
             .on_input(Message::EditComposerChanged)
             .on_submit(Message::EditSubmit)
+            .style(theme::input)
             .padding(theme::SPACE_SM)
             .width(Length::Fixed(360.0));
         let actions = Row::new()
@@ -121,11 +128,11 @@ pub fn row<'a>(
     if block_lines.is_empty() {
         let body = state::message_text(msg);
         if !body.is_empty() {
-            col = col.push(text(body).size(theme::TEXT_MD));
+            col = col.push(text(body).size(theme::TEXT_MD).color(theme::TEXT_2));
         }
     } else {
         for line in block_lines {
-            let widget = text(line.text).size(theme::TEXT_MD);
+            let widget = text(line.text).size(theme::TEXT_MD).color(theme::TEXT_2);
             let widget = if line.mono {
                 widget.font(Font::MONOSPACE)
             } else {
@@ -318,17 +325,8 @@ fn avatar<'a>(
     .height(Length::Fixed(SIZE))
     .center_x(Length::Fixed(SIZE))
     .center_y(Length::Fixed(SIZE))
-    .style(avatar_placeholder)
+    .style(theme::avatar_placeholder)
     .into()
-}
-
-fn avatar_placeholder(_theme: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Background::Color(Color::from_rgb(0.82, 0.84, 0.88))),
-        text_color: Some(Color::from_rgb(0.18, 0.20, 0.24)),
-        border: Border::default().rounded(7.0),
-        ..container::Style::default()
-    }
 }
 
 fn file_row<'a>(

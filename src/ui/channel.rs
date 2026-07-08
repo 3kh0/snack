@@ -22,11 +22,17 @@ pub fn view<'a>(
         .map(state::channel_label)
         .unwrap_or_else(|| channel_id.to_owned());
 
-    let header = container(text(label).size(theme::TEXT_LG).font(iced::Font {
-        weight: iced::font::Weight::Bold,
-        ..iced::Font::default()
-    }))
-    .padding(theme::SPACE_MD);
+    let header = container(
+        text(label)
+            .size(theme::TEXT_LG)
+            .color(theme::TEXT_1)
+            .font(iced::Font {
+                weight: iced::font::Weight::Bold,
+                ..iced::Font::default()
+            }),
+    )
+    .padding(theme::SPACE_MD)
+    .width(Fill);
 
     let list: Element<'a, Message> = match ws.messages.get(channel_id) {
         Some(cm) if !cm.messages.is_empty() => {
@@ -56,6 +62,7 @@ pub fn view<'a>(
             }
             scrollable(col)
                 .id(CHANNEL_SCROLLABLE_ID)
+                .style(theme::scrollbar)
                 .height(Fill)
                 .into()
         }
@@ -75,10 +82,15 @@ pub fn view<'a>(
         .into()
     };
 
-    column![header, container(list).height(Fill), footer]
-        .width(Fill)
-        .height(Fill)
-        .into()
+    column![
+        header,
+        theme::divider(),
+        container(list).height(Fill),
+        footer
+    ]
+    .width(Fill)
+    .height(Fill)
+    .into()
 }
 
 fn typing_line(names: &[String]) -> String {

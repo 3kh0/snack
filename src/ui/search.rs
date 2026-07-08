@@ -19,16 +19,20 @@ pub fn view<'a>(ws: &Workspace, state: &SearchState) -> Element<'a, Message> {
 
     let header = row![
         column![
-            text("Search").size(theme::TEXT_LG).font(Font {
-                weight: iced::font::Weight::Bold,
-                ..Font::default()
-            }),
-            text(summary).size(theme::TEXT_SM).color(theme::MUTED),
+            text("Search")
+                .size(theme::TEXT_LG)
+                .color(theme::TEXT_1)
+                .font(Font {
+                    weight: iced::font::Weight::Bold,
+                    ..Font::default()
+                }),
+            text(summary).size(theme::TEXT_SM).color(theme::TEXT_4),
         ]
         .spacing(theme::SPACE_XS)
         .width(Fill),
         button(text("Close").size(theme::TEXT_SM))
-            .style(theme::link_button)
+            .style(theme::secondary_button)
+            .padding([theme::SPACE_XS, theme::SPACE_SM])
             .on_press(Message::SearchCleared),
     ]
     .spacing(theme::SPACE_MD);
@@ -47,13 +51,14 @@ pub fn view<'a>(ws: &Workspace, state: &SearchState) -> Element<'a, Message> {
         for hit in &state.hits {
             list = list.push(hit_row(ws, hit));
         }
-        scrollable(list).height(Fill).into()
+        scrollable(list).style(theme::scrollbar).height(Fill).into()
     };
 
     let footer = pagination(state);
 
     column![
         container(header).padding(theme::SPACE_MD),
+        theme::divider(),
         container(body).height(Fill),
         footer,
     ]

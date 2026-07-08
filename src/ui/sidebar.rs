@@ -98,9 +98,13 @@ fn order_index(order: &[String], id: &str) -> usize {
 
 fn section_header<'a>(title: &str) -> Element<'a, Message> {
     container(
-        text(title.to_owned())
+        text(title.to_ascii_uppercase())
             .size(theme::TEXT_SM)
-            .color(theme::MUTED),
+            .color(theme::TEXT_4)
+            .font(iced::Font {
+                weight: font::Weight::Semibold,
+                ..iced::Font::default()
+            }),
     )
     .padding([theme::SPACE_SM, theme::SPACE_MD])
     .into()
@@ -145,13 +149,24 @@ fn channel_button<'a>(ws: &Workspace, c: &Channel, active: bool) -> Element<'a, 
 }
 
 fn workspace_button<'a>(ws: &Workspace, active: bool) -> Element<'a, Message> {
-    let status = if ws.rt.is_connected() { "●" } else { "○" };
-    button(text(format!("{status} {}", ws.name)).size(theme::TEXT_MD))
-        .width(Fill)
-        .padding([theme::SPACE_XS, theme::SPACE_SM])
-        .style(theme::channel_row(active))
-        .on_press(Message::WorkspaceSelected(ws.team_id.clone()))
-        .into()
+    let connected = ws.rt.is_connected();
+    let dot = text(if connected { "●" } else { "○" })
+        .size(theme::TEXT_SM)
+        .color(if connected {
+            theme::ONLINE
+        } else {
+            theme::TEXT_5
+        });
+    button(
+        iced::widget::row![dot, text(ws.name.clone()).size(theme::TEXT_MD)]
+            .spacing(theme::SPACE_SM)
+            .align_y(iced::Alignment::Center),
+    )
+    .width(Fill)
+    .padding([theme::SPACE_XS, theme::SPACE_SM])
+    .style(theme::channel_row(active))
+    .on_press(Message::WorkspaceSelected(ws.team_id.clone()))
+    .into()
 }
 
 pub fn view<'a>(
@@ -178,25 +193,35 @@ pub fn view<'a>(
     list = push_section(list, ws, active, "Starred", sections.starred);
     list = push_section(list, ws, active, "Other channels", sections.other_unreads);
 
-    let header = container(text(ws.name.clone()).size(theme::TEXT_LG).font(iced::Font {
-        weight: iced::font::Weight::Bold,
-        ..iced::Font::default()
-    }))
+    let header = container(
+        text(ws.name.clone())
+            .size(theme::TEXT_LG)
+            .color(theme::TEXT_1)
+            .font(iced::Font {
+                weight: iced::font::Weight::Bold,
+                ..iced::Font::default()
+            }),
+    )
     .padding(theme::SPACE_MD);
 
     let search = container(
         text_input("Search messages", search_input)
             .on_input(Message::SearchInputChanged)
             .on_submit(Message::SearchSubmitted)
+            .style(theme::input)
             .size(theme::TEXT_SM)
             .padding(theme::SPACE_SM)
             .width(Fill),
     )
     .padding([0.0, theme::SPACE_SM]);
 
-    let body = column![header, search, scrollable(list).height(Fill)]
-        .width(Length::Fixed(theme::SIDEBAR_WIDTH))
-        .height(Fill);
+    let body = column![
+        header,
+        search,
+        scrollable(list).style(theme::scrollbar).height(Fill)
+    ]
+    .width(Length::Fixed(theme::SIDEBAR_WIDTH))
+    .height(Fill);
 
     container(body)
         .width(Length::Fixed(theme::SIDEBAR_WIDTH))
