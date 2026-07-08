@@ -19,12 +19,14 @@ use crate::slack::{Error as SlackError, SlackClient, Transport};
 use crate::state::{ChannelMessages, Screen, Toast, Workspace};
 use crate::ui;
 
+mod palette;
 mod subscription;
 #[cfg(test)]
 mod tests;
 mod update;
 mod view;
 
+pub use palette::{PaletteEntry, PaletteState, PaletteTarget};
 use subscription::subscription;
 use update::{preferred_channel, update};
 use view::view;
@@ -86,6 +88,7 @@ pub struct App {
     hovered_message: Option<(bool, MessageTs)>,
     search_input: String,
     search: Option<SearchState>,
+    palette: Option<PaletteState>,
     errors: Vec<Toast>,
     send_seq: u64,
     last_typing: HashMap<(TeamId, ChannelId), Instant>,
@@ -201,6 +204,22 @@ pub enum Message {
         ts: MessageTs,
         thread_ts: Option<MessageTs>,
     },
+    PaletteToggled,
+    PaletteClosed,
+    PaletteQueryChanged(String),
+    PaletteMoved(isize),
+    PaletteSubmitted,
+    PaletteEntryPressed(usize),
+    PaletteRemoteUsersLoaded {
+        team: TeamId,
+        seq: u64,
+        result: Result<Vec<User>, SlackError>,
+    },
+    DmOpened {
+        team: TeamId,
+        user: UserId,
+        result: Result<ChannelId, SlackError>,
+    },
     FileDownloadPressed {
         url: String,
         filename: String,
@@ -289,6 +308,7 @@ impl App {
             hovered_message: None,
             search_input: String::new(),
             search: None,
+            palette: None,
             errors: Vec::new(),
             send_seq: 0,
             last_typing: HashMap::new(),

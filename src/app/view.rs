@@ -10,8 +10,18 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
     match app.screen {
         Screen::Login => login_view(),
         Screen::Loading => center_text("Loading…"),
-        Screen::Main => main_view(app),
+        Screen::Main => with_palette(app, main_view(app)),
     }
+}
+
+fn with_palette<'a>(app: &'a App, base: Element<'a, Message>) -> Element<'a, Message> {
+    let Some(state) = app.palette.as_ref() else {
+        return base;
+    };
+    let Some(ws) = app.active_workspace() else {
+        return base;
+    };
+    ui::palette::modal(base, ws, state, &app.avatar_previews)
 }
 
 fn login_view() -> Element<'static, Message> {
@@ -57,7 +67,6 @@ fn main_view(app: &App) -> Element<'_, Message> {
         app.active_team.as_deref(),
         ws,
         app.active_channel.as_deref(),
-        &app.search_input,
         &app.avatar_previews,
         app.settings.sidebar_width,
     );

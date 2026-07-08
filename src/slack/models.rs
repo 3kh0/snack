@@ -504,6 +504,16 @@ pub struct SearchInlineItem {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OpenedConversation {
+    pub channel: OpenedChannel,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OpenedChannel {
+    pub id: ChannelId,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EdgeResults<T> {
     #[serde(default)]
     pub ok: bool,
@@ -665,6 +675,43 @@ mod fixture_tests {
             Some("alice")
         );
         assert_eq!(page.failed_ids, vec!["U_MISSING".to_owned()]);
+    }
+
+    #[test]
+    fn deserialize_users_search_results() {
+        let page: EdgeResults<User> = serde_json::from_str(
+            r#"{"ok":true,"results":[
+                {"id":"U0ALICE","name":"alice","deleted":false,"color":"9f69e7",
+                 "real_name":"Alice A","tz":"America/New_York","is_admin":true,
+                 "is_bot":false,"is_app_user":false,"updated":1783000000,
+                 "enterprise_user":{"id":"W1"},"enterprise_id":"E09V59WQY1E",
+                 "profile":{"display_name":"alice","real_name":"Alice A"}},
+                {"id":"U0BOT","name":"helperbot","is_bot":true}
+            ]}"#,
+        )
+        .unwrap();
+        assert!(page.ok);
+        assert_eq!(page.results.len(), 2);
+        assert_eq!(page.results[0].id, "U0ALICE");
+        assert_eq!(
+            page.results[0]
+                .profile
+                .as_ref()
+                .unwrap()
+                .display_name
+                .as_deref(),
+            Some("alice")
+        );
+        assert!(page.results[1].is_bot);
+    }
+
+    #[test]
+    fn deserialize_conversations_open() {
+        let opened: OpenedConversation = serde_json::from_str(
+            r#"{"ok":true,"no_op":false,"already_open":true,"channel":{"id":"D0ALICE"}}"#,
+        )
+        .unwrap();
+        assert_eq!(opened.channel.id, "D0ALICE");
     }
 
     #[test]

@@ -33,10 +33,10 @@ impl Cache {
         &self,
         session: &WorkspaceSession,
     ) -> Result<Option<Workspace>, AppError> {
-        let Some((name, url, self_user_id, last_active_channel)) = self
+        let Some((name, url, self_user_id, last_active_channel, recent_channels)) = self
             .conn
             .query_row(
-                "select name, url, self_user_id, last_active_channel from workspaces where team_id = ?1",
+                "select name, url, self_user_id, last_active_channel, recent_channels from workspaces where team_id = ?1",
                 params![session.team_id],
                 |row| {
                     Ok((
@@ -44,6 +44,7 @@ impl Cache {
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
                     ))
                 },
             )
@@ -51,6 +52,11 @@ impl Cache {
         else {
             return Ok(None);
         };
+
+        let recent_channels = recent_channels
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<Vec<String>>(json).ok())
+            .unwrap_or_default();
 
         let mut ws = Workspace {
             team_id: session.team_id.clone(),
@@ -60,6 +66,7 @@ impl Cache {
             channels: Default::default(),
             starred_order: Vec::new(),
             dm_order: Vec::new(),
+            recent_channels,
             last_active_channel,
             priority_scores: Default::default(),
             hide_read_channels_unless_starred: false,
@@ -138,19 +145,21 @@ impl Cache {
     pub fn save_workspace(&self, ws: &Workspace) -> Result<(), AppError> {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute(
-            "insert into workspaces (team_id, name, url, self_user_id, last_active_channel)
-             values (?1, ?2, ?3, ?4, ?5)
+            "insert into workspaces (team_id, name, url, self_user_id, last_active_channel, recent_channels)
+             values (?1, ?2, ?3, ?4, ?5, ?6)
              on conflict(team_id) do update set
                name = excluded.name,
                url = excluded.url,
                self_user_id = excluded.self_user_id,
-               last_active_channel = excluded.last_active_channel",
+               last_active_channel = excluded.last_active_channel,
+               recent_channels = excluded.recent_channels",
             params![
                 ws.team_id,
                 ws.name,
                 ws.url,
                 ws.self_user_id,
-                ws.last_active_channel
+                ws.last_active_channel,
+                serde_json::to_string(&ws.recent_channels)?,
             ],
         )?;
 
@@ -235,7 +244,8 @@ impl Cache {
                 name text not null,
                 url text not null,
                 self_user_id text not null,
-                last_active_channel text
+                last_active_channel text,
+                recent_channels text
             );
             create table if not exists channels (
                 team_id text not null,
@@ -271,6 +281,9 @@ impl Cache {
             "alter table workspaces add column last_active_channel text",
             [],
         );
+        let _ = self
+            .conn
+            .execute("alter table workspaces add column recent_channels text", []);
         self.conn.execute(
             "insert into meta (key, value) values ('schema_version', ?1)
              on conflict(key) do update set value = excluded.value",
@@ -321,6 +334,7 @@ mod tests {
         cm.last_read = Some("1.000001".into());
         ws.messages.insert("C1".into(), cm);
         ws.last_active_channel = Some("C1".into());
+        ws.touch_recent(&"C1".into());
 
         cache.save_workspace(&ws).unwrap();
         let loaded = cache.load_workspace(&session).unwrap().unwrap();
@@ -332,5 +346,6 @@ mod tests {
         );
         assert_eq!(loaded.messages["C1"].last_read.as_deref(), Some("1.000001"));
         assert_eq!(loaded.last_active_channel.as_deref(), Some("C1"));
+        assert_eq!(loaded.recent_channels, vec!["C1".to_string()]);
     }
 }

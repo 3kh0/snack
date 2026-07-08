@@ -66,6 +66,7 @@ fn test_workspace() -> Workspace {
         channels,
         starred_order: Vec::new(),
         dm_order: Vec::new(),
+        recent_channels: Vec::new(),
         last_active_channel: None,
         priority_scores: BTreeMap::new(),
         hide_read_channels_unless_starred: false,

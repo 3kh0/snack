@@ -20,6 +20,7 @@ use crate::slack::{Error as SlackError, Transport};
 use crate::state::{ChannelMessages, Presence, RealtimeStatus, Screen, Workspace};
 use crate::ui;
 
+use super::palette::{self, PaletteEntry, PaletteState, PaletteTarget};
 use super::{App, DesktopNotification, FilePreview, Message, SearchHit, SearchState, ThreadKey};
 
 const CACHE_SAVE_DEBOUNCE: Duration = Duration::from_millis(750);
@@ -43,6 +44,7 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                 app.last_active_channels.insert(team.clone(), id.clone());
                 if let Some(ws) = app.workspaces.get_mut(&team) {
                     ws.last_active_channel = Some(id.clone());
+                    ws.touch_recent(&id);
                 }
                 mark_workspace_dirty(app, &team);
             }
@@ -524,6 +526,23 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
             ts,
             thread_ts,
         } => open_search_result(app, channel, ts, thread_ts),
+
+        Message::PaletteToggled => palette_toggled(app),
+        Message::PaletteClosed => {
+            app.palette = None;
+            Task::none()
+        }
+        Message::PaletteQueryChanged(query) => palette_query_changed(app, query),
+        Message::PaletteMoved(delta) => {
+            palette_moved(app, delta);
+            Task::none()
+        }
+        Message::PaletteSubmitted => palette_activate_selected(app),
+        Message::PaletteEntryPressed(index) => palette_activate(app, index),
+        Message::PaletteRemoteUsersLoaded { team, seq, result } => {
+            palette_remote_users_loaded(app, team, seq, result)
+        }
+        Message::DmOpened { team, user, result } => dm_opened(app, team, user, result),
 
         Message::FileDownloadPressed { url, filename } => download_file_pressed(app, url, filename),
 
@@ -1610,6 +1629,191 @@ fn open_search_result(
     Task::batch(tasks)
 }
 
+fn palette_toggled(app: &mut App) -> Task<Message> {
+    if app.palette.is_some() {
+        app.palette = None;
+        return Task::none();
+    }
+    let entries = app
+        .active_workspace()
+        .map(|ws| palette::recents(ws, app.active_channel.as_deref()))
+        .unwrap_or_default();
+    app.palette = Some(PaletteState {
+        entries,
+        ..PaletteState::default()
+    });
+    operation::focus(ui::palette::INPUT_ID)
+}
+
+fn palette_query_changed(app: &mut App, query: String) -> Task<Message> {
+    let Some(ws) = app.active_workspace() else {
+        return Task::none();
+    };
+    let entries = if query.trim().is_empty() {
+        palette::recents(ws, app.active_channel.as_deref())
+    } else {
+        palette::rank(ws, &query)
+    };
+    let Some(state) = app.palette.as_mut() else {
+        return Task::none();
+    };
+    state.query = query.clone();
+    state.entries = entries;
+    state.selected = 0;
+    state.remote_seq += 1;
+
+    if query.trim().chars().count() < 2 {
+        return Task::none();
+    }
+    let seq = state.remote_seq;
+    let Some((transport, session)) = app.live() else {
+        return Task::none();
+    };
+    let Some(team) = app.active_team.clone() else {
+        return Task::none();
+    };
+    let Some(ws_session) = session.workspaces.get(&team) else {
+        return Task::none();
+    };
+    let transport = transport.clone();
+    let client = app.client.clone();
+    let ws_session = ws_session.clone();
+    Task::perform(
+        async move { api::fetch_users_search(&transport, &client, &ws_session, query).await },
+        move |result| Message::PaletteRemoteUsersLoaded {
+            team: team.clone(),
+            seq,
+            result,
+        },
+    )
+}
+
+fn palette_moved(app: &mut App, delta: isize) {
+    let Some(state) = app.palette.as_mut() else {
+        return;
+    };
+    let len = state.entries.len();
+    if len == 0 {
+        return;
+    }
+    let cur = state.selected as isize;
+    let next = (cur + delta).rem_euclid(len as isize);
+    state.selected = next as usize;
+}
+
+fn palette_activate_selected(app: &mut App) -> Task<Message> {
+    let index = app.palette.as_ref().map(|s| s.selected).unwrap_or(0);
+    palette_activate(app, index)
+}
+
+fn palette_activate(app: &mut App, index: usize) -> Task<Message> {
+    let Some(entry) = app
+        .palette
+        .as_ref()
+        .and_then(|s| s.entries.get(index).cloned())
+    else {
+        return Task::none();
+    };
+    let Some(team) = app.active_team.clone() else {
+        return Task::none();
+    };
+    match entry.target {
+        PaletteTarget::Channel(id) => {
+            app.palette = None;
+            Task::done(Message::ChannelSelected(id))
+        }
+        PaletteTarget::User { dm: Some(id), .. } => {
+            app.palette = None;
+            Task::done(Message::ChannelSelected(id))
+        }
+        PaletteTarget::User { user, dm: None } => {
+            app.palette = None;
+            let Some((transport, session)) = app.live() else {
+                return Task::none();
+            };
+            let Some(ws_session) = session.workspaces.get(&team) else {
+                return Task::none();
+            };
+            let transport = transport.clone();
+            let client = app.client.clone();
+            let ws_session = ws_session.clone();
+            let dm_user = user.clone();
+            Task::perform(
+                async move { api::open_dm(&transport, &client, &ws_session, dm_user).await },
+                move |result| Message::DmOpened {
+                    team: team.clone(),
+                    user: user.clone(),
+                    result,
+                },
+            )
+        }
+    }
+}
+
+fn palette_remote_users_loaded(
+    app: &mut App,
+    team: TeamId,
+    seq: u64,
+    result: Result<Vec<crate::slack::models::User>, SlackError>,
+) -> Task<Message> {
+    if app.active_team.as_deref() != Some(&team) {
+        return Task::none();
+    }
+    let users = match result {
+        Ok(users) => users,
+        Err(e) => {
+            tracing::debug!(error = %e, "palette user search failed");
+            return Task::none();
+        }
+    };
+    if app.palette.as_ref().map(|s| s.remote_seq) != Some(seq) {
+        return Task::none();
+    }
+    if let Some(ws) = app.workspaces.get_mut(&team) {
+        for user in users {
+            ws.users.entry(user.id.clone()).or_insert(user);
+        }
+    }
+    mark_workspace_dirty(app, &team);
+    if let (Some(ws), Some(state)) = (app.workspaces.get(&team), app.palette.as_mut()) {
+        state.entries = palette::rank(ws, &state.query);
+        if state.selected >= state.entries.len() {
+            state.selected = 0;
+        }
+    }
+    Task::none()
+}
+
+fn dm_opened(
+    app: &mut App,
+    team: TeamId,
+    user: UserId,
+    result: Result<ChannelId, SlackError>,
+) -> Task<Message> {
+    let channel = match result {
+        Ok(channel) => channel,
+        Err(e) => {
+            app.toast(format!("could not open DM: {e}"));
+            return Task::none();
+        }
+    };
+    if let Some(ws) = app.workspaces.get_mut(&team) {
+        ws.channels
+            .entry(channel.clone())
+            .or_insert_with(|| Channel {
+                id: channel.clone(),
+                is_im: true,
+                user: Some(user.clone()),
+                ..Default::default()
+            });
+        if !ws.dm_order.iter().any(|id| id == &channel) {
+            ws.dm_order.push(channel.clone());
+        }
+    }
+    mark_workspace_dirty(app, &team);
+    Task::done(Message::ChannelSelected(channel))
+}
+
 fn scroll_to_pending(app: &mut App, channel: &ChannelId) -> Task<Message> {
     let Some((pending_channel, ts)) = app.pending_scroll_to.clone() else {
         return Task::none();
@@ -2021,8 +2225,8 @@ fn decode_gif_preview(bytes: &[u8]) -> Option<FilePreview> {
     let mut delays = Vec::new();
     let mut canvas = vec![0u8; width * height * 4];
     while let Some(frame) = decoder.read_next_frame().ok()? {
-        let snapshot = matches!(frame.dispose, gif::DisposalMethod::Previous)
-            .then(|| canvas.clone());
+        let snapshot =
+            matches!(frame.dispose, gif::DisposalMethod::Previous).then(|| canvas.clone());
 
         composite_frame(&mut canvas, width, height, frame);
         frames.push(ImageHandle::from_rgba(

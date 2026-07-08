@@ -3,6 +3,7 @@ pub mod channel;
 pub mod composer;
 pub mod icons;
 pub mod message;
+pub mod palette;
 pub mod rail;
 pub mod search;
 pub mod selectable;

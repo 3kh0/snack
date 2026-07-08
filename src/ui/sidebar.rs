@@ -1,15 +1,13 @@
 use std::collections::{BTreeMap, HashMap};
 
 use iced::widget::text::Wrapping;
-use iced::widget::{
-    Column, button, column, container, image, row, scrollable, svg, text, text_input,
-};
+use iced::widget::{Column, button, column, container, image, row, scrollable, svg, text};
 use iced::{Alignment, Color, ContentFit, Element, Fill, Length, font};
 
 use super::{icons, theme};
 use crate::app::{FilePreview, Message};
 use crate::slack::models::{Channel, TeamId, UserId};
-use crate::state::{self, Workspace};
+use crate::state::{self, Workspace, channel_display_name};
 
 type AvatarPreviews = HashMap<UserId, FilePreview>;
 
@@ -321,12 +319,37 @@ fn workspace_button<'a>(ws: &Workspace, active: bool) -> Element<'a, Message> {
     .into()
 }
 
+fn jump_to_button<'a>() -> Element<'a, Message> {
+    let hint = if cfg!(target_os = "macos") {
+        "⌘K"
+    } else {
+        "Ctrl K"
+    };
+    let inner = row![
+        svg(icons::search())
+            .width(Length::Fixed(theme::SIDEBAR_ICON))
+            .height(Length::Fixed(theme::SIDEBAR_ICON))
+            .style(theme::sidebar_icon(theme::TEXT_4)),
+        text("Jump to…").size(theme::TEXT_SM).color(theme::TEXT_3),
+        iced::widget::Space::new().width(Fill),
+        text(hint).size(theme::TEXT_SM).color(theme::TEXT_5),
+    ]
+    .spacing(theme::SPACE_SM)
+    .align_y(Alignment::Center);
+
+    button(inner)
+        .width(Fill)
+        .padding(theme::SPACE_SM)
+        .style(theme::channel_row(false))
+        .on_press(Message::PaletteToggled)
+        .into()
+}
+
 pub fn view<'a>(
     workspaces: &BTreeMap<TeamId, Workspace>,
     active_team: Option<&str>,
     ws: &'a Workspace,
     active: Option<&str>,
-    search_input: &str,
     avatars: &'a AvatarPreviews,
     width: f32,
 ) -> Element<'a, Message> {
@@ -372,16 +395,7 @@ pub fn view<'a>(
     )
     .padding(theme::SPACE_MD);
 
-    let search = container(
-        text_input("Search messages", search_input)
-            .on_input(Message::SearchInputChanged)
-            .on_submit(Message::SearchSubmitted)
-            .style(theme::input)
-            .size(theme::TEXT_SM)
-            .padding(theme::SPACE_SM)
-            .width(Fill),
-    )
-    .padding([0.0, theme::SPACE_SM]);
+    let search = container(jump_to_button()).padding([0.0, theme::SPACE_SM]);
 
     let body = column![
         header,
@@ -398,56 +412,11 @@ pub fn view<'a>(
         .into()
 }
 
-fn channel_display_name(ws: &Workspace, c: &Channel) -> String {
-    if c.is_im || c.is_mpim {
-        dm_label(ws, c)
-    } else {
-        channel_name(c)
-    }
-}
-
 fn mention_count(ws: &Workspace, c: &Channel) -> u32 {
     ws.messages
         .get(&c.id)
         .map(|cm| cm.mention_count)
         .unwrap_or(0)
-}
-
-fn channel_name(c: &Channel) -> String {
-    c.name
-        .as_deref()
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .unwrap_or(c.id.as_str())
-        .to_owned()
-}
-
-fn dm_label(ws: &Workspace, c: &Channel) -> String {
-    if c.is_im {
-        if let Some(user) = state::dm_user_id(c) {
-            return ws.display_name(user);
-        }
-    }
-    if c.is_mpim {
-        if let Some(name) = c.name.as_deref().and_then(mpdm_name_label) {
-            return name;
-        }
-    }
-    state::channel_label(c).trim_start_matches('#').to_owned()
-}
-
-fn mpdm_name_label(name: &str) -> Option<String> {
-    let rest = name.strip_prefix("mpdm-")?;
-    let rest = rest
-        .rsplit_once('-')
-        .and_then(|(prefix, suffix)| suffix.parse::<u32>().ok().map(|_| prefix))
-        .unwrap_or(rest);
-    let names: Vec<_> = rest
-        .split("--")
-        .map(|name| name.replace('.', " "))
-        .filter(|name| !name.trim().is_empty())
-        .collect();
-    (!names.is_empty()).then(|| names.join(", "))
 }
 
 /// Number of people in a group DM, parsed from the `mpdm-a--b--c-1` name.
@@ -546,6 +515,7 @@ mod tests {
                 .collect::<BTreeMap<_, _>>(),
             starred_order: Vec::new(),
             dm_order: Vec::new(),
+            recent_channels: Vec::new(),
             last_active_channel: None,
             priority_scores: BTreeMap::new(),
             hide_read_channels_unless_starred: false,

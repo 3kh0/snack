@@ -14,6 +14,11 @@ pub(super) fn subscription(app: &App) -> Subscription<Message> {
     if needs_tick {
         subs.push(iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick));
     }
+
+    subs.push(iced::event::listen_with(palette_hotkey));
+    if app.palette.is_some() {
+        subs.push(iced::event::listen_with(palette_navigation));
+    }
     if app
         .emoji_previews
         .values()
@@ -50,6 +55,41 @@ pub(super) fn subscription(app: &App) -> Subscription<Message> {
     }
 
     Subscription::batch(subs)
+}
+
+fn palette_hotkey(
+    event: iced::Event,
+    _status: iced::event::Status,
+    _id: iced::window::Id,
+) -> Option<Message> {
+    use iced::keyboard::{Event, Key};
+    let iced::Event::Keyboard(Event::KeyPressed { key, modifiers, .. }) = event else {
+        return None;
+    };
+    match key {
+        Key::Character(c) if c.as_str().eq_ignore_ascii_case("k") && modifiers.command() => {
+            Some(Message::PaletteToggled)
+        }
+        _ => None,
+    }
+}
+
+fn palette_navigation(
+    event: iced::Event,
+    _status: iced::event::Status,
+    _id: iced::window::Id,
+) -> Option<Message> {
+    use iced::keyboard::key::Named;
+    use iced::keyboard::{Event, Key};
+    let iced::Event::Keyboard(Event::KeyPressed { key, .. }) = event else {
+        return None;
+    };
+    match key {
+        Key::Named(Named::ArrowUp) => Some(Message::PaletteMoved(-1)),
+        Key::Named(Named::ArrowDown) => Some(Message::PaletteMoved(1)),
+        Key::Named(Named::Escape) => Some(Message::PaletteClosed),
+        _ => None,
+    }
 }
 
 fn map_rt_update((team, update): (TeamId, RtUpdate)) -> Message {

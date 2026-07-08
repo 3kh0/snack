@@ -4,7 +4,8 @@ use super::Error;
 use super::client::{PreparedRequest, SlackClient};
 use super::models::{
     BootData, Channel, ChannelId, CountsPage, EdgeResults, Emoji, HistoryPage, MessageTs,
-    SearchInlinePage, SearchMessagesPage, SentMessage, SidebarDmsPage, User,
+    OpenedConversation, SearchInlinePage, SearchMessagesPage, SentMessage, SidebarDmsPage, User,
+    UserId,
 };
 use super::transport::Transport;
 pub fn user_boot(client: &SlackClient, workspace: &WorkspaceSession) -> PreparedRequest {
@@ -100,6 +101,18 @@ pub fn users_set_presence(
     presence: String,
 ) -> PreparedRequest {
     client.rest_form(workspace, "users.setPresence", vec![("presence", presence)])
+}
+
+pub fn conversations_open(
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    user: UserId,
+) -> PreparedRequest {
+    client.rest_form(
+        workspace,
+        "conversations.open",
+        vec![("users", user), ("return_im", "true".to_owned())],
+    )
 }
 
 pub fn chat_post_message(
@@ -459,6 +472,32 @@ pub async fn send_message(
         ))
         .await?;
     decode(value, "chat.postMessage")
+}
+
+pub async fn fetch_users_search(
+    transport: &Transport,
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    query: String,
+) -> Result<Vec<User>, Error> {
+    let request = super::edge::users_search(client, workspace, &query, 30)
+        .map_err(|e| Error::Transport(format!("build users/search: {e}")))?;
+    let value = transport.execute(request).await?;
+    let page: EdgeResults<User> = decode(value, "users/search")?;
+    Ok(page.results)
+}
+
+pub async fn open_dm(
+    transport: &Transport,
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    user: UserId,
+) -> Result<ChannelId, Error> {
+    let value = transport
+        .execute(conversations_open(client, workspace, user))
+        .await?;
+    let opened: OpenedConversation = decode(value, "conversations.open")?;
+    Ok(opened.channel.id)
 }
 
 pub async fn fetch_search_messages(

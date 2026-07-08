@@ -7,6 +7,8 @@ use crate::slack::models::{
 };
 use crate::slack::realtime::Connection;
 
+pub const RECENT_CHANNELS_MAX: usize = 20;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Login,
@@ -187,6 +189,7 @@ pub struct Workspace {
     pub channels: BTreeMap<ChannelId, Channel>,
     pub starred_order: Vec<ChannelId>,
     pub dm_order: Vec<ChannelId>,
+    pub recent_channels: Vec<ChannelId>,
     pub last_active_channel: Option<ChannelId>,
     pub priority_scores: BTreeMap<ChannelId, f64>,
     pub hide_read_channels_unless_starred: bool,
@@ -210,6 +213,7 @@ impl Workspace {
             channels: BTreeMap::new(),
             starred_order: Vec::new(),
             dm_order: Vec::new(),
+            recent_channels: Vec::new(),
             last_active_channel: None,
             priority_scores: BTreeMap::new(),
             hide_read_channels_unless_starred: false,
@@ -397,6 +401,12 @@ impl Workspace {
             .unwrap_or(Presence::Unknown)
     }
 
+    pub fn touch_recent(&mut self, id: &ChannelId) {
+        self.recent_channels.retain(|existing| existing != id);
+        self.recent_channels.insert(0, id.clone());
+        self.recent_channels.truncate(RECENT_CHANNELS_MAX);
+    }
+
     pub fn is_starred_channel(&self, channel: &Channel) -> bool {
         channel.is_starred
             || self.starred_order.iter().any(|id| id == &channel.id)
@@ -540,6 +550,51 @@ pub fn channel_label(channel: &Channel) -> String {
         return "direct message".to_owned();
     }
     channel.id.clone()
+}
+
+pub fn channel_display_name(ws: &Workspace, c: &Channel) -> String {
+    if c.is_im || c.is_mpim {
+        dm_label(ws, c)
+    } else {
+        channel_name(c)
+    }
+}
+
+pub fn channel_name(c: &Channel) -> String {
+    c.name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(c.id.as_str())
+        .to_owned()
+}
+
+pub fn dm_label(ws: &Workspace, c: &Channel) -> String {
+    if c.is_im {
+        if let Some(user) = dm_user_id(c) {
+            return ws.display_name(user);
+        }
+    }
+    if c.is_mpim {
+        if let Some(name) = c.name.as_deref().and_then(mpdm_name_label) {
+            return name;
+        }
+    }
+    channel_label(c).trim_start_matches('#').to_owned()
+}
+
+pub fn mpdm_name_label(name: &str) -> Option<String> {
+    let rest = name.strip_prefix("mpdm-")?;
+    let rest = rest
+        .rsplit_once('-')
+        .and_then(|(prefix, suffix)| suffix.parse::<u32>().ok().map(|_| prefix))
+        .unwrap_or(rest);
+    let names: Vec<_> = rest
+        .split("--")
+        .map(|name| name.replace('.', " "))
+        .filter(|name| !name.trim().is_empty())
+        .collect();
+    (!names.is_empty()).then(|| names.join(", "))
 }
 
 pub fn message_text(msg: &SlackMessage) -> String {
@@ -1085,6 +1140,7 @@ mod tests {
             channels: BTreeMap::new(),
             starred_order: Vec::new(),
             dm_order: Vec::new(),
+            recent_channels: Vec::new(),
             last_active_channel: None,
             priority_scores: BTreeMap::new(),
             hide_read_channels_unless_starred: false,
@@ -1383,6 +1439,7 @@ mod tests {
             channels: BTreeMap::new(),
             starred_order: Vec::new(),
             dm_order: Vec::new(),
+            recent_channels: Vec::new(),
             last_active_channel: None,
             priority_scores: BTreeMap::new(),
             hide_read_channels_unless_starred: false,

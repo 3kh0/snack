@@ -48,6 +48,26 @@ pub fn emojis_info(
     client.edge_json(workspace, "emojis/info", ids_payload(names))
 }
 
+pub fn users_search(
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    query: &str,
+    count: u32,
+) -> serde_json::Result<PreparedRequest> {
+    client.edge_json(
+        workspace,
+        "users/search",
+        serde_json::json!({
+            "query": query,
+            "count": count,
+            "fuzz": 1,
+            "include_profile_only_users": true,
+            "enable_workspace_ranking": true,
+            "search_email": true,
+        }),
+    )
+}
+
 fn ids_payload(ids: &[String]) -> UpdatedIds<'_> {
     UpdatedIds {
         updated_ids: ids.iter().map(|id| (id.as_str(), 0)).collect(),
