@@ -92,6 +92,8 @@ pub struct App {
     cache_saving: HashMap<TeamId, Instant>,
     settings: config::Settings,
     show_settings: bool,
+    sidebar_resizing: bool,
+    sidebar_resize_prev_x: Option<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -224,6 +226,9 @@ pub enum Message {
     SettingsRadiusChanged(f32),
     SettingsBorderChanged(f32),
     SettingsReset,
+    SidebarResizeStarted,
+    SidebarResizeMoved(f32),
+    SidebarResizeEnded,
     Tick,
 }
 
@@ -260,6 +265,8 @@ impl App {
             cache_saving: HashMap::new(),
             settings,
             show_settings: false,
+            sidebar_resizing: false,
+            sidebar_resize_prev_x: None,
         }
     }
 

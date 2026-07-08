@@ -34,6 +34,12 @@ pub const TEXT_4: Color = Color::from_rgb(0.340, 0.380, 0.460); // channels / ic
 pub const TEXT_5: Color = Color::from_rgb(0.213, 0.238, 0.288); // muted / timestamps
 
 pub const ONLINE: Color = Color::from_rgb(0.289, 0.707, 0.580); // green-2
+pub const PING: Color = Color::from_rgb(0.851, 0.278, 0.310); // discord-ish red badge
+
+pub const SIDEBAR_ICON: f32 = 16.0; // svg glyph size
+pub const SIDEBAR_ICON_SLOT: f32 = 24.0; // fixed leading column so labels align
+pub const SIDEBAR_AVATAR: f32 = 20.0; // dm avatar / group-count chip
+pub const PING_BADGE_H: f32 = 18.0; // normalized ping badge height
 
 pub const MUTED: Color = TEXT_5;
 pub const SIDEBAR_FG: Color = TEXT_3;
@@ -223,6 +229,19 @@ pub fn channel_row(active: bool) -> impl Fn(&Theme, button::Status) -> button::S
             ..button::Style::default()
         }
     }
+}
+
+pub fn ping_badge(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(PING)),
+        text_color: Some(TEXT_1),
+        border: Border::default().rounded(999.0),
+        ..container::Style::default()
+    }
+}
+
+pub fn sidebar_icon(color: Color) -> impl Fn(&Theme, iced::widget::svg::Status) -> iced::widget::svg::Style {
+    move |_theme, _status| iced::widget::svg::Style { color: Some(color) }
 }
 
 pub fn reaction_chip(_theme: &Theme) -> container::Style {

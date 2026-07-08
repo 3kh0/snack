@@ -52,13 +52,22 @@ fn main_view(app: &App) -> Element<'_, Message> {
     };
 
     let rail = ui::rail::view();
-    let sidebar = ui::sidebar::view(
+    let sidebar_panel = ui::sidebar::view(
         &app.workspaces,
         app.active_team.as_deref(),
         ws,
         app.active_channel.as_deref(),
         &app.search_input,
+        &app.avatar_previews,
+        app.settings.sidebar_width,
     );
+    // Overlay the drag handle on the sidebar's right edge so it takes no layout
+    // width and the panel gap stays identical to every other panel gap.
+    let sidebar: Element<'_, Message> = iced::widget::stack![
+        sidebar_panel,
+        container(resize_handle()).align_right(Fill).height(Fill),
+    ]
+    .into();
 
     if let Some(state) = app.search.as_ref() {
         let content = container(ui::search::view(ws, state))
@@ -136,6 +145,14 @@ fn main_view(app: &App) -> Element<'_, Message> {
     } else {
         with_modal(app, shell(row![rail, sidebar, main]))
     }
+}
+
+fn resize_handle<'a>() -> Element<'a, Message> {
+    use iced::widget::{Space, mouse_area};
+    mouse_area(Space::new().width(8.0).height(Fill))
+        .interaction(iced::mouse::Interaction::ResizingHorizontally)
+        .on_press(Message::SidebarResizeStarted)
+        .into()
 }
 
 fn with_modal<'a>(app: &'a App, base: Element<'a, Message>) -> Element<'a, Message> {

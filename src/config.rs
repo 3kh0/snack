@@ -111,6 +111,9 @@ pub struct Settings {
     /// Border thickness around the main panels (`--border-thickness`).
     #[serde(default = "default_border_thickness")]
     pub border_thickness: f32,
+    /// Channel sidebar width in px (user-draggable).
+    #[serde(default = "default_sidebar_width")]
+    pub sidebar_width: f32,
 }
 
 fn default_gap() -> f32 {
@@ -122,6 +125,9 @@ fn default_panel_radius() -> f32 {
 fn default_border_thickness() -> f32 {
     1.0
 }
+fn default_sidebar_width() -> f32 {
+    240.0
+}
 
 impl Default for Settings {
     fn default() -> Self {
@@ -130,9 +136,14 @@ impl Default for Settings {
             gap: default_gap(),
             panel_radius: default_panel_radius(),
             border_thickness: default_border_thickness(),
+            sidebar_width: default_sidebar_width(),
         }
     }
 }
+
+/// Clamp range for the draggable sidebar width.
+pub const SIDEBAR_WIDTH_MIN: f32 = 180.0;
+pub const SIDEBAR_WIDTH_MAX: f32 = 520.0;
 
 fn settings_path() -> Result<PathBuf, AppError> {
     Ok(config_dir()?.join("settings.json"))

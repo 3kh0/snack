@@ -714,6 +714,35 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
 
+        Message::SidebarResizeStarted => {
+            app.sidebar_resizing = true;
+            app.sidebar_resize_prev_x = None;
+            Task::none()
+        }
+
+        Message::SidebarResizeMoved(x) => {
+            if app.sidebar_resizing {
+                if let Some(prev) = app.sidebar_resize_prev_x {
+                    let next = (app.settings.sidebar_width + (x - prev))
+                        .clamp(config::SIDEBAR_WIDTH_MIN, config::SIDEBAR_WIDTH_MAX);
+                    app.settings.sidebar_width = next;
+                }
+                app.sidebar_resize_prev_x = Some(x);
+            }
+            Task::none()
+        }
+
+        Message::SidebarResizeEnded => {
+            if app.sidebar_resizing {
+                app.sidebar_resizing = false;
+                app.sidebar_resize_prev_x = None;
+                if let Err(e) = config::save_settings(&app.settings) {
+                    app.toast(format!("could not save settings: {e}"));
+                }
+            }
+            Task::none()
+        }
+
         Message::Tick => {
             let now = Instant::now();
             if let Some(ws) = app.active_workspace_mut() {

@@ -1,12 +1,17 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
-use iced::widget::{Column, button, column, container, scrollable, text, text_input};
-use iced::{Element, Fill, Length, font};
+use iced::widget::text::Wrapping;
+use iced::widget::{
+    Column, button, column, container, image, row, scrollable, svg, text, text_input,
+};
+use iced::{Alignment, Color, ContentFit, Element, Fill, Length, font};
 
-use super::theme;
-use crate::app::Message;
-use crate::slack::models::{Channel, TeamId};
-use crate::state::{self, Presence, Workspace};
+use super::{icons, theme};
+use crate::app::{FilePreview, Message};
+use crate::slack::models::{Channel, TeamId, UserId};
+use crate::state::{self, Workspace};
+
+type AvatarPreviews = HashMap<UserId, FilePreview>;
 
 #[derive(Debug, Default)]
 struct SidebarSections<'a> {
@@ -57,7 +62,7 @@ fn sort_unread_section(channels: &mut [&Channel], ws: &Workspace) {
     channels.sort_by(|a, b| {
         unread_total(ws, b)
             .cmp(&unread_total(ws, a))
-            .then_with(|| sidebar_label(ws, a).cmp(&sidebar_label(ws, b)))
+            .then_with(|| channel_display_name(ws, a).cmp(&channel_display_name(ws, b)))
     });
 }
 
@@ -67,7 +72,7 @@ fn sort_priority_section(channels: &mut [&Channel], ws: &Workspace) {
             .unwrap_or(0.0)
             .total_cmp(&ws.priority_score(&a.id).unwrap_or(0.0))
             .then_with(|| unread_total(ws, b).cmp(&unread_total(ws, a)))
-            .then_with(|| sidebar_label(ws, a).cmp(&sidebar_label(ws, b)))
+            .then_with(|| channel_display_name(ws, a).cmp(&channel_display_name(ws, b)))
     });
 }
 
@@ -77,7 +82,7 @@ fn sort_dm_section(channels: &mut [&Channel], ws: &Workspace) {
             .cmp(&order_index(&ws.dm_order, &b.id))
             .then_with(|| b.updated.unwrap_or(0).cmp(&a.updated.unwrap_or(0)))
             .then_with(|| unread_total(ws, b).cmp(&unread_total(ws, a)))
-            .then_with(|| sidebar_label(ws, a).cmp(&sidebar_label(ws, b)))
+            .then_with(|| channel_display_name(ws, a).cmp(&channel_display_name(ws, b)))
     });
 }
 
@@ -85,7 +90,7 @@ fn sort_ordered_section(channels: &mut [&Channel], order: &[String], ws: &Worksp
     channels.sort_by(|a, b| {
         order_index(order, &a.id)
             .cmp(&order_index(order, &b.id))
-            .then_with(|| sidebar_label(ws, a).cmp(&sidebar_label(ws, b)))
+            .then_with(|| channel_display_name(ws, a).cmp(&channel_display_name(ws, b)))
     });
 }
 
@@ -113,6 +118,7 @@ fn section_header<'a>(title: &str) -> Element<'a, Message> {
 fn push_section<'a>(
     mut list: Column<'a, Message>,
     ws: &'a Workspace,
+    avatars: &AvatarPreviews,
     active: Option<&str>,
     title: &'static str,
     channels: Vec<&'a Channel>,
@@ -122,30 +128,176 @@ fn push_section<'a>(
     }
     list = list.push(section_header(title));
     for c in channels {
-        list = list.push(channel_button(ws, c, active == Some(c.id.as_str())));
+        list = list.push(channel_button(
+            ws,
+            avatars,
+            c,
+            active == Some(c.id.as_str()),
+        ));
     }
     list
 }
 
-fn channel_button<'a>(ws: &Workspace, c: &Channel, active: bool) -> Element<'a, Message> {
-    let mut label = sidebar_label(ws, c);
+fn channel_button<'a>(
+    ws: &Workspace,
+    avatars: &AvatarPreviews,
+    c: &Channel,
+    active: bool,
+) -> Element<'a, Message> {
+    let mut name = channel_display_name(ws, c);
     if c.is_archived {
-        label = format!("{label} (archived)");
+        name = format!("{name} (archived)");
     }
-    let font = if has_unreads(ws, c) {
-        iced::Font {
-            weight: font::Weight::Bold,
-            ..iced::Font::default()
-        }
+
+    let unread = has_unreads(ws, c);
+    let mentions = mention_count(ws, c);
+
+    // unread (no ping): white + slightly bolder. read: muted normal.
+    let fg = if active || unread {
+        theme::TEXT_1
     } else {
-        iced::Font::default()
+        theme::TEXT_3
     };
-    button(text(label).size(theme::TEXT_MD).font(font))
+    let weight = if unread {
+        font::Weight::Semibold
+    } else {
+        font::Weight::Normal
+    };
+
+    // name fills remaining width and truncates (single line) so the badge stays pinned right
+    let label = text(name)
+        .size(theme::TEXT_MD)
+        .color(fg)
+        .wrapping(Wrapping::None)
+        .width(Fill)
+        .font(iced::Font {
+            weight,
+            ..iced::Font::default()
+        });
+
+    let mut row = row![channel_icon(ws, avatars, c, fg), label]
+        .spacing(theme::SPACE_SM)
+        .align_y(Alignment::Center);
+
+    if mentions > 0 {
+        row = row.push(ping_badge(mentions));
+    }
+
+    button(row)
         .width(Fill)
         .padding([theme::SPACE_XS, theme::SPACE_SM])
         .style(theme::channel_row(active))
         .on_press(Message::ChannelSelected(c.id.clone()))
         .into()
+}
+
+/// Fixed-width leading slot so every channel/DM label starts at the same x.
+fn icon_slot<'a>(inner: Element<'a, Message>) -> Element<'a, Message> {
+    container(inner)
+        .width(Length::Fixed(theme::SIDEBAR_ICON_SLOT))
+        .center_x(Length::Fixed(theme::SIDEBAR_ICON_SLOT))
+        .center_y(Length::Fixed(theme::SIDEBAR_AVATAR))
+        .into()
+}
+
+fn channel_icon<'a>(
+    ws: &Workspace,
+    avatars: &AvatarPreviews,
+    c: &Channel,
+    color: Color,
+) -> Element<'a, Message> {
+    // 1:1 DM -> the other person's profile picture
+    if c.is_im {
+        return icon_slot(dm_avatar(ws, avatars, c));
+    }
+    // group DM -> chip with number of people
+    if c.is_mpim {
+        let count = group_member_count(c).unwrap_or(0);
+        let chip = container(
+            text(count.to_string())
+                .size(theme::TEXT_SM)
+                .color(theme::accent_bright())
+                .font(iced::Font {
+                    weight: font::Weight::Bold,
+                    ..iced::Font::default()
+                }),
+        )
+        .width(Length::Fixed(theme::SIDEBAR_AVATAR))
+        .height(Length::Fixed(theme::SIDEBAR_AVATAR))
+        .center_x(Length::Fixed(theme::SIDEBAR_AVATAR))
+        .center_y(Length::Fixed(theme::SIDEBAR_AVATAR))
+        .style(theme::avatar_placeholder);
+        return icon_slot(chip.into());
+    }
+    // public / private channel -> material glyph
+    let handle = if c.is_private || c.is_group {
+        icons::lock()
+    } else {
+        icons::tag()
+    };
+    icon_slot(
+        svg(handle)
+            .width(Length::Fixed(theme::SIDEBAR_ICON))
+            .height(Length::Fixed(theme::SIDEBAR_ICON))
+            .style(theme::sidebar_icon(color))
+            .into(),
+    )
+}
+
+fn dm_avatar<'a>(ws: &Workspace, avatars: &AvatarPreviews, c: &Channel) -> Element<'a, Message> {
+    let size = Length::Fixed(theme::SIDEBAR_AVATAR);
+    let user = state::dm_user_id(c);
+    if let Some(user) = user {
+        if ws.avatar_url(user).is_some() {
+            if let Some(FilePreview::Loaded(handle)) = avatars.get(user) {
+                return image(handle.clone())
+                    .width(size)
+                    .height(size)
+                    .content_fit(ContentFit::Cover)
+                    .border_radius(theme::SIDEBAR_AVATAR / 2.0)
+                    .into();
+            }
+        }
+    }
+    // fallback: initial on a placeholder, tinted by presence
+    let initial = channel_display_name(ws, c)
+        .chars()
+        .find(|ch| ch.is_alphanumeric())
+        .map(|ch| ch.to_uppercase().collect::<String>())
+        .unwrap_or_else(|| "?".to_owned());
+    container(text(initial).size(theme::TEXT_SM).font(iced::Font {
+        weight: font::Weight::Bold,
+        ..iced::Font::default()
+    }))
+    .width(size)
+    .height(size)
+    .center_x(size)
+    .center_y(size)
+    .style(theme::avatar_placeholder)
+    .into()
+}
+
+fn ping_badge<'a>(count: u32) -> Element<'a, Message> {
+    let label = if count > 99 {
+        "99+".to_owned()
+    } else {
+        count.to_string()
+    };
+    container(
+        text(label)
+            .size(theme::TEXT_SM)
+            .color(theme::TEXT_1)
+            .wrapping(Wrapping::None)
+            .font(iced::Font {
+                weight: font::Weight::Bold,
+                ..iced::Font::default()
+            }),
+    )
+    .height(Length::Fixed(theme::PING_BADGE_H))
+    .center_y(Length::Fixed(theme::PING_BADGE_H))
+    .padding([0.0, theme::SPACE_SM])
+    .style(theme::ping_badge)
+    .into()
 }
 
 fn workspace_button<'a>(ws: &Workspace, active: bool) -> Element<'a, Message> {
@@ -175,6 +327,8 @@ pub fn view<'a>(
     ws: &'a Workspace,
     active: Option<&str>,
     search_input: &str,
+    avatars: &'a AvatarPreviews,
+    width: f32,
 ) -> Element<'a, Message> {
     let sections = grouped(ws, active);
 
@@ -188,10 +342,17 @@ pub fn view<'a>(
         ));
     }
 
-    list = push_section(list, ws, active, "VIP unreads", sections.vip_unreads);
-    list = push_section(list, ws, active, "Direct messages", sections.dms);
-    list = push_section(list, ws, active, "Starred", sections.starred);
-    list = push_section(list, ws, active, "Other channels", sections.other_unreads);
+    list = push_section(list, ws, avatars, active, "VIP unreads", sections.vip_unreads);
+    list = push_section(list, ws, avatars, active, "Direct messages", sections.dms);
+    list = push_section(list, ws, avatars, active, "Starred", sections.starred);
+    list = push_section(
+        list,
+        ws,
+        avatars,
+        active,
+        "Other channels",
+        sections.other_unreads,
+    );
 
     let header = container(
         text(ws.name.clone())
@@ -220,34 +381,29 @@ pub fn view<'a>(
         search,
         scrollable(list).style(theme::scrollbar).height(Fill)
     ]
-    .width(Length::Fixed(theme::SIDEBAR_WIDTH))
+    .width(Length::Fixed(width))
     .height(Fill);
 
     container(body)
-        .width(Length::Fixed(theme::SIDEBAR_WIDTH))
+        .width(Length::Fixed(width))
         .height(Fill)
         .style(theme::sidebar)
         .into()
 }
 
-fn sidebar_label(ws: &Workspace, c: &Channel) -> String {
-    let mut label = if c.is_im || c.is_mpim {
-        dm_label(ws, c)
-    } else if c.is_private || c.is_group {
-        format!("🔒 {}", channel_name(c))
-    } else {
-        state::channel_label(c)
-    };
+fn channel_display_name(ws: &Workspace, c: &Channel) -> String {
     if c.is_im || c.is_mpim {
-        label = format!("{} {label}", presence_marker(ws.presence_for_channel(c)));
+        dm_label(ws, c)
+    } else {
+        channel_name(c)
     }
-    if let Some(cm) = ws.messages.get(&c.id) {
-        let count = cm.mention_count.max(cm.unread_count);
-        if count > 0 {
-            label = format!("{label}  {count}");
-        }
-    }
-    label
+}
+
+fn mention_count(ws: &Workspace, c: &Channel) -> u32 {
+    ws.messages
+        .get(&c.id)
+        .map(|cm| cm.mention_count)
+        .unwrap_or(0)
 }
 
 fn channel_name(c: &Channel) -> String {
@@ -287,12 +443,19 @@ fn mpdm_name_label(name: &str) -> Option<String> {
     (!names.is_empty()).then(|| names.join(", "))
 }
 
-fn presence_marker(presence: Presence) -> &'static str {
-    match presence {
-        Presence::Active => "●",
-        Presence::Away => "○",
-        Presence::Unknown => " ",
-    }
+/// Number of people in a group DM, parsed from the `mpdm-a--b--c-1` name.
+fn group_member_count(c: &Channel) -> Option<usize> {
+    let name = c.name.as_deref()?;
+    let rest = name.strip_prefix("mpdm-")?;
+    let rest = rest
+        .rsplit_once('-')
+        .and_then(|(prefix, suffix)| suffix.parse::<u32>().ok().map(|_| prefix))
+        .unwrap_or(rest);
+    let count = rest
+        .split("--")
+        .filter(|name| !name.trim().is_empty())
+        .count();
+    (count > 0).then_some(count)
 }
 
 fn has_unreads(ws: &Workspace, c: &Channel) -> bool {
@@ -469,13 +632,14 @@ mod tests {
         private.is_private = true;
         let ws = workspace(vec![public, private], &[]);
 
+        // icons now carry the #/lock affordance; text is the bare name
         assert_eq!(
-            sidebar_label(&ws, ws.channels.get("C_PUBLIC").unwrap()),
-            "#public-room"
+            channel_display_name(&ws, ws.channels.get("C_PUBLIC").unwrap()),
+            "public-room"
         );
         assert_eq!(
-            sidebar_label(&ws, ws.channels.get("G_PRIVATE").unwrap()),
-            "🔒 private-room"
+            channel_display_name(&ws, ws.channels.get("G_PRIVATE").unwrap()),
+            "private-room"
         );
     }
 
@@ -488,11 +652,22 @@ mod tests {
         mpdm.is_private = true;
         let ws = workspace(vec![mpdm], &[]);
 
-        let label = sidebar_label(&ws, ws.channels.get("G_MPDM").unwrap());
+        let label = channel_display_name(&ws, ws.channels.get("G_MPDM").unwrap());
 
         assert_eq!(label.trim(), "aarav54897, echo, alanlichen1");
         assert!(!label.contains("lock"));
         assert!(!label.contains("🔒"));
         assert!(!label.contains("mpdm-"));
+    }
+
+    #[test]
+    fn group_member_count_parses_mpdm_name() {
+        let mut mpdm = dm("G_MPDM", "mpdm-aarav54897--echo--alanlichen1-1");
+        mpdm.is_im = false;
+        mpdm.is_mpim = true;
+        assert_eq!(group_member_count(&mpdm), Some(3));
+
+        let public = channel("C_PUBLIC", "general");
+        assert_eq!(group_member_count(&public), None);
     }
 }
