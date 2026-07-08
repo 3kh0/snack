@@ -12,7 +12,7 @@ use crate::config;
 use crate::slack::api::{self, SearchArgs};
 use crate::slack::events::RtEvent;
 use crate::slack::models::{
-    ChannelId, Message as SlackMessage, MessageTs, SearchMessagesPage, TeamId, UserId,
+    Channel, ChannelId, Message as SlackMessage, MessageTs, SearchMessagesPage, TeamId, UserId,
 };
 use crate::slack::realtime;
 use crate::slack::{Error as SlackError, Transport};
@@ -222,6 +222,10 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                 }
                 mark_workspace_dirty(app, &team);
                 app.screen = Screen::Main;
+                let mut tasks = vec![
+                    hydrate_sidebar_channels(app, &team),
+                    hydrate_sidebar_dm_users(app, &team),
+                ];
                 if app.active_team.as_deref() == Some(&team) && app.active_channel.is_none() {
                     if let Some(first) = app
                         .workspaces
@@ -229,7 +233,7 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                         .and_then(|ws| ws.channels.keys().next().cloned())
                     {
                         app.active_channel = Some(first.clone());
-                        return app.load_history(&team, &first);
+                        tasks.push(app.load_history(&team, &first));
                     }
                 }
                 if let Some(channel) = app
@@ -237,13 +241,13 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                     .clone()
                     .filter(|_| app.active_team.as_deref() == Some(&team))
                 {
-                    return Task::batch([
+                    tasks.extend([
                         hydrate_visible_missing_users(app, &team, &channel),
                         load_visible_file_previews(app, &team, &channel),
                         load_visible_avatar_previews(app, &team, &channel),
                     ]);
                 }
-                Task::none()
+                Task::batch(tasks)
             }
             Err(e) => {
                 app.toast(format!("boot failed for {team}: {e}"));
@@ -261,8 +265,26 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                         ws.apply_counts(counts);
                     }
                     mark_workspace_dirty(app, &team);
+                    return Task::batch([
+                        hydrate_sidebar_channels(app, &team),
+                        hydrate_sidebar_dm_users(app, &team),
+                    ]);
                 }
                 Err(e) => tracing::warn!(%team, error = %e, "counts failed"),
+            }
+            Task::none()
+        }
+
+        Message::SidebarDmsLoaded(team, result) => {
+            match result {
+                Ok(dms) => {
+                    if let Some(ws) = app.workspaces.get_mut(&team) {
+                        ws.apply_sidebar_dms(dms);
+                    }
+                    mark_workspace_dirty(app, &team);
+                    return hydrate_sidebar_dm_users(app, &team);
+                }
+                Err(e) => tracing::warn!(%team, error = %e, "sidebar.dms failed"),
             }
             Task::none()
         }
@@ -533,6 +555,19 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                     return load_user_avatar_previews(app, &team, ids);
                 }
                 Err(e) => tracing::debug!(%team, error = %e, "users info failed"),
+            }
+            Task::none()
+        }
+
+        Message::ChannelsLoaded { team, result } => {
+            match result {
+                Ok(channels) => {
+                    if let Some(ws) = app.workspaces.get_mut(&team) {
+                        ws.apply_channels_info(channels);
+                    }
+                    mark_workspace_dirty(app, &team);
+                }
+                Err(e) => tracing::debug!(%team, error = %e, "channels info failed"),
             }
             Task::none()
         }
@@ -1562,6 +1597,104 @@ fn hydrate_missing_users(app: &App, team: &str, messages: &[SlackMessage]) -> Ta
         .filter(|user| !user.trim().is_empty())
         .filter(|user| needs_user_hydration(ws, &app.avatar_profile_hydrated, user))
         .filter(|user| seen.insert(user.clone()))
+        .collect();
+
+    if users.is_empty() {
+        return Task::none();
+    }
+
+    let transport = transport.clone();
+    let client = app.client.clone();
+    let ws_session = ws_session.clone();
+    let team = team.to_owned();
+    Task::perform(
+        async move { api::fetch_users_info(&transport, &client, &ws_session, users).await },
+        move |result| Message::UsersLoaded {
+            team: team.clone(),
+            result,
+        },
+    )
+}
+
+fn hydrate_sidebar_channels(app: &App, team: &str) -> Task<Message> {
+    let Some((transport, session)) = app.live() else {
+        return Task::none();
+    };
+    let Some(ws_session) = session.workspaces.get(team) else {
+        return Task::none();
+    };
+    let Some(ws) = app.workspaces.get(team) else {
+        return Task::none();
+    };
+
+    let mut seen = HashSet::new();
+    let mut channels = Vec::new();
+    for id in ws.starred_order.iter().chain(ws.priority_scores.keys()) {
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        let needs_hydration = ws
+            .channels
+            .get(id)
+            .map(channel_needs_hydration)
+            .unwrap_or_else(|| ws.starred_order.iter().any(|starred| starred == id));
+        if needs_hydration {
+            channels.push(id.clone());
+        }
+    }
+
+    if channels.is_empty() {
+        return Task::none();
+    }
+
+    let transport = transport.clone();
+    let client = app.client.clone();
+    let ws_session = ws_session.clone();
+    let team = team.to_owned();
+    Task::perform(
+        async move { api::fetch_channels_info(&transport, &client, &ws_session, channels).await },
+        move |result| Message::ChannelsLoaded {
+            team: team.clone(),
+            result,
+        },
+    )
+}
+
+fn channel_needs_hydration(channel: &Channel) -> bool {
+    channel
+        .name
+        .as_deref()
+        .map(str::trim)
+        .is_none_or(str::is_empty)
+}
+
+fn hydrate_sidebar_dm_users(app: &App, team: &str) -> Task<Message> {
+    let Some((transport, session)) = app.live() else {
+        return Task::none();
+    };
+    let Some(ws_session) = session.workspaces.get(team) else {
+        return Task::none();
+    };
+    let Some(ws) = app.workspaces.get(team) else {
+        return Task::none();
+    };
+
+    let mut seen = HashSet::new();
+    let users: Vec<_> = ws
+        .channels
+        .values()
+        .filter(|channel| channel.is_im)
+        .filter(|channel| {
+            ws.should_show_unstarred_read_channels()
+                || ws.unread_total(channel) > 0
+                || app.active_channel.as_deref() == Some(channel.id.as_str())
+                || ws.is_starred_channel(channel)
+        })
+        .filter_map(crate::state::dm_user_id)
+        .filter(|user| !user.trim().is_empty())
+        .filter(|user| needs_user_hydration(ws, &app.avatar_profile_hydrated, user))
+        .filter(|user| seen.insert((*user).to_owned()))
+        .map(str::to_owned)
         .collect();
 
     if users.is_empty() {

@@ -184,6 +184,11 @@ pub struct Workspace {
     pub url: String,
     pub self_user_id: UserId,
     pub channels: BTreeMap<ChannelId, Channel>,
+    pub starred_order: Vec<ChannelId>,
+    pub dm_order: Vec<ChannelId>,
+    pub priority_scores: BTreeMap<ChannelId, f64>,
+    pub hide_read_channels_unless_starred: bool,
+    pub priority_sidebar_section: bool,
     pub users: HashMap<UserId, User>,
     pub messages: HashMap<ChannelId, ChannelMessages>,
     pub typing: HashMap<ChannelId, Vec<(UserId, Instant)>>,
@@ -200,6 +205,11 @@ impl Workspace {
             url: s.url.clone(),
             self_user_id: s.user_id.clone(),
             channels: BTreeMap::new(),
+            starred_order: Vec::new(),
+            dm_order: Vec::new(),
+            priority_scores: BTreeMap::new(),
+            hide_read_channels_unless_starred: false,
+            priority_sidebar_section: false,
             users: HashMap::new(),
             messages: HashMap::new(),
             typing: HashMap::new(),
@@ -221,9 +231,23 @@ impl Workspace {
                 self.url = url.clone();
             }
         }
+        self.starred_order = boot.starred.clone();
+        self.priority_scores = boot.channels_priority.clone();
+        self.hide_read_channels_unless_starred =
+            boot.prefs.sidebar_behavior.as_deref() == Some("hide_read_channels_unless_starred");
+        self.priority_sidebar_section = boot.prefs.priority_sidebar_section;
+
         for channel in boot.all_channels() {
+            if channel.is_im || channel.is_mpim {
+                append_unique(&mut self.dm_order, channel.id.clone());
+            }
             self.apply_channel_read_state(&channel);
             self.channels.insert(channel.id.clone(), channel);
+        }
+        for id in &self.starred_order {
+            if let Some(channel) = self.channels.get_mut(id) {
+                channel.is_starred = true;
+            }
         }
         for user in boot.users {
             self.users.insert(user.id.clone(), user);
@@ -234,13 +258,46 @@ impl Workspace {
         for channel in counts.all_channels() {
             self.apply_channel_read_state(&channel);
             if let Some(existing) = self.channels.get_mut(&channel.id) {
+                if channel.is_starred {
+                    existing.is_starred = true;
+                }
                 existing.unread_count = channel.unread_count.or(existing.unread_count);
                 existing.unread_count_display = channel
                     .unread_count_display
                     .or(existing.unread_count_display);
+                existing.mention_count = channel.mention_count.or(existing.mention_count);
+                existing.has_unreads |= channel.has_unreads;
                 existing.last_read = channel.last_read.or_else(|| existing.last_read.take());
             } else {
                 self.channels.insert(channel.id.clone(), channel);
+            }
+        }
+    }
+
+    pub fn apply_sidebar_dms(&mut self, dms: crate::slack::models::SidebarDmsPage) {
+        for channel in dms.all_channels() {
+            append_unique(&mut self.dm_order, channel.id.clone());
+            self.apply_channel_read_state(&channel);
+            if let Some(existing) = self.channels.get_mut(&channel.id) {
+                merge_channel_metadata(existing, channel);
+            } else {
+                self.channels.insert(channel.id.clone(), channel);
+            }
+        }
+    }
+
+    pub fn apply_channels_info(&mut self, channels: Vec<Channel>) {
+        for channel in channels {
+            self.apply_channel_read_state(&channel);
+            if let Some(existing) = self.channels.get_mut(&channel.id) {
+                merge_channel_metadata(existing, channel);
+            } else {
+                self.channels.insert(channel.id.clone(), channel);
+            }
+        }
+        for id in &self.starred_order {
+            if let Some(channel) = self.channels.get_mut(id) {
+                channel.is_starred = true;
             }
         }
     }
@@ -306,6 +363,44 @@ impl Workspace {
             .unwrap_or(Presence::Unknown)
     }
 
+    pub fn is_starred_channel(&self, channel: &Channel) -> bool {
+        channel.is_starred
+            || self.starred_order.iter().any(|id| id == &channel.id)
+            || channel
+                .extra
+                .get("is_starred")
+                .or_else(|| channel.extra.get("starred"))
+                .or_else(|| channel.extra.get("is_favorite"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+    }
+
+    pub fn priority_score(&self, channel_id: &str) -> Option<f64> {
+        self.priority_scores.get(channel_id).copied()
+    }
+
+    pub fn unread_total(&self, channel: &Channel) -> u32 {
+        self.messages
+            .get(&channel.id)
+            .map(|cm| cm.mention_count.max(cm.unread_count))
+            .unwrap_or_else(|| {
+                let count = channel
+                    .mention_count
+                    .or(channel.unread_count)
+                    .or(channel.unread_count_display)
+                    .unwrap_or(0);
+                if count == 0 && channel.has_unreads {
+                    1
+                } else {
+                    count
+                }
+            })
+    }
+
+    pub fn should_show_unstarred_read_channels(&self) -> bool {
+        !self.hide_read_channels_unless_starred
+    }
+
     fn apply_channel_read_state(&mut self, channel: &Channel) {
         let cm = self.messages.entry(channel.id.clone()).or_default();
         if let Some(last_read) = &channel.last_read {
@@ -314,7 +409,46 @@ impl Workspace {
         if let Some(unread) = channel.unread_count.or(channel.unread_count_display) {
             cm.unread_count = unread;
         }
+        if let Some(mentions) = channel.mention_count {
+            cm.mention_count = mentions;
+        }
+        if channel.has_unreads && cm.unread_count == 0 && cm.mention_count == 0 {
+            cm.unread_count = 1;
+        }
     }
+}
+
+fn append_unique(ids: &mut Vec<ChannelId>, id: ChannelId) {
+    if !ids.iter().any(|existing| existing == &id) {
+        ids.push(id);
+    }
+}
+
+fn merge_channel_metadata(existing: &mut Channel, update: Channel) {
+    if update
+        .name
+        .as_ref()
+        .is_some_and(|name| !name.trim().is_empty())
+    {
+        existing.name = update.name;
+    }
+    existing.is_channel |= update.is_channel;
+    existing.is_group |= update.is_group;
+    existing.is_im |= update.is_im;
+    existing.is_mpim |= update.is_mpim;
+    existing.is_private |= update.is_private;
+    existing.is_archived |= update.is_archived;
+    existing.is_starred |= update.is_starred;
+    existing.has_unreads |= update.has_unreads;
+    existing.updated = update.updated.or(existing.updated);
+    existing.user = update.user.or_else(|| existing.user.take());
+    existing.unread_count = update.unread_count.or(existing.unread_count);
+    existing.unread_count_display = update
+        .unread_count_display
+        .or(existing.unread_count_display);
+    existing.mention_count = update.mention_count.or(existing.mention_count);
+    existing.last_read = update.last_read.or_else(|| existing.last_read.take());
+    existing.extra.extend(update.extra);
 }
 
 pub fn dm_user_id(channel: &Channel) -> Option<&str> {
@@ -1009,6 +1143,11 @@ mod tests {
             url: "https://t".into(),
             self_user_id: "USELF".into(),
             channels: BTreeMap::new(),
+            starred_order: Vec::new(),
+            dm_order: Vec::new(),
+            priority_scores: BTreeMap::new(),
+            hide_read_channels_unless_starred: false,
+            priority_sidebar_section: false,
             users: HashMap::new(),
             messages: HashMap::new(),
             typing: HashMap::new(),

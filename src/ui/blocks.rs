@@ -230,6 +230,11 @@ mod tests {
                     ..Default::default()
                 },
             )]),
+            starred_order: Vec::new(),
+            dm_order: Vec::new(),
+            priority_scores: BTreeMap::new(),
+            hide_read_channels_unless_starred: false,
+            priority_sidebar_section: false,
             users: HashMap::from([(
                 "U1".into(),
                 User {

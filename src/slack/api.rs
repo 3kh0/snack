@@ -3,8 +3,8 @@ use crate::config::WorkspaceSession;
 use super::Error;
 use super::client::{PreparedRequest, SlackClient};
 use super::models::{
-    BootData, ChannelId, CountsPage, EdgeResults, HistoryPage, MessageTs, SearchInlinePage,
-    SearchMessagesPage, SentMessage, User,
+    BootData, Channel, ChannelId, CountsPage, EdgeResults, HistoryPage, MessageTs,
+    SearchInlinePage, SearchMessagesPage, SentMessage, SidebarDmsPage, User,
 };
 use super::transport::Transport;
 pub fn user_boot(client: &SlackClient, workspace: &WorkspaceSession) -> PreparedRequest {
@@ -71,8 +71,27 @@ pub fn conversations_mark(
     )
 }
 
+pub fn conversations_info(
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    channel: ChannelId,
+) -> PreparedRequest {
+    client.rest_form(
+        workspace,
+        "conversations.info",
+        vec![
+            ("channel", channel),
+            ("include_num_members", "false".to_owned()),
+        ],
+    )
+}
+
 pub fn client_counts(client: &SlackClient, workspace: &WorkspaceSession) -> PreparedRequest {
     client.rest_form(workspace, "client.counts", Vec::new())
+}
+
+pub fn sidebar_dms(client: &SlackClient, workspace: &WorkspaceSession) -> PreparedRequest {
+    client.rest_form(workspace, "sidebar.dms", Vec::new())
 }
 
 pub fn chat_post_message(
@@ -315,6 +334,15 @@ pub async fn fetch_counts(
     decode(value, "client.counts")
 }
 
+pub async fn fetch_sidebar_dms(
+    transport: &Transport,
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+) -> Result<SidebarDmsPage, Error> {
+    let value = transport.execute(sidebar_dms(client, workspace)).await?;
+    decode(value, "sidebar.dms")
+}
+
 pub async fn fetch_users_info(
     transport: &Transport,
     client: &SlackClient,
@@ -326,6 +354,62 @@ pub async fn fetch_users_info(
     let value = transport.execute(request).await?;
     let page: EdgeResults<User> = decode(value, "users/info")?;
     Ok(page.results)
+}
+
+pub async fn fetch_channels_info(
+    transport: &Transport,
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    channel_ids: Vec<ChannelId>,
+) -> Result<Vec<Channel>, Error> {
+    let request = super::edge::channels_info(client, workspace, &channel_ids)
+        .map_err(|e| Error::Transport(format!("build channels/info: {e}")))?;
+    let mut channels = match transport.execute(request).await {
+        Ok(value) => {
+            let page: EdgeResults<Channel> = decode(value, "channels/info")?;
+            page.results
+        }
+        Err(e) => {
+            tracing::debug!(error = %e, "edge channels/info failed; falling back to conversations.info");
+            Vec::new()
+        }
+    };
+
+    let found = channels
+        .iter()
+        .map(|channel| channel.id.clone())
+        .collect::<std::collections::HashSet<_>>();
+    for channel_id in channel_ids
+        .into_iter()
+        .filter(|channel_id| !found.contains(channel_id))
+    {
+        match fetch_conversation_info(transport, client, workspace, channel_id.clone()).await {
+            Ok(channel) => channels.push(channel),
+            Err(e) => {
+                tracing::debug!(channel = %channel_id, error = %e, "conversations.info fallback failed")
+            }
+        }
+    }
+
+    Ok(channels)
+}
+
+async fn fetch_conversation_info(
+    transport: &Transport,
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    channel_id: ChannelId,
+) -> Result<Channel, Error> {
+    #[derive(serde::Deserialize)]
+    struct ConversationInfoPage {
+        channel: Channel,
+    }
+
+    let value = transport
+        .execute(conversations_info(client, workspace, channel_id))
+        .await?;
+    let page: ConversationInfoPage = decode(value, "conversations.info")?;
+    Ok(page.channel)
 }
 
 pub async fn send_message(
@@ -616,6 +700,16 @@ mod tests {
     }
 
     #[test]
+    fn conversations_info_request_targets_channel() {
+        let request = conversations_info(&SlackClient::default(), &workspace(), "C123".into());
+        let fields = form_fields(&request);
+
+        assert!(request.url.contains("/api/conversations.info?"));
+        assert!(fields.contains(&("channel".into(), "C123".into())));
+        assert!(fields.contains(&("include_num_members".into(), "false".into())));
+    }
+
+    #[test]
     fn reaction_request_includes_message_target() {
         let request = reactions_add(
             &SlackClient::default(),
@@ -636,6 +730,13 @@ mod tests {
     fn counts_request_targets_client_counts() {
         let request = client_counts(&SlackClient::default(), &workspace());
         assert!(request.url.contains("/api/client.counts?"));
+        assert!(form_fields(&request).contains(&("token".into(), "xoxc-test-token".into())));
+    }
+
+    #[test]
+    fn sidebar_dms_request_targets_sidebar_dms() {
+        let request = sidebar_dms(&SlackClient::default(), &workspace());
+        assert!(request.url.contains("/api/sidebar.dms?"));
         assert!(form_fields(&request).contains(&("token".into(), "xoxc-test-token".into())));
     }
 }

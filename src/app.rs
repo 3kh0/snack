@@ -11,8 +11,8 @@ use crate::config::{self, Session};
 use crate::slack::api::{self, HistoryArgs};
 use crate::slack::events::RtEvent;
 use crate::slack::models::{
-    BootData, ChannelId, CountsPage, HistoryPage, Message as SlackMessage, MessageTs,
-    SearchMessagesPage, SentMessage, TeamId, User, UserId,
+    BootData, Channel, ChannelId, CountsPage, HistoryPage, Message as SlackMessage, MessageTs,
+    SearchMessagesPage, SentMessage, SidebarDmsPage, TeamId, User, UserId,
 };
 use crate::slack::realtime::Connection;
 use crate::slack::{Error as SlackError, SlackClient, Transport};
@@ -106,6 +106,7 @@ pub enum Message {
     },
     BootLoaded(TeamId, Result<BootData, SlackError>),
     CountsLoaded(TeamId, Result<CountsPage, SlackError>),
+    SidebarDmsLoaded(TeamId, Result<SidebarDmsPage, SlackError>),
     HistoryLoaded(TeamId, ChannelId, Result<HistoryPage, SlackError>),
     ChannelMarked(TeamId, ChannelId, MessageTs, Result<(), SlackError>),
     ThreadOpened {
@@ -198,6 +199,10 @@ pub enum Message {
     UsersLoaded {
         team: TeamId,
         result: Result<Vec<User>, SlackError>,
+    },
+    ChannelsLoaded {
+        team: TeamId,
+        result: Result<Vec<Channel>, SlackError>,
     },
     DesktopNotificationShown(Result<(), String>),
     CacheSaved {
@@ -331,7 +336,16 @@ impl App {
                 async move { api::fetch_counts(&counts_transport, &counts_client, &counts_ws).await },
                 move |result| Message::CountsLoaded(team.clone(), result),
             );
-            [boot, counts]
+
+            let dms_transport = transport.clone();
+            let dms_client = self.client.clone();
+            let dms_ws = ws.clone();
+            let team = ws.team_id.clone();
+            let dms = Task::perform(
+                async move { api::fetch_sidebar_dms(&dms_transport, &dms_client, &dms_ws).await },
+                move |result| Message::SidebarDmsLoaded(team.clone(), result),
+            );
+            [boot, counts, dms]
         });
         Task::batch(tasks)
     }

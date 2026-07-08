@@ -57,6 +57,29 @@ pub struct CountsPage {
     pub extra: BTreeMap<String, Value>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SidebarDmsPage {
+    #[serde(default)]
+    pub ims: Vec<Channel>,
+    #[serde(default)]
+    pub mpdms: Vec<Channel>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+impl SidebarDmsPage {
+    pub fn all_channels(&self) -> Vec<Channel> {
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for channel in self.ims.iter().chain(&self.mpdms) {
+            if seen.insert(channel.id.clone()) {
+                out.push(channel.clone());
+            }
+        }
+        out
+    }
+}
+
 impl CountsPage {
     pub fn all_channels(&self) -> Vec<Channel> {
         let mut seen = std::collections::HashSet::new();
@@ -283,8 +306,12 @@ pub struct Channel {
     #[serde(default)]
     pub is_mpim: bool,
     #[serde(default)]
+    pub is_private: bool,
+    #[serde(default)]
     pub is_archived: bool,
     #[serde(default)]
+    pub is_starred: bool,
+    #[serde(default, deserialize_with = "deserialize_optional_u64")]
     pub updated: Option<u64>,
     #[serde(default)]
     pub user: Option<UserId>,
@@ -293,9 +320,30 @@ pub struct Channel {
     #[serde(default)]
     pub unread_count_display: Option<u32>,
     #[serde(default)]
+    pub mention_count: Option<u32>,
+    #[serde(default)]
+    pub has_unreads: bool,
+    #[serde(default)]
     pub last_read: Option<MessageTs>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+fn deserialize_optional_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    Ok(match value {
+        Some(Value::Number(number)) => number.as_u64(),
+        Some(Value::String(string)) => string
+            .split_once('.')
+            .map(|(seconds, _)| seconds)
+            .unwrap_or(&string)
+            .parse()
+            .ok(),
+        _ => None,
+    })
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -340,6 +388,12 @@ pub struct BootData {
     pub mpims: Vec<Channel>,
     #[serde(default)]
     pub users: Vec<User>,
+    #[serde(default)]
+    pub starred: Vec<ChannelId>,
+    #[serde(default)]
+    pub channels_priority: BTreeMap<ChannelId, f64>,
+    #[serde(default)]
+    pub prefs: BootPrefs,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -361,6 +415,22 @@ impl BootData {
         }
         out
     }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BootPrefs {
+    #[serde(default)]
+    pub sidebar_behavior: Option<String>,
+    #[serde(default)]
+    pub priority_sidebar_section: bool,
+    #[serde(default)]
+    pub channel_sections: Option<String>,
+    #[serde(default)]
+    pub team_channel_sections: Option<String>,
+    #[serde(default)]
+    pub hidden_user_group_sections: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -508,6 +578,70 @@ mod fixture_tests {
         assert_eq!(page.results.len(), 2);
         assert_eq!(page.results[0].name.as_deref(), Some("general"));
         assert!(page.failed_ids.is_empty());
+    }
+
+    #[test]
+    fn deserialize_sidebar_dms_response() {
+        let page: SidebarDmsPage = serde_json::from_str(
+            r#"{
+                "ok": true,
+                "ims": [{"id":"D1","name":"alice","is_im":true,"user":"U1"}],
+                "mpdms": [{"id":"G1","name":"alice--bob","is_mpim":true,"is_group":true}]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(page.all_channels().len(), 2);
+        assert!(page.all_channels()[0].is_im);
+        assert!(page.all_channels()[1].is_mpim);
+    }
+
+    #[test]
+    fn deserialize_boot_sidebar_preferences() {
+        let boot: BootData = serde_json::from_str(
+            r#"{
+                "self": {"id":"U_SELF"},
+                "starred": ["C_STAR", "C_OTHER"],
+                "channels_priority": {"C_VIP": 0.9, "D_DM": 0.25},
+                "prefs": {
+                    "sidebar_behavior": "hide_read_channels_unless_starred",
+                    "priority_sidebar_section": true,
+                    "channel_sections": "{\"priority\":{\"sort\":\"recent\"}}"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(boot.starred, ["C_STAR", "C_OTHER"]);
+        assert_eq!(boot.channels_priority.get("C_VIP"), Some(&0.9));
+        assert!(boot.prefs.priority_sidebar_section);
+        assert_eq!(
+            boot.prefs.sidebar_behavior.as_deref(),
+            Some("hide_read_channels_unless_starred")
+        );
+    }
+
+    #[test]
+    fn deserialize_counts_unread_string_updated() {
+        let page: CountsPage = serde_json::from_str(
+            r#"{
+                "ok": true,
+                "ims": [
+                    {
+                        "id": "D083XVDGBJ8",
+                        "is_im": true,
+                        "updated": "1778339234.000100",
+                        "mention_count": 1,
+                        "has_unreads": true
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(page.ims[0].updated, Some(1_778_339_234));
+        assert!(page.ims[0].has_unreads);
+        assert_eq!(page.ims[0].mention_count, Some(1));
     }
 
     #[test]
