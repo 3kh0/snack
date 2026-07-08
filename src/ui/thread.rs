@@ -1,4 +1,6 @@
-use iced::widget::{Column, button, column, container, row, scrollable, text, text_input};
+use iced::widget::{
+    Column, button, column, container, mouse_area, row, scrollable, text, text_input,
+};
 use iced::{Element, Fill, Font, Length};
 use std::collections::HashMap;
 
@@ -16,6 +18,7 @@ pub fn view<'a>(
     file_previews: &HashMap<String, FilePreview>,
     avatar_previews: &HashMap<String, FilePreview>,
     editing: Option<(&str, &str)>,
+    hovered_ts: Option<&str>,
 ) -> Element<'a, Message> {
     let header = row![
         text("Thread")
@@ -46,15 +49,29 @@ pub fn view<'a>(
                 let edit = editing
                     .filter(|(ts, _)| Some(*ts) == msg.ts.as_deref())
                     .map(|(_, value)| value);
-                col = col.push(message::row(
+                let hovered = msg.ts.as_deref().is_some() && msg.ts.as_deref() == hovered_ts;
+                let row = message::row(
                     ws,
                     channel_id,
                     msg,
                     pending,
+                    true,
+                    hovered,
                     file_previews,
                     avatar_previews,
                     edit,
-                ));
+                );
+                let row: Element<'a, Message> = match msg.ts.clone() {
+                    Some(ts) => mouse_area(row)
+                        .on_enter(Message::MessageHovered {
+                            in_thread: true,
+                            ts,
+                        })
+                        .on_exit(Message::MessageUnhovered)
+                        .into(),
+                    None => row,
+                };
+                col = col.push(row);
             }
             scrollable(col).style(theme::scrollbar).height(Fill).into()
         }
@@ -64,15 +81,29 @@ pub fn view<'a>(
                 let edit = editing
                     .filter(|(ts, _)| Some(*ts) == root.ts.as_deref())
                     .map(|(_, value)| value);
-                col = col.push(message::row(
+                let hovered = root.ts.as_deref().is_some() && root.ts.as_deref() == hovered_ts;
+                let root_row = message::row(
                     ws,
                     channel_id,
                     root,
                     false,
+                    true,
+                    hovered,
                     file_previews,
                     avatar_previews,
                     edit,
-                ));
+                );
+                let root_row: Element<'a, Message> = match root.ts.clone() {
+                    Some(ts) => mouse_area(root_row)
+                        .on_enter(Message::MessageHovered {
+                            in_thread: true,
+                            ts,
+                        })
+                        .on_exit(Message::MessageUnhovered)
+                        .into(),
+                    None => root_row,
+                };
+                col = col.push(root_row);
             }
             let status = if replies.map(|cm| cm.loaded).unwrap_or(false) {
                 "No replies yet."

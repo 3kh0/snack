@@ -84,6 +84,13 @@ fn main_view(app: &App) -> Element<'_, Message> {
             .map(|(_, ts)| (ts.as_str(), app.edit_text.as_str()))
     };
 
+    let hovered_for = |in_thread: bool| -> Option<&str> {
+        app.hovered_message
+            .as_ref()
+            .filter(|(thread, _)| *thread == in_thread)
+            .map(|(_, ts)| ts.as_str())
+    };
+
     let main: Element<'_, Message> = match app.active_channel.as_deref() {
         Some(channel_id) => {
             let label = ws
@@ -98,6 +105,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
                     &app.file_previews,
                     &app.avatar_previews,
                     editing_for(channel_id),
+                    hovered_for(false),
                 ))
                 .height(Fill),
                 ui::composer::view(&app.composer_text, &label),
@@ -139,6 +147,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
                     &app.file_previews,
                     &app.avatar_previews,
                     editing_for(channel),
+                    hovered_for(true),
                 )
             ]),
         )

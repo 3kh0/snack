@@ -16,15 +16,17 @@ pub(super) fn subscription(app: &App) -> Subscription<Message> {
     }
 
     if app.sidebar_resizing {
-        subs.push(iced::event::listen_with(|event, _status, _id| match event {
-            iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
-                Some(Message::SidebarResizeMoved(position.x))
-            }
-            iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
-                Some(Message::SidebarResizeEnded)
-            }
-            _ => None,
-        }));
+        subs.push(iced::event::listen_with(
+            |event, _status, _id| match event {
+                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+                    Some(Message::SidebarResizeMoved(position.x))
+                }
+                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
+                    iced::mouse::Button::Left,
+                )) => Some(Message::SidebarResizeEnded),
+                _ => None,
+            },
+        ));
     }
 
     if let Some(session) = &app.session {

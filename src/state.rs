@@ -659,7 +659,17 @@ pub fn format_file_size(bytes: u64) -> String {
 }
 
 pub fn reaction_summary(reaction: &crate::slack::models::Reaction) -> String {
-    format!(":{}: {}", reaction.name, reaction.count.max(1))
+    format!("{} {}", emoji_glyph(&reaction.name), reaction.count.max(1))
+}
+
+/// Map a Slack emoji name to its unicode glyph, falling back to `:name:` for
+/// custom/unknown emoji. Slack appends skin-tone modifiers like
+/// `thumbsup::skin-tone-3`; the base name resolves the glyph.
+pub fn emoji_glyph(name: &str) -> String {
+    let base = name.split("::").next().unwrap_or(name);
+    emojis::get_by_shortcode(base)
+        .map(|e| e.as_str().to_owned())
+        .unwrap_or_else(|| format!(":{name}:"))
 }
 
 pub fn reaction_has_user(reaction: &Reaction, user: &str) -> bool {
@@ -1106,7 +1116,14 @@ mod tests {
             count: 3,
             ..Default::default()
         };
-        assert_eq!(reaction_summary(&r), ":thumbsup: 3");
+        assert_eq!(reaction_summary(&r), "👍 3");
+
+        let custom = Reaction {
+            name: "hackclub_bug".into(),
+            count: 1,
+            ..Default::default()
+        };
+        assert_eq!(reaction_summary(&custom), ":hackclub_bug: 1");
     }
 
     #[test]

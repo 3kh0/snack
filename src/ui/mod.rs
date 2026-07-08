@@ -5,6 +5,7 @@ pub mod icons;
 pub mod message;
 pub mod rail;
 pub mod search;
+pub mod selectable;
 pub mod settings;
 pub mod sidebar;
 pub mod theme;

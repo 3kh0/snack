@@ -1,4 +1,4 @@
-use iced::widget::{Column, column, container, scrollable, text};
+use iced::widget::{Column, column, container, mouse_area, scrollable, text};
 use iced::{Element, Fill};
 
 use super::{message, theme};
@@ -15,6 +15,7 @@ pub fn view<'a>(
     file_previews: &HashMap<String, FilePreview>,
     avatar_previews: &HashMap<String, FilePreview>,
     editing: Option<(&str, &str)>,
+    hovered_ts: Option<&str>,
 ) -> Element<'a, Message> {
     let label = ws
         .channels
@@ -47,15 +48,29 @@ pub fn view<'a>(
                 let edit = editing
                     .filter(|(ts, _)| Some(*ts) == m.ts.as_deref())
                     .map(|(_, value)| value);
-                col = col.push(message::row(
+                let hovered = m.ts.as_deref().is_some() && m.ts.as_deref() == hovered_ts;
+                let row = message::row(
                     ws,
                     channel_id,
                     m,
                     pending,
+                    false,
+                    hovered,
                     file_previews,
                     avatar_previews,
                     edit,
-                ));
+                );
+                let row: Element<'a, Message> = match m.ts.clone() {
+                    Some(ts) => mouse_area(row)
+                        .on_enter(Message::MessageHovered {
+                            in_thread: false,
+                            ts,
+                        })
+                        .on_exit(Message::MessageUnhovered)
+                        .into(),
+                    None => row,
+                };
+                col = col.push(row);
             }
             scrollable(col)
                 .id(CHANNEL_SCROLLABLE_ID)

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use iced::widget::{Column, Row, button, container, image, text, text_input};
 use iced::{Alignment, ContentFit, Element, Fill, Font, Length};
 
-use super::{blocks, theme};
+use super::{blocks, selectable, theme};
 use crate::app::{FilePreview, Message};
 use crate::slack::models::Message as SlackMessage;
 use crate::state::{self, Workspace};
@@ -13,6 +13,8 @@ pub fn row<'a>(
     channel_id: &str,
     msg: &SlackMessage,
     pending: bool,
+    in_thread: bool,
+    hovered: bool,
     file_previews: &HashMap<String, FilePreview>,
     avatar_previews: &HashMap<String, FilePreview>,
     edit_text: Option<&str>,
@@ -57,34 +59,59 @@ pub fn row<'a>(
         header = header.push(text("sending…").size(theme::TEXT_SM).color(theme::MUTED));
     }
 
+    let block_lines = blocks::render_lines(ws, msg);
+    let copy_text = if block_lines.is_empty() {
+        state::message_text(msg)
+    } else {
+        block_lines
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
     let editable = !pending
         && msg.bot_id.is_none()
         && msg.ts.is_some()
         && msg.user.as_deref() == Some(ws.self_user_id.as_str());
-    if editable && edit_text.is_none() {
-        if let Some(ts) = msg.ts.clone() {
-            let del_ts = ts.clone();
-            header = header
-                .push(
-                    button(text("Edit").size(theme::TEXT_SM))
-                        .padding([2, 0])
-                        .style(theme::link_button)
-                        .on_press(Message::EditPressed {
+
+    // Slack-style toolbar overlaid on the message, revealed only on hover.
+    let action_bar: Option<Element<'a, Message>> = if hovered && edit_text.is_none() {
+        let mut actions = Row::new();
+        let mut has_actions = false;
+        if !copy_text.is_empty() {
+            actions = actions.push(action_item("Copy", Message::CopyMessage(copy_text.clone())));
+            has_actions = true;
+        }
+        if editable {
+            if let Some(ts) = msg.ts.clone() {
+                actions = actions
+                    .push(action_item(
+                        "Edit",
+                        Message::EditPressed {
+                            channel: channel_id.to_owned(),
+                            ts: ts.clone(),
+                        },
+                    ))
+                    .push(action_item(
+                        "Delete",
+                        Message::DeletePressed {
                             channel: channel_id.to_owned(),
                             ts,
-                        }),
-                )
-                .push(
-                    button(text("Delete").size(theme::TEXT_SM))
-                        .padding([2, 0])
-                        .style(theme::link_button)
-                        .on_press(Message::DeletePressed {
-                            channel: channel_id.to_owned(),
-                            ts: del_ts,
-                        }),
-                );
+                        },
+                    ));
+                has_actions = true;
+            }
         }
-    }
+        has_actions.then(|| {
+            container(actions.padding(2))
+                .padding(2)
+                .style(theme::action_bar)
+                .into()
+        })
+    } else {
+        None
+    };
 
     if let Some(value) = edit_text {
         let input = text_input("Edit message", value)
@@ -124,22 +151,33 @@ pub fn row<'a>(
     }
 
     let mut col = Column::new().spacing(theme::SPACE_XS).push(header);
-    let block_lines = blocks::render_lines(ws, msg);
+    // Body renders through the selectable widget so text can be dragged over
+    // and copied (iced's plain `text` cannot be selected).
+    let mut segments = Vec::new();
     if block_lines.is_empty() {
         let body = state::message_text(msg);
         if !body.is_empty() {
-            col = col.push(text(body).size(theme::TEXT_MD).color(theme::TEXT_2));
+            segments.push(selectable::Segment::plain(body));
         }
     } else {
-        for line in block_lines {
-            let widget = text(line.text).size(theme::TEXT_MD).color(theme::TEXT_2);
-            let widget = if line.mono {
-                widget.font(Font::MONOSPACE)
-            } else {
-                widget
-            };
-            col = col.push(widget);
+        for (i, line) in block_lines.into_iter().enumerate() {
+            if i > 0 {
+                segments.push(selectable::Segment::plain("\n"));
+            }
+            segments.push(selectable::Segment {
+                text: line.text,
+                mono: line.mono,
+                color: None,
+            });
         }
+    }
+    if !segments.is_empty() {
+        col = col.push(selectable::SelectableText::new(
+            &segments,
+            theme::TEXT_MD,
+            theme::TEXT_2,
+            theme::selection(),
+        ));
     }
 
     for file in &msg.files {
@@ -155,7 +193,8 @@ pub fn row<'a>(
         (_, Some(ts)) => Some(ts.to_owned()),
         _ => None,
     };
-    if let Some(ts) = thread_ts {
+    // Inside the thread panel there is no reply-to-reply, so hide the link.
+    if let Some(ts) = thread_ts.filter(|_| !in_thread) {
         let reply_label = msg
             .reply_count
             .filter(|c| *c > 0)
@@ -198,7 +237,7 @@ pub fn row<'a>(
         col = col.push(chips);
     }
 
-    container(
+    let body = container(
         Row::new()
             .spacing(theme::SPACE_SM)
             .align_y(Alignment::Start)
@@ -206,7 +245,27 @@ pub fn row<'a>(
             .push(container(col).width(Fill)),
     )
     .padding([theme::SPACE_XS, theme::SPACE_MD])
-    .into()
+    .width(Fill);
+
+    match action_bar {
+        Some(bar) => iced::widget::stack![
+            body,
+            container(bar)
+                .width(Fill)
+                .align_right(Fill)
+                .padding([0.0, theme::SPACE_MD]),
+        ]
+        .into(),
+        None => body.into(),
+    }
+}
+
+fn action_item<'a>(label: &'a str, on_press: Message) -> Element<'a, Message> {
+    button(text(label).size(theme::TEXT_SM))
+        .padding([theme::SPACE_XS, theme::SPACE_SM])
+        .style(theme::action_button)
+        .on_press(on_press)
+        .into()
 }
 
 pub fn empty_placeholder<'a>() -> Element<'a, Message> {

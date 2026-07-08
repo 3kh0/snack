@@ -342,7 +342,14 @@ pub fn view<'a>(
         ));
     }
 
-    list = push_section(list, ws, avatars, active, "VIP unreads", sections.vip_unreads);
+    list = push_section(
+        list,
+        ws,
+        avatars,
+        active,
+        "VIP unreads",
+        sections.vip_unreads,
+    );
     list = push_section(list, ws, avatars, active, "Direct messages", sections.dms);
     list = push_section(list, ws, avatars, active, "Starred", sections.starred);
     list = push_section(

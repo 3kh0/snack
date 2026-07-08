@@ -361,6 +361,18 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
 
         Message::EditSubmit => edit_submit(app),
 
+        Message::CopyMessage(text) => iced::clipboard::write(text).discard(),
+
+        Message::MessageHovered { in_thread, ts } => {
+            app.hovered_message = Some((in_thread, ts));
+            Task::none()
+        }
+
+        Message::MessageUnhovered => {
+            app.hovered_message = None;
+            Task::none()
+        }
+
         Message::MessageEdited {
             team,
             channel,

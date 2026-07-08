@@ -78,6 +78,7 @@ pub struct App {
     thread_composer_text: String,
     editing: Option<(ChannelId, MessageTs)>,
     edit_text: String,
+    hovered_message: Option<(bool, MessageTs)>,
     search_input: String,
     search: Option<SearchState>,
     errors: Vec<Toast>,
@@ -139,6 +140,12 @@ pub enum Message {
     },
     EditComposerChanged(String),
     EditSubmit,
+    CopyMessage(String),
+    MessageHovered {
+        in_thread: bool,
+        ts: MessageTs,
+    },
+    MessageUnhovered,
     EditCancelled,
     MessageEdited {
         team: TeamId,
@@ -251,6 +258,7 @@ impl App {
             thread_composer_text: String::new(),
             editing: None,
             edit_text: String::new(),
+            hovered_message: None,
             search_input: String::new(),
             search: None,
             errors: Vec::new(),

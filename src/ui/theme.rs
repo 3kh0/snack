@@ -2,7 +2,7 @@ use std::sync::{LazyLock, RwLock};
 
 use iced::theme::palette::Seed;
 use iced::widget::{button, container, scrollable, text_input};
-use iced::{Background, Border, Color, Element, Length, Theme};
+use iced::{Background, Border, Color, Element, Length, Shadow, Theme, Vector};
 
 use crate::config::{AccentColor, Settings};
 
@@ -83,6 +83,13 @@ pub fn accent() -> Color {
 }
 pub fn accent_bright() -> Color {
     vars().accent[0]
+}
+/// Translucent accent used to paint the text-selection highlight.
+pub fn selection() -> Color {
+    Color {
+        a: 0.30,
+        ..vars().accent[1]
+    }
 }
 pub fn accent_3() -> Color {
     vars().accent[2]
@@ -240,8 +247,40 @@ pub fn ping_badge(_theme: &Theme) -> container::Style {
     }
 }
 
-pub fn sidebar_icon(color: Color) -> impl Fn(&Theme, iced::widget::svg::Status) -> iced::widget::svg::Style {
+pub fn sidebar_icon(
+    color: Color,
+) -> impl Fn(&Theme, iced::widget::svg::Status) -> iced::widget::svg::Style {
     move |_theme, _status| iced::widget::svg::Style { color: Some(color) }
+}
+
+/// Floating Slack-style action bar overlaid on a hovered message.
+pub fn action_bar(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(BG_ELEV)),
+        text_color: Some(TEXT_2),
+        border: Border {
+            color: BORDER,
+            width: 1.0,
+            radius: CONTROL_RADIUS.into(),
+        },
+        shadow: Shadow {
+            color: Color { a: 0.35, ..BG_BASE },
+            offset: Vector::new(0.0, 2.0),
+            blur_radius: 8.0,
+        },
+        ..container::Style::default()
+    }
+}
+
+/// Compact icon/text button used inside the [`action_bar`].
+pub fn action_button(_theme: &Theme, status: button::Status) -> button::Style {
+    let hovered = matches!(status, button::Status::Hovered);
+    button::Style {
+        background: hovered.then_some(Background::Color(HOVER)),
+        text_color: if hovered { TEXT_1 } else { TEXT_3 },
+        border: Border::default().rounded(CONTROL_RADIUS - 3.0),
+        ..button::Style::default()
+    }
 }
 
 pub fn reaction_chip(_theme: &Theme) -> container::Style {
