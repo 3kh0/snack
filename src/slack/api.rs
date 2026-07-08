@@ -3,7 +3,7 @@ use crate::config::WorkspaceSession;
 use super::Error;
 use super::client::{PreparedRequest, SlackClient};
 use super::models::{
-    BootData, Channel, ChannelId, CountsPage, EdgeResults, HistoryPage, MessageTs,
+    BootData, Channel, ChannelId, CountsPage, EdgeResults, Emoji, HistoryPage, MessageTs,
     SearchInlinePage, SearchMessagesPage, SentMessage, SidebarDmsPage, User,
 };
 use super::transport::Transport;
@@ -412,6 +412,19 @@ pub async fn fetch_channels_info(
     }
 
     Ok(channels)
+}
+
+pub async fn fetch_emojis_info(
+    transport: &Transport,
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    names: Vec<String>,
+) -> Result<Vec<Emoji>, Error> {
+    let request = super::edge::emojis_info(client, workspace, &names)
+        .map_err(|e| Error::Transport(format!("build emojis/info: {e}")))?;
+    let value = transport.execute(request).await?;
+    let page: EdgeResults<Emoji> = decode(value, "emojis/info")?;
+    Ok(page.results)
 }
 
 async fn fetch_conversation_info(

@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
 
 use crate::slack::models::{
-    Channel, ChannelId, File, Message as SlackMessage, MessageTs, Reaction, TeamId, User, UserId,
+    Channel, ChannelId, Emoji, File, Message as SlackMessage, MessageTs, Reaction, TeamId, User,
+    UserId,
 };
 use crate::slack::realtime::Connection;
 
@@ -186,10 +187,12 @@ pub struct Workspace {
     pub channels: BTreeMap<ChannelId, Channel>,
     pub starred_order: Vec<ChannelId>,
     pub dm_order: Vec<ChannelId>,
+    pub last_active_channel: Option<ChannelId>,
     pub priority_scores: BTreeMap<ChannelId, f64>,
     pub hide_read_channels_unless_starred: bool,
     pub priority_sidebar_section: bool,
     pub users: HashMap<UserId, User>,
+    pub custom_emoji: HashMap<String, Emoji>,
     pub messages: HashMap<ChannelId, ChannelMessages>,
     pub typing: HashMap<ChannelId, Vec<(UserId, Instant)>>,
     pub presence: HashMap<UserId, Presence>,
@@ -207,10 +210,12 @@ impl Workspace {
             channels: BTreeMap::new(),
             starred_order: Vec::new(),
             dm_order: Vec::new(),
+            last_active_channel: None,
             priority_scores: BTreeMap::new(),
             hide_read_channels_unless_starred: false,
             priority_sidebar_section: false,
             users: HashMap::new(),
+            custom_emoji: HashMap::new(),
             messages: HashMap::new(),
             typing: HashMap::new(),
             presence: HashMap::new(),
@@ -327,6 +332,16 @@ impl Workspace {
 
     pub fn avatar_url(&self, user_id: &str) -> Option<String> {
         user_avatar_url(self.users.get(user_id)?).map(str::to_owned)
+    }
+
+    pub fn custom_emoji_url(&self, name: &str) -> Option<&str> {
+        custom_emoji_url(&self.custom_emoji, name)
+    }
+
+    pub fn apply_emojis(&mut self, emojis: Vec<Emoji>) {
+        for emoji in emojis {
+            self.custom_emoji.insert(emoji.name.clone(), emoji);
+        }
     }
 
     pub fn set_typing(&mut self, channel: &str, user: UserId, now: Instant) {
@@ -691,6 +706,107 @@ pub fn emoji_glyph(name: &str) -> String {
         .unwrap_or_else(|| format!(":{name}:"))
 }
 
+pub fn is_standard_emoji(name: &str) -> bool {
+    let base = name.split("::").next().unwrap_or(name);
+    emojis::get_by_shortcode(base).is_some()
+}
+
+pub fn emoji_text_to_display(text: &str) -> String {
+    emoji_text_tokens(text)
+        .into_iter()
+        .map(|token| match token {
+            EmojiTextToken::Text(text) => text,
+            EmojiTextToken::Emoji(name) => emoji_glyph(&name),
+        })
+        .collect()
+}
+
+pub fn emoji_preview_key(team: &str, name: &str) -> String {
+    format!("{team}:{name}")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmojiTextToken {
+    Text(String),
+    Emoji(String),
+}
+
+pub fn emoji_text_tokens(text: &str) -> Vec<EmojiTextToken> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find(':') {
+        let (before, after_start) = rest.split_at(start);
+        if !before.is_empty() {
+            out.push(EmojiTextToken::Text(before.to_owned()));
+        }
+
+        let after_start = &after_start[1..];
+        let Some(end) = after_start.find(':') else {
+            out.push(EmojiTextToken::Text(":".to_owned()));
+            rest = after_start;
+            continue;
+        };
+        let name = &after_start[..end];
+        if is_emoji_name(name) {
+            out.push(EmojiTextToken::Emoji(name.to_owned()));
+            rest = &after_start[end + 1..];
+        } else {
+            out.push(EmojiTextToken::Text(":".to_owned()));
+            rest = after_start;
+        }
+    }
+    if !rest.is_empty() {
+        out.push(EmojiTextToken::Text(rest.to_owned()));
+    }
+    merge_text_tokens(out)
+}
+
+pub fn emoji_names_in_text(text: &str) -> Vec<String> {
+    emoji_text_tokens(text)
+        .into_iter()
+        .filter_map(|token| match token {
+            EmojiTextToken::Emoji(name) => Some(name),
+            EmojiTextToken::Text(_) => None,
+        })
+        .collect()
+}
+
+fn custom_emoji_url<'a>(emojis: &'a HashMap<String, Emoji>, name: &str) -> Option<&'a str> {
+    let mut current = name;
+    let mut seen = std::collections::HashSet::new();
+    loop {
+        if !seen.insert(current) {
+            return None;
+        }
+        let emoji = emojis.get(current)?;
+        if let Some(alias) = emoji.value.strip_prefix("alias:") {
+            current = alias;
+            continue;
+        }
+        return is_browser_url(&emoji.value).then_some(emoji.value.as_str());
+    }
+}
+
+fn is_emoji_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '+'))
+}
+
+fn merge_text_tokens(tokens: Vec<EmojiTextToken>) -> Vec<EmojiTextToken> {
+    let mut merged = Vec::new();
+    for token in tokens {
+        match (merged.last_mut(), token) {
+            (Some(EmojiTextToken::Text(existing)), EmojiTextToken::Text(next)) => {
+                existing.push_str(&next);
+            }
+            (_, token) => merged.push(token),
+        }
+    }
+    merged
+}
+
 pub fn reaction_has_user(reaction: &Reaction, user: &str) -> bool {
     !user.is_empty() && reaction.users.iter().any(|u| u == user)
 }
@@ -820,7 +936,7 @@ pub fn scroll_ratio_for_ts(messages: &[SlackMessage], ts: &str) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::slack::models::{BootData, BootSelf, Reaction, UserProfile};
+    use crate::slack::models::{BootData, BootSelf, Emoji, Reaction, UserProfile};
 
     fn msg(ts: &str, text: &str) -> SlackMessage {
         SlackMessage {
@@ -969,10 +1085,12 @@ mod tests {
             channels: BTreeMap::new(),
             starred_order: Vec::new(),
             dm_order: Vec::new(),
+            last_active_channel: None,
             priority_scores: BTreeMap::new(),
             hide_read_channels_unless_starred: false,
             priority_sidebar_section: false,
             users: HashMap::new(),
+            custom_emoji: HashMap::new(),
             messages: HashMap::new(),
             typing: HashMap::new(),
             presence: HashMap::new(),
@@ -1170,6 +1288,52 @@ mod tests {
     }
 
     #[test]
+    fn emoji_text_tokens_extracts_shortcodes_and_display_text_keeps_custom() {
+        assert_eq!(
+            emoji_text_tokens("ship it :wave: :party-hack:"),
+            vec![
+                EmojiTextToken::Text("ship it ".into()),
+                EmojiTextToken::Emoji("wave".into()),
+                EmojiTextToken::Text(" ".into()),
+                EmojiTextToken::Emoji("party-hack".into()),
+            ]
+        );
+        assert_eq!(
+            emoji_text_to_display("ship it :wave: :party-hack:"),
+            "ship it 👋 :party-hack:"
+        );
+    }
+
+    #[test]
+    fn custom_emoji_url_resolves_aliases() {
+        let mut ws = Workspace::from_session(&crate::config::WorkspaceSession {
+            team_id: "T1".into(),
+            enterprise_id: None,
+            user_id: "U_SELF".into(),
+            name: "Test".into(),
+            url: "https://test.slack.com".into(),
+            token: "xoxc-test".into(),
+        });
+        ws.apply_emojis(vec![
+            Emoji {
+                name: "party-hack".into(),
+                value: "https://emoji.test/party.png".into(),
+                ..Default::default()
+            },
+            Emoji {
+                name: "party-alias".into(),
+                value: "alias:party-hack".into(),
+                ..Default::default()
+            },
+        ]);
+
+        assert_eq!(
+            ws.custom_emoji_url("party-alias"),
+            Some("https://emoji.test/party.png")
+        );
+    }
+
+    #[test]
     fn reaction_summary_format() {
         let r = Reaction {
             name: "thumbsup".into(),
@@ -1219,10 +1383,12 @@ mod tests {
             channels: BTreeMap::new(),
             starred_order: Vec::new(),
             dm_order: Vec::new(),
+            last_active_channel: None,
             priority_scores: BTreeMap::new(),
             hide_read_channels_unless_starred: false,
             priority_sidebar_section: false,
             users: HashMap::new(),
+            custom_emoji: HashMap::new(),
             messages: HashMap::new(),
             typing: HashMap::new(),
             presence: HashMap::new(),

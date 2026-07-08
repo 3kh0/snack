@@ -12,7 +12,8 @@ use crate::config;
 use crate::slack::api::{self, SearchArgs};
 use crate::slack::events::RtEvent;
 use crate::slack::models::{
-    Channel, ChannelId, Message as SlackMessage, MessageTs, SearchMessagesPage, TeamId, UserId,
+    Channel, ChannelId, Emoji, Message as SlackMessage, MessageTs, SearchMessagesPage, TeamId,
+    UserId,
 };
 use crate::slack::realtime;
 use crate::slack::{Error as SlackError, Transport};
@@ -39,7 +40,11 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
             }
             app.active_channel = Some(id.clone());
             if let Some(team) = app.active_team.clone() {
-                app.last_active_channels.insert(team, id.clone());
+                app.last_active_channels.insert(team.clone(), id.clone());
+                if let Some(ws) = app.workspaces.get_mut(&team) {
+                    ws.last_active_channel = Some(id.clone());
+                }
+                mark_workspace_dirty(app, &team);
             }
             if app
                 .active_thread
@@ -63,6 +68,8 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                     mark_latest_visible(app, &team, &id),
                     load_visible_file_previews(app, &team, &id),
                     load_visible_avatar_previews(app, &team, &id),
+                    hydrate_visible_emojis(app, &team, &id),
+                    load_visible_emoji_previews(app, &team, &id),
                 ]);
             }
             Task::none()
@@ -85,6 +92,8 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                 Task::batch([
                     load_thread_file_previews(app, &team, &channel, &ts),
                     load_thread_avatar_previews(app, &team, &channel, &ts),
+                    hydrate_thread_emojis(app, &team, &channel, &ts),
+                    load_thread_emoji_previews(app, &team, &channel, &ts),
                 ])
             }
         }
@@ -121,8 +130,10 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                     tracing::info!(%channel, %root_ts, messages = n, "thread loaded");
                     return Task::batch([
                         hydrate_missing_users(app, &team, &messages),
+                        hydrate_emojis(app, &team, &messages),
                         load_avatar_previews(app, &team, messages),
                         load_thread_file_previews(app, &team, &channel, &root_ts),
+                        load_thread_emoji_previews(app, &team, &channel, &root_ts),
                     ]);
                 }
                 Err(e) => {
@@ -232,13 +243,12 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                     tasks.push(load_user_avatar_previews(app, &team, vec![self_user]));
                 }
                 if app.active_team.as_deref() == Some(&team) && app.active_channel.is_none() {
-                    if let Some(first) = app
-                        .workspaces
-                        .get(&team)
-                        .and_then(|ws| ws.channels.keys().next().cloned())
-                    {
-                        app.active_channel = Some(first.clone());
-                        tasks.push(app.load_history(&team, &first));
+                    if let Some(channel) = preferred_channel(app, &team) {
+                        app.active_channel = Some(channel.clone());
+                        if let Some(ws) = app.workspaces.get_mut(&team) {
+                            ws.last_active_channel = Some(channel.clone());
+                        }
+                        tasks.push(app.load_history(&team, &channel));
                     }
                 }
                 if let Some(channel) = app
@@ -250,6 +260,8 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                         hydrate_visible_missing_users(app, &team, &channel),
                         load_visible_file_previews(app, &team, &channel),
                         load_visible_avatar_previews(app, &team, &channel),
+                        hydrate_visible_emojis(app, &team, &channel),
+                        load_visible_emoji_previews(app, &team, &channel),
                     ]);
                 }
                 Task::batch(tasks)
@@ -316,9 +328,11 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                     mark_workspace_dirty(app, &team);
                     return Task::batch([
                         hydrate_missing_users(app, &team, &messages),
+                        hydrate_emojis(app, &team, &messages),
                         load_avatar_previews(app, &team, messages),
                         mark_latest_visible(app, &team, &channel),
                         load_visible_file_previews(app, &team, &channel),
+                        load_visible_emoji_previews(app, &team, &channel),
                         scroll_to_pending(app, &channel),
                     ]);
                 }
@@ -558,6 +572,19 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
 
+        Message::EmojiPreviewLoaded { key, result } => {
+            match result {
+                Ok(preview) => {
+                    app.emoji_previews.insert(key, preview);
+                }
+                Err(e) => {
+                    tracing::debug!(%key, error = %e, "emoji preview failed");
+                    app.emoji_previews.insert(key, FilePreview::Failed);
+                }
+            }
+            Task::none()
+        }
+
         Message::UsersLoaded { team, result } => {
             match result {
                 Ok(users) => {
@@ -572,6 +599,35 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                     return load_user_avatar_previews(app, &team, ids);
                 }
                 Err(e) => tracing::debug!(%team, error = %e, "users info failed"),
+            }
+            Task::none()
+        }
+
+        Message::EmojisLoaded {
+            team,
+            requested,
+            result,
+        } => {
+            app.emoji_hydrated
+                .extend(requested.iter().map(|name| (team.clone(), name.clone())));
+            match result {
+                Ok(emojis) => {
+                    let names: Vec<_> = emojis.iter().map(|emoji| emoji.name.clone()).collect();
+                    let alias_targets: Vec<_> = emojis
+                        .iter()
+                        .filter_map(|emoji| emoji.value.strip_prefix("alias:"))
+                        .filter(|name| !crate::state::is_standard_emoji(name))
+                        .map(str::to_owned)
+                        .collect();
+                    if let Some(ws) = app.workspaces.get_mut(&team) {
+                        ws.apply_emojis(emojis);
+                    }
+                    return Task::batch([
+                        load_emoji_previews_for_names(app, &team, names),
+                        hydrate_emoji_names(app, &team, alias_targets),
+                    ]);
+                }
+                Err(e) => tracing::debug!(%team, error = %e, "emojis info failed"),
             }
             Task::none()
         }
@@ -637,6 +693,8 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                     tasks.push(mark_latest_visible(app, &team, &channel));
                     tasks.push(load_visible_file_previews(app, &team, &channel));
                     tasks.push(load_visible_avatar_previews(app, &team, &channel));
+                    tasks.push(hydrate_visible_emojis(app, &team, &channel));
+                    tasks.push(load_visible_emoji_previews(app, &team, &channel));
                 }
             }
             Task::batch(tasks)
@@ -796,6 +854,8 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
 
+        Message::AnimationTick => Task::none(),
+
         Message::Tick => {
             let now = Instant::now();
             if let Some(ws) = app.active_workspace_mut() {
@@ -825,12 +885,20 @@ fn select_workspace(app: &mut App, team: TeamId) -> Task<Message> {
         (app.active_team.clone(), app.active_channel.clone())
     {
         app.last_active_channels
-            .insert(current_team, current_channel);
+            .insert(current_team.clone(), current_channel.clone());
+        if let Some(ws) = app.workspaces.get_mut(&current_team) {
+            ws.last_active_channel = Some(current_channel);
+        }
+        mark_workspace_dirty(app, &current_team);
     }
 
     app.active_team = Some(team.clone());
     app.show_account_menu = false;
     app.active_channel = preferred_channel(app, &team);
+    if let (Some(ws), Some(channel)) = (app.workspaces.get_mut(&team), app.active_channel.clone()) {
+        ws.last_active_channel = Some(channel);
+        mark_workspace_dirty(app, &team);
+    }
     app.active_thread = None;
     app.search = None;
     app.search_input.clear();
@@ -882,6 +950,8 @@ fn sign_out(app: &mut App) -> Task<Message> {
     app.search = None;
     app.file_previews.clear();
     app.avatar_previews.clear();
+    app.emoji_previews.clear();
+    app.emoji_hydrated.clear();
     app.avatar_profile_hydrated.clear();
     app.pending_scroll_to = None;
     app.cache_dirty.clear();
@@ -940,6 +1010,13 @@ pub(super) fn preferred_channel(app: &App, team: &str) -> Option<ChannelId> {
     if let Some(channel) = app
         .last_active_channels
         .get(team)
+        .filter(|channel| ws.channels.contains_key(*channel))
+    {
+        return Some(channel.clone());
+    }
+    if let Some(channel) = ws
+        .last_active_channel
+        .as_ref()
         .filter(|channel| ws.channels.contains_key(*channel))
     {
         return Some(channel.clone());
@@ -1487,6 +1564,10 @@ fn open_search_result(
     app.active_channel = Some(channel.clone());
     app.last_active_channels
         .insert(team.clone(), channel.clone());
+    if let Some(ws) = app.workspaces.get_mut(&team) {
+        ws.last_active_channel = Some(channel.clone());
+    }
+    mark_workspace_dirty(app, &team);
     app.editing = None;
     app.edit_text.clear();
     app.pending_scroll_to = Some((channel.clone(), ts));
@@ -1783,6 +1864,261 @@ fn load_file_previews(app: &mut App, messages: Vec<SlackMessage>) -> Task<Messag
             },
         )
     }))
+}
+
+fn hydrate_visible_emojis(app: &App, team: &str, channel: &str) -> Task<Message> {
+    let messages = visible_channel_messages(app, team, channel);
+    hydrate_emojis(app, team, &messages)
+}
+
+fn hydrate_thread_emojis(app: &App, team: &str, channel: &str, root_ts: &str) -> Task<Message> {
+    let messages = thread_messages(app, team, channel, root_ts);
+    hydrate_emojis(app, team, &messages)
+}
+
+fn hydrate_emojis(app: &App, team: &str, messages: &[SlackMessage]) -> Task<Message> {
+    let names = messages.iter().flat_map(message_emoji_names).collect();
+    hydrate_emoji_names(app, team, names)
+}
+
+fn hydrate_emoji_names(app: &App, team: &str, names: Vec<String>) -> Task<Message> {
+    let Some((transport, session)) = app.live() else {
+        return Task::none();
+    };
+    let Some(ws_session) = session.workspaces.get(team) else {
+        return Task::none();
+    };
+    let Some(ws) = app.workspaces.get(team) else {
+        return Task::none();
+    };
+
+    let mut seen = HashSet::new();
+    let names: Vec<_> = names
+        .into_iter()
+        .filter(|name| !crate::state::is_standard_emoji(name))
+        .filter(|name| !ws.custom_emoji.contains_key(name))
+        .filter(|name| {
+            !app.emoji_hydrated
+                .contains(&(team.to_owned(), name.clone()))
+        })
+        .filter(|name| seen.insert(name.clone()))
+        .collect();
+
+    if names.is_empty() {
+        return Task::none();
+    }
+
+    let transport = transport.clone();
+    let client = app.client.clone();
+    let ws_session = ws_session.clone();
+    let team = team.to_owned();
+    Task::perform(
+        {
+            let names = names.clone();
+            async move { api::fetch_emojis_info(&transport, &client, &ws_session, names).await }
+        },
+        move |result| Message::EmojisLoaded {
+            team: team.clone(),
+            requested: names.clone(),
+            result,
+        },
+    )
+}
+
+fn load_visible_emoji_previews(app: &mut App, team: &str, channel: &str) -> Task<Message> {
+    let messages = visible_channel_messages(app, team, channel);
+    load_emoji_previews(app, team, &messages)
+}
+
+fn load_thread_emoji_previews(
+    app: &mut App,
+    team: &str,
+    channel: &str,
+    root_ts: &str,
+) -> Task<Message> {
+    let messages = thread_messages(app, team, channel, root_ts);
+    load_emoji_previews(app, team, &messages)
+}
+
+fn load_emoji_previews(app: &mut App, team: &str, messages: &[SlackMessage]) -> Task<Message> {
+    let mut seen = HashSet::new();
+    let names = messages
+        .iter()
+        .flat_map(message_emoji_names)
+        .filter(|name| seen.insert(name.clone()))
+        .collect();
+    load_emoji_previews_for_names(app, team, names)
+}
+
+fn load_emoji_previews_for_names(app: &mut App, team: &str, names: Vec<String>) -> Task<Message> {
+    let Some(transport) = app.transport.clone() else {
+        return Task::none();
+    };
+    let Some(ws) = app.workspaces.get(team) else {
+        return Task::none();
+    };
+
+    let mut seen = HashSet::new();
+    let requests: Vec<_> = names
+        .into_iter()
+        .filter(|name| seen.insert(name.clone()))
+        .filter_map(|name| {
+            let key = crate::state::emoji_preview_key(team, &name);
+            if app.emoji_previews.contains_key(&key) {
+                return None;
+            }
+            let url = ws.custom_emoji_url(&name)?.to_owned();
+            Some((key, url))
+        })
+        .collect();
+
+    if requests.is_empty() {
+        return Task::none();
+    }
+
+    for (key, _) in &requests {
+        app.emoji_previews.insert(key.clone(), FilePreview::Loading);
+    }
+
+    let user_agent = crate::slack::xparams::Identity::from_capture().user_agent;
+    Task::batch(requests.into_iter().map(|(key, url)| {
+        let transport = transport.clone();
+        let user_agent = user_agent.clone();
+        Task::perform(
+            async move {
+                let bytes = transport.get_bytes(&url, &user_agent).await?;
+                Ok(emoji_preview_from_bytes(bytes))
+            },
+            move |result| Message::EmojiPreviewLoaded {
+                key: key.clone(),
+                result,
+            },
+        )
+    }))
+}
+
+pub(super) fn emoji_preview_from_bytes(bytes: Vec<u8>) -> FilePreview {
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        if let Some(preview) = decode_gif_preview(&bytes) {
+            return preview;
+        }
+    }
+    FilePreview::Loaded(ImageHandle::from_bytes(bytes))
+}
+
+fn decode_gif_preview(bytes: &[u8]) -> Option<FilePreview> {
+    let mut options = gif::DecodeOptions::new();
+    options.set_color_output(gif::ColorOutput::RGBA);
+    let mut decoder = options.read_info(std::io::Cursor::new(bytes)).ok()?;
+    let mut frames = Vec::new();
+    let mut delays = Vec::new();
+    while let Some(frame) = decoder.read_next_frame().ok()? {
+        frames.push(ImageHandle::from_rgba(
+            frame.width.into(),
+            frame.height.into(),
+            frame.buffer.to_vec(),
+        ));
+        delays.push(gif_delay(frame.delay));
+    }
+
+    match frames.len() {
+        0 => None,
+        1 => Some(FilePreview::Loaded(frames.remove(0))),
+        _ => {
+            let total = delays.iter().copied().sum();
+            Some(FilePreview::Animated {
+                frames,
+                delays,
+                total,
+            })
+        }
+    }
+}
+
+fn gif_delay(delay_cs: u16) -> Duration {
+    if delay_cs == 0 {
+        Duration::from_millis(100)
+    } else {
+        Duration::from_millis((delay_cs as u64 * 10).max(20))
+    }
+}
+
+fn thread_messages(app: &App, team: &str, channel: &str, root_ts: &str) -> Vec<SlackMessage> {
+    let mut messages = Vec::new();
+    if let Some(root) = app
+        .workspaces
+        .get(team)
+        .and_then(|ws| ws.messages.get(channel))
+        .and_then(|cm| {
+            cm.messages
+                .iter()
+                .find(|msg| msg.ts.as_deref() == Some(root_ts))
+        })
+    {
+        messages.push(root.clone());
+    }
+    if let Some(replies) =
+        app.threads
+            .get(&(team.to_owned(), channel.to_owned(), root_ts.to_owned()))
+    {
+        messages.extend(replies.messages.clone());
+    }
+    messages
+}
+
+fn message_emoji_names(msg: &SlackMessage) -> Vec<String> {
+    let mut names = Vec::new();
+    if let Some(text) = msg.text.as_deref() {
+        names.extend(crate::state::emoji_names_in_text(text));
+    }
+    for reaction in &msg.reactions {
+        names.push(reaction.name.clone());
+    }
+    for block in &msg.blocks {
+        collect_value_emoji_names(block, &mut names);
+    }
+    for att in &msg.attachments {
+        for text in [
+            att.service_name.as_deref(),
+            att.author_name.as_deref(),
+            att.title.as_deref(),
+            att.pretext.as_deref(),
+            att.text.as_deref(),
+            att.footer.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            names.extend(crate::state::emoji_names_in_text(text));
+        }
+    }
+    names
+}
+
+fn collect_value_emoji_names(value: &serde_json::Value, names: &mut Vec<String>) {
+    match value {
+        serde_json::Value::String(text) => names.extend(crate::state::emoji_names_in_text(text)),
+        serde_json::Value::Array(values) => {
+            for value in values {
+                collect_value_emoji_names(value, names);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            if map
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|kind| kind == "emoji")
+            {
+                if let Some(name) = map.get("name").and_then(serde_json::Value::as_str) {
+                    names.push(name.to_owned());
+                }
+            }
+            for value in map.values() {
+                collect_value_emoji_names(value, names);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn hydrate_missing_users(app: &App, team: &str, messages: &[SlackMessage]) -> Task<Message> {

@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
+use iced::widget::image::Handle as ImageHandle;
 use iced::widget::{Column, Row, button, container, image, text, text_input};
 use iced::{Alignment, ContentFit, Element, Fill, Font, Length};
 
@@ -17,6 +19,8 @@ pub fn row<'a>(
     hovered: bool,
     file_previews: &HashMap<String, FilePreview>,
     avatar_previews: &HashMap<String, FilePreview>,
+    emoji_previews: &HashMap<String, FilePreview>,
+    emoji_animation_elapsed: Duration,
     edit_text: Option<&str>,
 ) -> Element<'a, Message> {
     let author = msg
@@ -151,33 +155,39 @@ pub fn row<'a>(
     }
 
     let mut col = Column::new().spacing(theme::SPACE_XS).push(header);
-    // Body renders through the selectable widget so text can be dragged over
-    // and copied (iced's plain `text` cannot be selected).
-    let mut segments = Vec::new();
-    if block_lines.is_empty() {
-        let body = state::message_text(msg);
-        if !body.is_empty() {
-            segments.push(selectable::Segment::plain(body));
-        }
-    } else {
-        for (i, line) in block_lines.into_iter().enumerate() {
-            if i > 0 {
-                segments.push(selectable::Segment::plain("\n"));
+    let body_lines = body_lines(msg, block_lines);
+    if !body_lines.is_empty() {
+        if body_lines
+            .iter()
+            .any(|line| line_has_custom_emoji(ws, &line.text))
+        {
+            col = col.push(emoji_body(
+                &body_lines,
+                ws,
+                emoji_previews,
+                emoji_animation_elapsed,
+            ));
+        } else {
+            // Body renders through the selectable widget so text can be dragged
+            // over and copied (iced's plain `text` cannot be selected).
+            let mut segments = Vec::new();
+            for (i, line) in body_lines.into_iter().enumerate() {
+                if i > 0 {
+                    segments.push(selectable::Segment::plain("\n"));
+                }
+                segments.push(selectable::Segment {
+                    text: state::emoji_text_to_display(&line.text),
+                    mono: line.mono,
+                    color: None,
+                });
             }
-            segments.push(selectable::Segment {
-                text: line.text,
-                mono: line.mono,
-                color: None,
-            });
+            col = col.push(selectable::SelectableText::new(
+                &segments,
+                theme::TEXT_MD,
+                theme::TEXT_2,
+                theme::selection(),
+            ));
         }
-    }
-    if !segments.is_empty() {
-        col = col.push(selectable::SelectableText::new(
-            &segments,
-            theme::TEXT_MD,
-            theme::TEXT_2,
-            theme::selection(),
-        ));
     }
 
     for file in &msg.files {
@@ -214,23 +224,32 @@ pub fn row<'a>(
     if !msg.reactions.is_empty() {
         let mut chips = Row::new().spacing(theme::SPACE_XS);
         for r in &msg.reactions {
-            let label = state::reaction_summary(r);
             let active = state::reaction_has_user(r, &ws.self_user_id);
             let chip: Element<'a, Message> = if let Some(ts) = msg.ts.clone() {
-                button(text(label).size(theme::TEXT_SM))
-                    .padding([2, 6])
-                    .style(theme::reaction_button(active))
-                    .on_press(Message::ReactionPressed {
-                        channel: channel_id.to_owned(),
-                        ts,
-                        name: r.name.clone(),
-                    })
-                    .into()
+                button(reaction_content(
+                    ws,
+                    r,
+                    emoji_previews,
+                    emoji_animation_elapsed,
+                ))
+                .padding([2, 6])
+                .style(theme::reaction_button(active))
+                .on_press(Message::ReactionPressed {
+                    channel: channel_id.to_owned(),
+                    ts,
+                    name: r.name.clone(),
+                })
+                .into()
             } else {
-                container(text(label).size(theme::TEXT_SM))
-                    .padding([2, 6])
-                    .style(theme::reaction_chip)
-                    .into()
+                container(reaction_content(
+                    ws,
+                    r,
+                    emoji_previews,
+                    emoji_animation_elapsed,
+                ))
+                .padding([2, 6])
+                .style(theme::reaction_chip)
+                .into()
             };
             chips = chips.push(chip);
         }
@@ -258,6 +277,144 @@ pub fn row<'a>(
         .into(),
         None => body.into(),
     }
+}
+
+fn body_lines(msg: &SlackMessage, block_lines: Vec<blocks::RenderLine>) -> Vec<blocks::RenderLine> {
+    if !block_lines.is_empty() {
+        return block_lines;
+    }
+    let body = state::message_text(msg);
+    if body.is_empty() {
+        Vec::new()
+    } else {
+        vec![blocks::RenderLine {
+            text: body,
+            mono: false,
+        }]
+    }
+}
+
+fn line_has_custom_emoji(ws: &Workspace, line: &str) -> bool {
+    state::emoji_text_tokens(line).into_iter().any(|token| {
+        matches!(
+            token,
+            state::EmojiTextToken::Emoji(name) if ws.custom_emoji_url(&name).is_some()
+        )
+    })
+}
+
+fn emoji_body<'a>(
+    lines: &[blocks::RenderLine],
+    ws: &Workspace,
+    emoji_previews: &HashMap<String, FilePreview>,
+    elapsed: Duration,
+) -> Element<'a, Message> {
+    let mut col = Column::new().spacing(theme::SPACE_XS);
+    for line in lines {
+        let mut row = Row::new().spacing(2).align_y(Alignment::Center).width(Fill);
+        for token in state::emoji_text_tokens(&line.text) {
+            match token {
+                state::EmojiTextToken::Text(value) if !value.is_empty() => {
+                    let mut styled = text(value).size(theme::TEXT_MD).color(theme::TEXT_2);
+                    if line.mono {
+                        styled = styled.font(Font::MONOSPACE);
+                    }
+                    row = row.push(styled);
+                }
+                state::EmojiTextToken::Text(_) => {}
+                state::EmojiTextToken::Emoji(name) => {
+                    row = row.push(emoji_inline(
+                        ws,
+                        &name,
+                        emoji_previews,
+                        elapsed,
+                        theme::TEXT_MD,
+                    ));
+                }
+            }
+        }
+        col = col.push(row.wrap().vertical_spacing(2));
+    }
+    col.into()
+}
+
+fn reaction_content<'a>(
+    ws: &Workspace,
+    reaction: &crate::slack::models::Reaction,
+    emoji_previews: &HashMap<String, FilePreview>,
+    elapsed: Duration,
+) -> Element<'a, Message> {
+    Row::new()
+        .spacing(theme::SPACE_XS)
+        .align_y(Alignment::Center)
+        .push(emoji_inline(
+            ws,
+            &reaction.name,
+            emoji_previews,
+            elapsed,
+            theme::TEXT_SM,
+        ))
+        .push(text(reaction.count.max(1).to_string()).size(theme::TEXT_SM))
+        .into()
+}
+
+fn emoji_inline<'a>(
+    ws: &Workspace,
+    name: &str,
+    emoji_previews: &HashMap<String, FilePreview>,
+    elapsed: Duration,
+    size: f32,
+) -> Element<'a, Message> {
+    if ws.custom_emoji_url(name).is_some() {
+        let key = state::emoji_preview_key(&ws.team_id, name);
+        match emoji_previews.get(&key) {
+            Some(FilePreview::Loaded(handle)) => {
+                return emoji_image(handle.clone(), size);
+            }
+            Some(FilePreview::Animated {
+                frames,
+                delays,
+                total,
+            }) => {
+                if let Some(handle) = animated_frame(frames, delays, *total, elapsed) {
+                    return emoji_image(handle, size);
+                }
+            }
+            _ => {}
+        }
+    }
+    text(state::emoji_glyph(name))
+        .size(size)
+        .color(theme::TEXT_2)
+        .into()
+}
+
+fn emoji_image<'a>(handle: ImageHandle, size: f32) -> Element<'a, Message> {
+    image::Image::new(handle)
+        .width(Length::Fixed(size + 2.0))
+        .height(Length::Fixed(size + 2.0))
+        .content_fit(ContentFit::Contain)
+        .into()
+}
+
+fn animated_frame(
+    frames: &[ImageHandle],
+    delays: &[Duration],
+    total: Duration,
+    elapsed: Duration,
+) -> Option<ImageHandle> {
+    if frames.is_empty() || total.is_zero() {
+        return None;
+    }
+    let elapsed_ms = elapsed.as_millis() % total.as_millis().max(1);
+    let mut cursor = 0u128;
+    for (index, delay) in delays.iter().enumerate() {
+        cursor += delay.as_millis().max(1);
+        if elapsed_ms < cursor {
+            return frames.get(index).cloned();
+        }
+    }
+    frames.last().cloned()
 }
 
 fn action_item<'a>(label: &'a str, on_press: Message) -> Element<'a, Message> {
@@ -426,6 +583,17 @@ fn file_row<'a>(
                         .size(theme::TEXT_SM)
                         .color(theme::MUTED),
                 );
+            }
+            FilePreview::Animated { frames, .. } => {
+                if let Some(handle) = frames.first() {
+                    content = content.push(
+                        image::Image::new(handle.clone())
+                            .width(Length::Fixed(220.0))
+                            .height(Length::Fixed(140.0))
+                            .content_fit(ContentFit::Contain)
+                            .border_radius(6.0),
+                    );
+                }
             }
         }
     }

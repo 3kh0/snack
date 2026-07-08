@@ -5,6 +5,7 @@ use super::{message, theme};
 use crate::app::{FilePreview, Message};
 use crate::state::{self, Workspace};
 use std::collections::HashMap;
+use std::time::Duration;
 
 pub const CHANNEL_SCROLLABLE_ID: &str = "channel-messages";
 pub const VISIBLE_MESSAGE_LIMIT: usize = 200;
@@ -14,6 +15,8 @@ pub fn view<'a>(
     channel_id: &str,
     file_previews: &HashMap<String, FilePreview>,
     avatar_previews: &HashMap<String, FilePreview>,
+    emoji_previews: &HashMap<String, FilePreview>,
+    emoji_animation_elapsed: Duration,
     editing: Option<(&str, &str)>,
     hovered_ts: Option<&str>,
 ) -> Element<'a, Message> {
@@ -58,6 +61,8 @@ pub fn view<'a>(
                     hovered,
                     file_previews,
                     avatar_previews,
+                    emoji_previews,
+                    emoji_animation_elapsed,
                     edit,
                 );
                 let row: Element<'a, Message> = match m.ts.clone() {

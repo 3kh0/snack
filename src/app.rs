@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use iced::Task;
 use iced::widget::image::Handle as ImageHandle;
@@ -11,8 +11,8 @@ use crate::config::{self, Session};
 use crate::slack::api::{self, HistoryArgs};
 use crate::slack::events::RtEvent;
 use crate::slack::models::{
-    BootData, Channel, ChannelId, CountsPage, HistoryPage, Message as SlackMessage, MessageTs,
-    SearchMessagesPage, SentMessage, SidebarDmsPage, TeamId, User, UserId,
+    BootData, Channel, ChannelId, CountsPage, Emoji, HistoryPage, Message as SlackMessage,
+    MessageTs, SearchMessagesPage, SentMessage, SidebarDmsPage, TeamId, User, UserId,
 };
 use crate::slack::realtime::Connection;
 use crate::slack::{Error as SlackError, SlackClient, Transport};
@@ -36,6 +36,11 @@ type ThreadKey = (TeamId, ChannelId, MessageTs);
 pub enum FilePreview {
     Loading,
     Loaded(ImageHandle),
+    Animated {
+        frames: Vec<ImageHandle>,
+        delays: Vec<Duration>,
+        total: Duration,
+    },
     Failed,
 }
 
@@ -87,6 +92,9 @@ pub struct App {
     last_active_channels: HashMap<TeamId, ChannelId>,
     file_previews: HashMap<String, FilePreview>,
     avatar_previews: HashMap<UserId, FilePreview>,
+    emoji_previews: HashMap<String, FilePreview>,
+    emoji_animation_started: Instant,
+    emoji_hydrated: HashSet<(TeamId, String)>,
     avatar_profile_hydrated: HashSet<UserId>,
     pending_scroll_to: Option<(ChannelId, MessageTs)>,
     cache_dirty: HashMap<TeamId, Instant>,
@@ -208,9 +216,18 @@ pub enum Message {
         user: UserId,
         result: Result<Vec<u8>, SlackError>,
     },
+    EmojiPreviewLoaded {
+        key: String,
+        result: Result<FilePreview, SlackError>,
+    },
     UsersLoaded {
         team: TeamId,
         result: Result<Vec<User>, SlackError>,
+    },
+    EmojisLoaded {
+        team: TeamId,
+        requested: Vec<String>,
+        result: Result<Vec<Emoji>, SlackError>,
     },
     ChannelsLoaded {
         team: TeamId,
@@ -246,6 +263,7 @@ pub enum Message {
     SidebarResizeStarted,
     SidebarResizeMoved(f32),
     SidebarResizeEnded,
+    AnimationTick,
     Tick,
 }
 
@@ -277,6 +295,9 @@ impl App {
             last_active_channels: HashMap::new(),
             file_previews: HashMap::new(),
             avatar_previews: HashMap::new(),
+            emoji_previews: HashMap::new(),
+            emoji_animation_started: Instant::now(),
+            emoji_hydrated: HashSet::new(),
             avatar_profile_hydrated: HashSet::new(),
             pending_scroll_to: None,
             cache_dirty: HashMap::new(),

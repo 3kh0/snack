@@ -2,7 +2,10 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde_json::json;
 
-use super::update::{needs_user_hydration, notification_for_message, unique_download_path, update};
+use super::update::{
+    emoji_preview_from_bytes, needs_user_hydration, notification_for_message, preferred_channel,
+    unique_download_path, update,
+};
 use super::*;
 use crate::slack::events::RtEvent;
 use crate::slack::models::{
@@ -63,10 +66,12 @@ fn test_workspace() -> Workspace {
         channels,
         starred_order: Vec::new(),
         dm_order: Vec::new(),
+        last_active_channel: None,
         priority_scores: BTreeMap::new(),
         hide_read_channels_unless_starred: false,
         priority_sidebar_section: false,
         users: HashMap::new(),
+        custom_emoji: HashMap::new(),
         messages,
         typing: HashMap::new(),
         presence: HashMap::new(),
@@ -212,6 +217,54 @@ fn channel_selection_preserves_loaded_messages() {
     let ws = app.active_workspace().unwrap();
     assert!(!ws.messages.get("C_GENERAL").unwrap().messages.is_empty());
     assert!(!ws.messages.get("C_DEV").unwrap().messages.is_empty());
+}
+
+#[test]
+fn channel_selection_records_last_active_channel() {
+    let mut app = test_app();
+    let team = app.active_team.clone().unwrap();
+
+    let _ = update(&mut app, Message::ChannelSelected("C_DEV".into()));
+
+    let ws = &app.workspaces[&team];
+    assert_eq!(ws.last_active_channel.as_deref(), Some("C_DEV"));
+    assert_eq!(preferred_channel(&app, &team).as_deref(), Some("C_DEV"));
+}
+
+#[test]
+fn gif_emoji_preview_decodes_as_animation() {
+    let mut bytes = Vec::new();
+    {
+        let mut encoder = gif::Encoder::new(&mut bytes, 1, 1, &[]).unwrap();
+        encoder.set_repeat(gif::Repeat::Infinite).unwrap();
+        let mut first = vec![255, 0, 0, 255];
+        let mut frame = gif::Frame::from_rgba(1, 1, &mut first);
+        frame.delay = 2;
+        encoder.write_frame(&frame).unwrap();
+        let mut second = vec![0, 255, 0, 255];
+        let mut frame = gif::Frame::from_rgba(1, 1, &mut second);
+        frame.delay = 3;
+        encoder.write_frame(&frame).unwrap();
+    }
+
+    match emoji_preview_from_bytes(bytes) {
+        FilePreview::Animated {
+            frames,
+            delays,
+            total,
+        } => {
+            assert_eq!(frames.len(), 2);
+            assert_eq!(
+                delays,
+                vec![
+                    std::time::Duration::from_millis(20),
+                    std::time::Duration::from_millis(30)
+                ]
+            );
+            assert_eq!(total, std::time::Duration::from_millis(50));
+        }
+        other => panic!("expected animated preview, got {other:?}"),
+    }
 }
 
 #[test]

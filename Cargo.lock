@@ -5012,6 +5012,7 @@ dependencies = [
  "directories",
  "emojis",
  "futures",
+ "gif",
  "iced",
  "keyring",
  "rusqlite",

@@ -93,6 +93,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
             .filter(|(thread, _)| *thread == in_thread)
             .map(|(_, ts)| ts.as_str())
     };
+    let emoji_animation_elapsed = app.emoji_animation_started.elapsed();
 
     let main: Element<'_, Message> = match app.active_channel.as_deref() {
         Some(channel_id) => {
@@ -107,6 +108,8 @@ fn main_view(app: &App) -> Element<'_, Message> {
                     channel_id,
                     &app.file_previews,
                     &app.avatar_previews,
+                    &app.emoji_previews,
+                    emoji_animation_elapsed,
                     editing_for(channel_id),
                     hovered_for(false),
                 ))
@@ -151,6 +154,8 @@ fn main_view(app: &App) -> Element<'_, Message> {
                         &app.thread_composer_text,
                         &app.file_previews,
                         &app.avatar_previews,
+                        &app.emoji_previews,
+                        emoji_animation_elapsed,
                         editing_for(channel),
                         hovered_for(true),
                     )

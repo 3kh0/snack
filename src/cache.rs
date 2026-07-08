@@ -33,16 +33,17 @@ impl Cache {
         &self,
         session: &WorkspaceSession,
     ) -> Result<Option<Workspace>, AppError> {
-        let Some((name, url, self_user_id)) = self
+        let Some((name, url, self_user_id, last_active_channel)) = self
             .conn
             .query_row(
-                "select name, url, self_user_id from workspaces where team_id = ?1",
+                "select name, url, self_user_id, last_active_channel from workspaces where team_id = ?1",
                 params![session.team_id],
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
                     ))
                 },
             )
@@ -59,10 +60,12 @@ impl Cache {
             channels: Default::default(),
             starred_order: Vec::new(),
             dm_order: Vec::new(),
+            last_active_channel,
             priority_scores: Default::default(),
             hide_read_channels_unless_starred: false,
             priority_sidebar_section: false,
             users: HashMap::new(),
+            custom_emoji: HashMap::new(),
             messages: HashMap::new(),
             typing: HashMap::new(),
             presence: HashMap::new(),
@@ -135,13 +138,20 @@ impl Cache {
     pub fn save_workspace(&self, ws: &Workspace) -> Result<(), AppError> {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute(
-            "insert into workspaces (team_id, name, url, self_user_id)
-             values (?1, ?2, ?3, ?4)
+            "insert into workspaces (team_id, name, url, self_user_id, last_active_channel)
+             values (?1, ?2, ?3, ?4, ?5)
              on conflict(team_id) do update set
                name = excluded.name,
                url = excluded.url,
-               self_user_id = excluded.self_user_id",
-            params![ws.team_id, ws.name, ws.url, ws.self_user_id],
+               self_user_id = excluded.self_user_id,
+               last_active_channel = excluded.last_active_channel",
+            params![
+                ws.team_id,
+                ws.name,
+                ws.url,
+                ws.self_user_id,
+                ws.last_active_channel
+            ],
         )?;
 
         tx.execute(
@@ -224,7 +234,8 @@ impl Cache {
                 team_id text primary key,
                 name text not null,
                 url text not null,
-                self_user_id text not null
+                self_user_id text not null,
+                last_active_channel text
             );
             create table if not exists channels (
                 team_id text not null,
@@ -256,6 +267,10 @@ impl Cache {
             );
             ",
         )?;
+        let _ = self.conn.execute(
+            "alter table workspaces add column last_active_channel text",
+            [],
+        );
         self.conn.execute(
             "insert into meta (key, value) values ('schema_version', ?1)
              on conflict(key) do update set value = excluded.value",
@@ -305,6 +320,7 @@ mod tests {
         cm.loaded = true;
         cm.last_read = Some("1.000001".into());
         ws.messages.insert("C1".into(), cm);
+        ws.last_active_channel = Some("C1".into());
 
         cache.save_workspace(&ws).unwrap();
         let loaded = cache.load_workspace(&session).unwrap().unwrap();
@@ -315,5 +331,6 @@ mod tests {
             Some("cached")
         );
         assert_eq!(loaded.messages["C1"].last_read.as_deref(), Some("1.000001"));
+        assert_eq!(loaded.last_active_channel.as_deref(), Some("C1"));
     }
 }

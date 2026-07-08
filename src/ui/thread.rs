@@ -3,6 +3,7 @@ use iced::widget::{
 };
 use iced::{Element, Fill, Font, Length};
 use std::collections::HashMap;
+use std::time::Duration;
 
 use super::{message, theme};
 use crate::app::{FilePreview, Message};
@@ -17,6 +18,8 @@ pub fn view<'a>(
     value: &str,
     file_previews: &HashMap<String, FilePreview>,
     avatar_previews: &HashMap<String, FilePreview>,
+    emoji_previews: &HashMap<String, FilePreview>,
+    emoji_animation_elapsed: Duration,
     editing: Option<(&str, &str)>,
     hovered_ts: Option<&str>,
 ) -> Element<'a, Message> {
@@ -59,6 +62,8 @@ pub fn view<'a>(
                     hovered,
                     file_previews,
                     avatar_previews,
+                    emoji_previews,
+                    emoji_animation_elapsed,
                     edit,
                 );
                 let row: Element<'a, Message> = match msg.ts.clone() {
@@ -91,6 +96,8 @@ pub fn view<'a>(
                     hovered,
                     file_previews,
                     avatar_previews,
+                    emoji_previews,
+                    emoji_animation_elapsed,
                     edit,
                 );
                 let root_row: Element<'a, Message> = match root.ts.clone() {

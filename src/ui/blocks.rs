@@ -123,7 +123,7 @@ fn rich_leaf_text(ws: &Workspace, leaf: &Value) -> String {
         Some("emoji") => leaf
             .get("name")
             .and_then(Value::as_str)
-            .map(|name| format!(":{name}:"))
+            .map(state::emoji_glyph)
             .unwrap_or_default(),
         Some("user") => leaf
             .get("user_id")
@@ -198,7 +198,7 @@ fn text_object(value: &Value) -> Option<String> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|text| !text.is_empty())
-        .map(str::to_owned)
+        .map(state::emoji_text_to_display)
 }
 
 fn value_type(value: &Value) -> Option<&str> {
@@ -232,6 +232,7 @@ mod tests {
             )]),
             starred_order: Vec::new(),
             dm_order: Vec::new(),
+            last_active_channel: None,
             priority_scores: BTreeMap::new(),
             hide_read_channels_unless_starred: false,
             priority_sidebar_section: false,
@@ -246,6 +247,7 @@ mod tests {
                     ..Default::default()
                 },
             )]),
+            custom_emoji: HashMap::new(),
             messages: HashMap::new(),
             typing: HashMap::new(),
             presence: HashMap::new(),
@@ -292,7 +294,7 @@ mod tests {
 
         assert_eq!(
             lines(&ws(), &blocks),
-            vec!["Hi @alice in #general :wave: example"]
+            vec!["Hi @alice in #general 👋 example"]
         );
     }
 

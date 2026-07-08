@@ -14,6 +14,13 @@ pub(super) fn subscription(app: &App) -> Subscription<Message> {
     if needs_tick {
         subs.push(iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick));
     }
+    if app
+        .emoji_previews
+        .values()
+        .any(|preview| matches!(preview, super::FilePreview::Animated { .. }))
+    {
+        subs.push(iced::time::every(Duration::from_millis(100)).map(|_| Message::AnimationTick));
+    }
 
     if app.sidebar_resizing {
         subs.push(iced::event::listen_with(
