@@ -23,11 +23,7 @@ pub fn row<'a>(
     emoji_animation_elapsed: Duration,
     edit_text: Option<&str>,
 ) -> Element<'a, Message> {
-    let author = msg
-        .user
-        .as_deref()
-        .map(|u| ws.display_name(u))
-        .unwrap_or_else(|| msg.bot_id.clone().unwrap_or_else(|| "unknown".to_owned()));
+    let author = ws.message_author_name(msg);
 
     let time = msg
         .ts
@@ -35,9 +31,10 @@ pub fn row<'a>(
         .map(state::format_ts_hm)
         .unwrap_or_default();
 
+    let (avatar_key, avatar_url) = ws.message_avatar(msg);
     let avatar = avatar(
-        msg.user.as_deref(),
-        ws,
+        avatar_key.as_deref(),
+        avatar_url.as_deref(),
         avatar_previews,
         author.chars().next(),
     );
@@ -53,8 +50,20 @@ pub fn row<'a>(
                     weight: iced::font::Weight::Bold,
                     ..Font::default()
                 }),
-        )
-        .push(text(time).size(theme::TEXT_SM).color(theme::TEXT_5));
+        );
+
+    if is_app_message(msg) {
+        header = header.push(
+            container(text("APP").size(10.0).font(Font {
+                weight: iced::font::Weight::Semibold,
+                ..Font::default()
+            }))
+            .padding([1.0, 4.0])
+            .style(theme::app_badge),
+        );
+    }
+
+    header = header.push(text(time).size(theme::TEXT_SM).color(theme::TEXT_5));
 
     if msg.edited.is_some() {
         header = header.push(text("(edited)").size(theme::TEXT_SM).color(theme::MUTED));
@@ -155,7 +164,7 @@ pub fn row<'a>(
     }
 
     let mut col = Column::new().spacing(theme::SPACE_XS).push(header);
-    let body_lines = body_lines(msg, block_lines);
+    let body_lines = body_lines(ws, msg, block_lines);
     if !body_lines.is_empty() {
         if body_lines
             .iter()
@@ -175,11 +184,7 @@ pub fn row<'a>(
                 if i > 0 {
                     segments.push(selectable::Segment::plain("\n"));
                 }
-                segments.push(selectable::Segment {
-                    text: state::emoji_text_to_display(&line.text),
-                    mono: line.mono,
-                    color: None,
-                });
+                segments.extend(selectable_segments(&line));
             }
             col = col.push(selectable::SelectableText::new(
                 &segments,
@@ -279,7 +284,15 @@ pub fn row<'a>(
     }
 }
 
-fn body_lines(msg: &SlackMessage, block_lines: Vec<blocks::RenderLine>) -> Vec<blocks::RenderLine> {
+fn is_app_message(msg: &SlackMessage) -> bool {
+    msg.subtype.as_deref() == Some("bot_message")
+}
+
+fn body_lines(
+    ws: &Workspace,
+    msg: &SlackMessage,
+    block_lines: Vec<blocks::RenderLine>,
+) -> Vec<blocks::RenderLine> {
     if !block_lines.is_empty() {
         return block_lines;
     }
@@ -287,10 +300,7 @@ fn body_lines(msg: &SlackMessage, block_lines: Vec<blocks::RenderLine>) -> Vec<b
     if body.is_empty() {
         Vec::new()
     } else {
-        vec![blocks::RenderLine {
-            text: body,
-            mono: false,
-        }]
+        blocks::mrkdwn_lines(ws, &body)
     }
 }
 
@@ -303,6 +313,37 @@ fn line_has_custom_emoji(ws: &Workspace, line: &str) -> bool {
     })
 }
 
+fn selectable_segments(line: &blocks::RenderLine) -> Vec<selectable::Segment> {
+    if line.segments.is_empty() {
+        return vec![selectable::Segment {
+            text: state::emoji_text_to_display(&line.text),
+            mono: line.mono,
+            color: None,
+            background: None,
+            bold: false,
+            italic: false,
+            underline: false,
+            strikethrough: false,
+        }];
+    }
+    line.segments
+        .iter()
+        .map(|segment| {
+            let style = &segment.style;
+            selectable::Segment {
+                text: state::emoji_text_to_display(&segment.text),
+                mono: line.mono || style.code,
+                color: segment_fg(style),
+                background: segment_bg(style),
+                bold: style.bold,
+                italic: style.italic,
+                underline: style.underline,
+                strikethrough: style.strike,
+            }
+        })
+        .collect()
+}
+
 fn emoji_body<'a>(
     lines: &[blocks::RenderLine],
     ws: &Workspace,
@@ -312,30 +353,100 @@ fn emoji_body<'a>(
     let mut col = Column::new().spacing(theme::SPACE_XS);
     for line in lines {
         let mut row = Row::new().spacing(2).align_y(Alignment::Center).width(Fill);
-        for token in state::emoji_text_tokens(&line.text) {
-            match token {
-                state::EmojiTextToken::Text(value) if !value.is_empty() => {
-                    let mut styled = text(value).size(theme::TEXT_MD).color(theme::TEXT_2);
-                    if line.mono {
-                        styled = styled.font(Font::MONOSPACE);
+        for segment in line_segments(line) {
+            let mono = line.mono || segment.style.code;
+            for token in state::emoji_text_tokens(&segment.text) {
+                match token {
+                    state::EmojiTextToken::Text(value) if !value.is_empty() => {
+                        for run in text_runs(&value) {
+                            row = row.push(text_run(run, mono, &segment.style));
+                        }
                     }
-                    row = row.push(styled);
-                }
-                state::EmojiTextToken::Text(_) => {}
-                state::EmojiTextToken::Emoji(name) => {
-                    row = row.push(emoji_inline(
-                        ws,
-                        &name,
-                        emoji_previews,
-                        elapsed,
-                        theme::TEXT_MD,
-                    ));
+                    state::EmojiTextToken::Text(_) => {}
+                    state::EmojiTextToken::Emoji(name) => {
+                        row = row.push(emoji_inline(
+                            ws,
+                            &name,
+                            emoji_previews,
+                            elapsed,
+                            theme::TEXT_MD,
+                        ));
+                    }
                 }
             }
         }
         col = col.push(row.wrap().vertical_spacing(2));
     }
     col.into()
+}
+
+fn segment_fg(style: &blocks::SegmentStyle) -> Option<iced::Color> {
+    if style.broadcast {
+        Some(theme::BROADCAST_FG)
+    } else if style.mention {
+        Some(theme::MENTION_FG)
+    } else if style.link {
+        Some(theme::accent_bright())
+    } else {
+        None
+    }
+}
+
+fn segment_bg(style: &blocks::SegmentStyle) -> Option<iced::Color> {
+    if style.broadcast {
+        Some(theme::BROADCAST_BG)
+    } else if style.mention {
+        Some(theme::MENTION_BG)
+    } else {
+        None
+    }
+}
+
+fn line_segments(line: &blocks::RenderLine) -> Vec<blocks::RenderSegment> {
+    if line.segments.is_empty() {
+        vec![blocks::RenderSegment {
+            text: line.text.clone(),
+            style: blocks::SegmentStyle::default(),
+        }]
+    } else {
+        line.segments.clone()
+    }
+}
+
+fn text_runs(value: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut run = String::new();
+    for c in value.chars() {
+        run.push(c);
+        if c.is_whitespace() {
+            out.push(std::mem::take(&mut run));
+        }
+    }
+    if !run.is_empty() {
+        out.push(run);
+    }
+    out
+}
+
+fn text_run<'a>(value: String, mono: bool, style: &blocks::SegmentStyle) -> Element<'a, Message> {
+    let mut font = if mono { Font::MONOSPACE } else { Font::DEFAULT };
+    if style.bold {
+        font.weight = iced::font::Weight::Bold;
+    }
+    if style.italic {
+        font.style = iced::font::Style::Italic;
+    }
+    let styled = text(value)
+        .size(theme::TEXT_MD)
+        .font(font)
+        .color(segment_fg(style).unwrap_or(theme::TEXT_2));
+    match segment_bg(style) {
+        Some(_) => container(styled)
+            .padding([0.0, 3.0])
+            .style(theme::inline_mention(style.broadcast))
+            .into(),
+        None => styled.into(),
+    }
 }
 
 fn reaction_content<'a>(
@@ -509,16 +620,16 @@ fn non_empty(s: Option<&str>) -> Option<&str> {
 }
 
 fn avatar<'a>(
-    user_id: Option<&str>,
-    ws: &Workspace,
+    key: Option<&str>,
+    url: Option<&str>,
     avatar_previews: &HashMap<String, FilePreview>,
     fallback: Option<char>,
 ) -> Element<'a, Message> {
     const SIZE: f32 = 32.0;
     const RADIUS: f32 = 7.0;
-    if let Some(user_id) = user_id {
-        if ws.avatar_url(user_id).is_some() {
-            if let Some(FilePreview::Loaded(handle)) = avatar_previews.get(user_id) {
+    if let Some(key) = key {
+        if url.is_some() {
+            if let Some(FilePreview::Loaded(handle)) = avatar_previews.get(key) {
                 return image::Image::new(handle.clone())
                     .width(Length::Fixed(SIZE))
                     .height(Length::Fixed(SIZE))

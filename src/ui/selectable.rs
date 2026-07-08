@@ -37,6 +37,11 @@ pub struct Segment {
     pub text: String,
     pub mono: bool,
     pub color: Option<Color>,
+    pub background: Option<Color>,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub strikethrough: bool,
 }
 
 impl Segment {
@@ -45,6 +50,11 @@ impl Segment {
             text: text.into(),
             mono: false,
             color: None,
+            background: None,
+            bold: false,
+            italic: false,
+            underline: false,
+            strikethrough: false,
         }
     }
 }
@@ -64,14 +74,25 @@ impl SelectableText {
     pub fn new(segments: &[Segment], size: f32, color: Color, selection_color: Color) -> Self {
         let mut spans = Vec::new();
         for seg in segments {
-            let font = seg.mono.then_some(Font::MONOSPACE);
+            let styled_font = (seg.mono || seg.bold || seg.italic).then(|| styled_font(seg));
             for cluster in seg.text.graphemes(true) {
                 let mut span = Span::new(cluster.to_owned());
-                if let Some(font) = font {
+                if let Some(font) = styled_font {
                     span = span.font(font);
                 }
                 if let Some(color) = seg.color {
                     span = span.color(color);
+                }
+                if let Some(background) = seg.background {
+                    span = span
+                        .background(Background::Color(background))
+                        .padding([1.0, 3.0]);
+                }
+                if seg.underline {
+                    span = span.underline(true);
+                }
+                if seg.strikethrough {
+                    span = span.strikethrough(true);
                 }
                 spans.push(span.to_static());
             }
@@ -130,6 +151,21 @@ impl SelectableText {
         }
         best.or(Some(self.spans.len() - 1))
     }
+}
+
+fn styled_font(seg: &Segment) -> Font {
+    let mut font = if seg.mono {
+        Font::MONOSPACE
+    } else {
+        Font::DEFAULT
+    };
+    if seg.bold {
+        font.weight = iced::font::Weight::Bold;
+    }
+    if seg.italic {
+        font.style = iced::font::Style::Italic;
+    }
+    font
 }
 
 struct State {

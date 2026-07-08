@@ -2711,13 +2711,19 @@ fn load_avatar_previews(app: &mut App, team: &str, messages: Vec<SlackMessage>) 
         .flat_map(message_user_ids)
         .filter(|user| seen.insert(user.clone()))
         .collect();
-    load_user_avatar_previews(app, team, users)
+    let mut seen_bots = HashSet::new();
+    let bot_requests = messages
+        .iter()
+        .filter_map(crate::state::message_bot_avatar)
+        .filter(|(key, _)| seen_bots.insert(key.clone()))
+        .collect();
+    Task::batch([
+        load_avatar_url_previews(app, bot_requests),
+        load_user_avatar_previews(app, team, users),
+    ])
 }
 
 fn load_user_avatar_previews(app: &mut App, team: &str, users: Vec<UserId>) -> Task<Message> {
-    let Some(transport) = app.transport.clone() else {
-        return Task::none();
-    };
     let Some(ws) = app.workspaces.get(team) else {
         return Task::none();
     };
@@ -2730,6 +2736,18 @@ fn load_user_avatar_previews(app: &mut App, team: &str, users: Vec<UserId>) -> T
         .filter_map(|user| ws.avatar_url(&user).map(|url| (user, url)))
         .collect();
 
+    load_avatar_url_previews(app, requests)
+}
+
+fn load_avatar_url_previews(app: &mut App, requests: Vec<(String, String)>) -> Task<Message> {
+    let Some(transport) = app.transport.clone() else {
+        return Task::none();
+    };
+
+    let requests: Vec<_> = requests
+        .into_iter()
+        .filter(|(key, _)| !app.avatar_previews.contains_key(key))
+        .collect();
     if requests.is_empty() {
         return Task::none();
     }
@@ -2846,11 +2864,7 @@ pub(super) fn notification_for_message(
         return None;
     }
 
-    let author = msg
-        .user
-        .as_deref()
-        .map(|user| ws.display_name(user))
-        .unwrap_or_else(|| msg.bot_id.clone().unwrap_or_else(|| "Slack".to_owned()));
+    let author = ws.message_author_name(msg);
     let channel_label = ws
         .channels
         .get(channel)

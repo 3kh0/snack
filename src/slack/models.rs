@@ -105,6 +105,12 @@ pub struct Message {
     pub user: Option<UserId>,
     #[serde(default)]
     pub bot_id: Option<String>,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub bot_profile: Option<BotProfile>,
+    #[serde(default)]
+    pub icons: Option<MessageIcons>,
     #[serde(default, rename = "type")]
     pub kind: Option<String>,
     #[serde(default)]
@@ -143,6 +149,42 @@ pub struct Message {
     pub edited: Option<Value>,
     #[serde(default)]
     pub message: Option<Box<Message>>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BotProfile {
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub user_id: Option<UserId>,
+    #[serde(default)]
+    pub icons: Option<MessageIcons>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MessageIcons {
+    #[serde(default)]
+    pub image_36: Option<String>,
+    #[serde(default)]
+    pub image_48: Option<String>,
+    #[serde(default)]
+    pub image_64: Option<String>,
+    #[serde(default)]
+    pub image_72: Option<String>,
+    #[serde(default)]
+    pub image_192: Option<String>,
+    #[serde(default)]
+    pub image_512: Option<String>,
+    #[serde(default)]
+    pub image_original: Option<String>,
+    #[serde(default)]
+    pub icon_url: Option<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -887,5 +929,37 @@ mod fixture_tests {
         assert_eq!(envelope.subtype.as_deref(), Some("message_replied"));
         assert_eq!(nested.user.as_deref(), Some("U1"));
         assert_eq!(nested.text.as_deref(), Some("actual root"));
+    }
+
+    #[test]
+    fn deserialize_bot_profile_message() {
+        let page: HistoryPage = serde_json::from_str(
+            r#"{"ok":true,"messages":[{
+                "type":"message",
+                "bot_id":"B123",
+                "username":"helper",
+                "text":"hello",
+                "ts":"1783372600.000100",
+                "bot_profile":{
+                    "id":"B123",
+                    "name":"Helper Bot",
+                    "user_id":"U_APP",
+                    "icons":{
+                        "image_36":"https://example.test/36.png",
+                        "image_48":"https://example.test/48.png",
+                        "image_72":"https://example.test/72.png"
+                    }
+                }
+            }]}"#,
+        )
+        .unwrap();
+        let msg = &page.messages[0];
+        assert_eq!(msg.username.as_deref(), Some("helper"));
+        let profile = msg.bot_profile.as_ref().unwrap();
+        assert_eq!(profile.name.as_deref(), Some("Helper Bot"));
+        assert_eq!(
+            profile.icons.as_ref().unwrap().image_48.as_deref(),
+            Some("https://example.test/48.png")
+        );
     }
 }

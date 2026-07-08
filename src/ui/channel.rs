@@ -1,5 +1,5 @@
-use iced::widget::{Column, Id, column, container, mouse_area, scrollable, text};
-use iced::{Element, Fill};
+use iced::widget::{Column, Id, Row, Space, column, container, mouse_area, scrollable, text};
+use iced::{Alignment, Element, Fill, Length};
 
 use super::{message, theme};
 use crate::app::{FilePreview, Message};
@@ -49,7 +49,15 @@ pub fn view<'a>(
                 .take(VISIBLE_MESSAGE_LIMIT)
                 .collect();
             visible.reverse();
+            let mut last_date = None;
             for m in visible {
+                if let Some(ts) = m.ts.as_deref() {
+                    let date = state::date_key_for_ts(ts);
+                    if date.is_some() && date != last_date {
+                        col = col.push(date_separator(state::format_ts_date_label(ts)));
+                        last_date = date;
+                    }
+                }
                 let pending = m.ts.as_deref().map(|ts| cm.is_pending(ts)).unwrap_or(false);
                 let edit = editing
                     .filter(|(ts, _)| Some(*ts) == m.ts.as_deref())
@@ -118,6 +126,31 @@ pub fn view<'a>(
     .width(Fill)
     .height(Fill)
     .into()
+}
+
+fn date_separator<'a>(label: String) -> Element<'a, Message> {
+    let line = || {
+        container(Space::new().width(Length::Fill).height(Length::Fixed(1.0)))
+            .height(Length::Fixed(1.0))
+            .width(Fill)
+            .style(|_theme| iced::widget::container::Style {
+                background: Some(iced::Background::Color(theme::BORDER)),
+                ..Default::default()
+            })
+    };
+
+    Row::new()
+        .align_y(Alignment::Center)
+        .spacing(theme::SPACE_SM)
+        .push(line())
+        .push(
+            container(text(label).size(theme::TEXT_SM).color(theme::TEXT_2))
+                .padding([4.0, 12.0])
+                .style(theme::date_separator_label),
+        )
+        .push(line())
+        .padding([theme::SPACE_SM, theme::SPACE_MD])
+        .into()
 }
 
 fn typing_line(names: &[String]) -> String {

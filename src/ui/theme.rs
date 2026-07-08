@@ -35,6 +35,20 @@ pub const TEXT_5: Color = Color::from_rgb(0.213, 0.238, 0.288); // muted / times
 
 pub const ONLINE: Color = Color::from_rgb(0.289, 0.707, 0.580); // green-2
 pub const PING: Color = Color::from_rgb(0.851, 0.278, 0.310); // discord-ish red badge
+pub const MENTION_FG: Color = Color::from_rgb(0.150, 0.742, 0.957);
+pub const MENTION_BG: Color = Color {
+    r: 0.080,
+    g: 0.365,
+    b: 0.520,
+    a: 0.52,
+};
+pub const BROADCAST_FG: Color = Color::from_rgb(1.0, 0.765, 0.160);
+pub const BROADCAST_BG: Color = Color {
+    r: 0.520,
+    g: 0.355,
+    b: 0.020,
+    a: 0.58,
+};
 
 pub const SIDEBAR_ICON: f32 = 16.0; // svg glyph size
 pub const SIDEBAR_ICON_SLOT: f32 = 24.0; // fixed leading column so labels align
@@ -247,6 +261,15 @@ pub fn ping_badge(_theme: &Theme) -> container::Style {
     }
 }
 
+pub fn app_badge(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(Color { a: 0.06, ..TEXT_1 })),
+        text_color: Some(Color::from_rgb(0.725, 0.729, 0.741)),
+        border: Border::default().rounded(3.0),
+        ..container::Style::default()
+    }
+}
+
 pub fn sidebar_icon(
     color: Color,
 ) -> impl Fn(&Theme, iced::widget::svg::Status) -> iced::widget::svg::Style {
@@ -293,6 +316,35 @@ pub fn reaction_chip(_theme: &Theme) -> container::Style {
             radius: CONTROL_RADIUS.into(),
         },
         ..container::Style::default()
+    }
+}
+
+pub fn date_separator_label(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(BG_BASE)),
+        text_color: Some(TEXT_2),
+        border: Border {
+            color: BORDER,
+            width: 1.0,
+            radius: 999.0.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+pub fn inline_mention(broadcast: bool) -> impl Fn(&Theme) -> container::Style {
+    move |_theme| {
+        let (background, text_color) = if broadcast {
+            (BROADCAST_BG, BROADCAST_FG)
+        } else {
+            (MENTION_BG, MENTION_FG)
+        };
+        container::Style {
+            background: Some(Background::Color(background)),
+            text_color: Some(text_color),
+            border: Border::default().rounded(4.0),
+            ..container::Style::default()
+        }
     }
 }
 

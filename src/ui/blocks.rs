@@ -6,6 +6,25 @@ use crate::state::{self, Workspace};
 pub struct RenderLine {
     pub text: String,
     pub mono: bool,
+    pub segments: Vec<RenderSegment>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RenderSegment {
+    pub text: String,
+    pub style: SegmentStyle,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SegmentStyle {
+    pub bold: bool,
+    pub italic: bool,
+    pub strike: bool,
+    pub underline: bool,
+    pub code: bool,
+    pub link: bool,
+    pub mention: bool,
+    pub broadcast: bool,
 }
 
 pub fn render_lines(ws: &Workspace, msg: &crate::slack::models::Message) -> Vec<RenderLine> {
@@ -27,6 +46,12 @@ pub fn lines(ws: &Workspace, blocks: &[Value]) -> Vec<String> {
         .collect()
 }
 
+pub fn mrkdwn_lines(ws: &Workspace, text: &str) -> Vec<RenderLine> {
+    text.lines()
+        .map(|line| RenderLine::from_segments(mrkdwn_segments(ws, line), false))
+        .collect()
+}
+
 fn render_blocks(ws: &Workspace, blocks: &[Value]) -> Vec<RenderLine> {
     blocks
         .iter()
@@ -34,6 +59,7 @@ fn render_blocks(ws: &Workspace, blocks: &[Value]) -> Vec<RenderLine> {
         .map(|mut line| {
             if !line.mono {
                 line.text = line.text.trim().to_owned();
+                line.segments = trim_segments(line.segments);
             }
             line
         })
@@ -42,7 +68,37 @@ fn render_blocks(ws: &Workspace, blocks: &[Value]) -> Vec<RenderLine> {
 }
 
 fn plain(text: String) -> RenderLine {
-    RenderLine { text, mono: false }
+    RenderLine::from_segments(vec![RenderSegment::plain(text)], false)
+}
+
+impl RenderSegment {
+    fn plain(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            style: SegmentStyle::default(),
+        }
+    }
+
+    fn styled(text: impl Into<String>, style: SegmentStyle) -> Self {
+        Self {
+            text: text.into(),
+            style,
+        }
+    }
+}
+
+impl RenderLine {
+    fn from_segments(segments: Vec<RenderSegment>, mono: bool) -> Self {
+        let text = segments
+            .iter()
+            .map(|segment| segment.text.as_str())
+            .collect();
+        Self {
+            text,
+            mono,
+            segments,
+        }
+    }
 }
 
 fn block_lines(ws: &Workspace, block: &Value) -> Vec<RenderLine> {
@@ -84,112 +140,317 @@ fn block_lines(ws: &Workspace, block: &Value) -> Vec<RenderLine> {
 
 fn rich_element_lines(ws: &Workspace, element: &Value) -> Vec<RenderLine> {
     match value_type(element) {
-        Some("rich_text_section") => vec![plain(rich_inline_text(ws, element))],
+        Some("rich_text_section") => vec![RenderLine::from_segments(
+            rich_inline_segments(ws, element),
+            false,
+        )],
         Some("rich_text_list") => element
             .get("elements")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
-            .map(|item| plain(format!("- {}", rich_inline_text(ws, item))))
-            .collect(),
-        Some("rich_text_preformatted") => rich_inline_text(ws, element)
-            .lines()
-            .map(|line| RenderLine {
-                text: line.to_owned(),
-                mono: true,
+            .map(|item| {
+                let mut segments = vec![RenderSegment::plain("- ")];
+                segments.extend(rich_inline_segments(ws, item));
+                RenderLine::from_segments(segments, false)
             })
             .collect(),
-        Some("rich_text_quote") => vec![plain(format!("> {}", rich_inline_text(ws, element)))],
+        Some("rich_text_preformatted") => rich_inline_segments(ws, element)
+            .into_iter()
+            .map(|mut segment| {
+                segment.style.code = true;
+                segment
+            })
+            .collect::<Vec<_>>()
+            .split(|segment| segment.text == "\n")
+            .flat_map(split_segments_on_newlines)
+            .map(|segments| RenderLine::from_segments(segments, true))
+            .collect(),
+        Some("rich_text_quote") => {
+            let mut segments = vec![RenderSegment::plain("> ")];
+            segments.extend(rich_inline_segments(ws, element));
+            vec![RenderLine::from_segments(segments, false)]
+        }
         _ => Vec::new(),
     }
 }
 
-fn rich_inline_text(ws: &Workspace, element: &Value) -> String {
+fn rich_inline_segments(ws: &Workspace, element: &Value) -> Vec<RenderSegment> {
     element
         .get("elements")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .map(|child| rich_leaf_text(ws, child))
-        .collect::<String>()
+        .flat_map(|child| rich_leaf_segments(ws, child))
+        .collect()
 }
 
-fn rich_leaf_text(ws: &Workspace, leaf: &Value) -> String {
+fn rich_leaf_segments(ws: &Workspace, leaf: &Value) -> Vec<RenderSegment> {
+    let style = segment_style(leaf.get("style"));
     match value_type(leaf) {
         Some("text") => {
             let raw = leaf.get("text").and_then(Value::as_str).unwrap_or_default();
-            apply_mrkdwn_style(raw, leaf.get("style"))
+            vec![RenderSegment::styled(raw.to_owned(), style)]
         }
         Some("emoji") => leaf
             .get("name")
             .and_then(Value::as_str)
             .map(state::emoji_glyph)
-            .unwrap_or_default(),
+            .map(|text| RenderSegment::styled(text, style))
+            .into_iter()
+            .collect(),
         Some("user") => leaf
             .get("user_id")
             .or_else(|| leaf.get("user"))
             .and_then(Value::as_str)
-            .map(|user| format!("@{}", ws.display_name(user)))
-            .unwrap_or_default(),
+            .map(|user| {
+                let mut style = style.clone();
+                style.mention = true;
+                RenderSegment::styled(format!("@{}", ws.display_name(user)), style)
+            })
+            .into_iter()
+            .collect(),
         Some("channel") => leaf
             .get("channel_id")
             .or_else(|| leaf.get("channel"))
             .and_then(Value::as_str)
             .map(|channel| {
-                ws.channels
+                let label = ws
+                    .channels
                     .get(channel)
                     .map(state::channel_label)
-                    .unwrap_or_else(|| format!("#{channel}"))
+                    .unwrap_or_else(|| format!("#{channel}"));
+                let mut style = style.clone();
+                style.mention = true;
+                RenderSegment::styled(label, style)
             })
-            .unwrap_or_default(),
-        Some("link") => leaf
-            .get("text")
-            .or_else(|| leaf.get("url"))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned(),
+            .into_iter()
+            .collect(),
+        Some("link") | Some("message_mention") => {
+            let text = leaf
+                .get("text")
+                .or_else(|| leaf.get("url"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let mut style = style;
+            style.link = true;
+            vec![RenderSegment::styled(text.to_owned(), style)]
+        }
         Some("broadcast") => leaf
             .get("range")
             .and_then(Value::as_str)
-            .map(|range| format!("@{range}"))
-            .unwrap_or_default(),
+            .map(|range| {
+                let mut style = style.clone();
+                style.mention = true;
+                style.broadcast = true;
+                RenderSegment::styled(format!("@{range}"), style)
+            })
+            .into_iter()
+            .collect(),
         Some("usergroup") => leaf
             .get("usergroup_id")
             .or_else(|| leaf.get("usergroup"))
             .and_then(Value::as_str)
-            .map(|group| format!("@{group}"))
-            .unwrap_or_default(),
+            .map(|group| {
+                let mut style = style.clone();
+                style.mention = true;
+                RenderSegment::styled(format!("@{group}"), style)
+            })
+            .into_iter()
+            .collect(),
         Some("date") => leaf
             .get("fallback")
             .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned(),
-        _ => String::new(),
+            .map(|fallback| RenderSegment::styled(fallback.to_owned(), style))
+            .into_iter()
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
-fn apply_mrkdwn_style(raw: &str, style: Option<&Value>) -> String {
-    let Some(style) = style else {
-        return raw.to_owned();
-    };
-    if raw.is_empty() {
-        return raw.to_owned();
+fn split_segments_on_newlines(segments: &[RenderSegment]) -> Vec<Vec<RenderSegment>> {
+    let mut lines = vec![Vec::new()];
+    for segment in segments {
+        let mut parts = segment.text.split('\n').peekable();
+        while let Some(part) = parts.next() {
+            if !part.is_empty() {
+                let mut segment = segment.clone();
+                segment.text = part.to_owned();
+                lines.last_mut().unwrap().push(segment);
+            }
+            if parts.peek().is_some() {
+                lines.push(Vec::new());
+            }
+        }
     }
-    let flag = |key: &str| style.get(key).and_then(Value::as_bool).unwrap_or(false);
-    let mut out = raw.to_owned();
-    if flag("code") {
-        return format!("`{out}`");
+    lines
+}
+
+fn trim_segments(segments: Vec<RenderSegment>) -> Vec<RenderSegment> {
+    let mut start = 0;
+    let mut end = segments.len();
+    while start < end && segments[start].text.trim().is_empty() {
+        start += 1;
     }
-    if flag("bold") {
-        out = format!("*{out}*");
+    while end > start && segments[end - 1].text.trim().is_empty() {
+        end -= 1;
     }
-    if flag("italic") {
-        out = format!("_{out}_");
+    let mut out = segments[start..end].to_vec();
+    if let Some(first) = out.first_mut() {
+        first.text = first.text.trim_start().to_owned();
     }
-    if flag("strike") {
-        out = format!("~{out}~");
+    if let Some(last) = out.last_mut() {
+        last.text = last.text.trim_end().to_owned();
     }
     out
+}
+
+fn segment_style(style: Option<&Value>) -> SegmentStyle {
+    let Some(style) = style else {
+        return SegmentStyle::default();
+    };
+    let flag = |key: &str| style.get(key).and_then(Value::as_bool).unwrap_or(false);
+    SegmentStyle {
+        bold: flag("bold"),
+        italic: flag("italic"),
+        strike: flag("strike"),
+        underline: flag("underline"),
+        code: flag("code"),
+        link: false,
+        mention: false,
+        broadcast: false,
+    }
+}
+
+fn mrkdwn_segments(ws: &Workspace, text: &str) -> Vec<RenderSegment> {
+    let mut out = Vec::new();
+    let mut style = SegmentStyle::default();
+    let mut i = 0;
+    while i < text.len() {
+        let rest = &text[i..];
+        if let Some((token, len)) = rest
+            .strip_prefix('<')
+            .and_then(|_| parse_slack_ref(ws, rest))
+        {
+            out.push(RenderSegment::styled(token.0, token.1));
+            i += len;
+            continue;
+        }
+        if let Some((next_style, len)) = toggle_style(rest, &style) {
+            style = next_style;
+            i += len;
+            continue;
+        }
+
+        let next = rest
+            .char_indices()
+            .skip(1)
+            .find(|(_, ch)| matches!(ch, '<' | '*' | '_' | '~' | '`'))
+            .map(|(index, _)| index)
+            .unwrap_or(rest.len());
+        out.push(RenderSegment::styled(
+            rest[..next].to_owned(),
+            style.clone(),
+        ));
+        i += next;
+    }
+    merge_segments(out)
+}
+
+fn parse_slack_ref(ws: &Workspace, text: &str) -> Option<((String, SegmentStyle), usize)> {
+    let end = text.find('>')?;
+    let raw = &text[1..end];
+    let (label, mut style) = if let Some(user) = raw.strip_prefix('@') {
+        (
+            format!(
+                "@{}",
+                ws.display_name(user.split('|').next().unwrap_or(user))
+            ),
+            SegmentStyle {
+                mention: true,
+                ..SegmentStyle::default()
+            },
+        )
+    } else if let Some(channel) = raw.strip_prefix('#') {
+        let (id, label) = channel.split_once('|').unwrap_or((channel, channel));
+        (
+            label
+                .strip_prefix('#')
+                .map(|label| format!("#{label}"))
+                .unwrap_or_else(|| {
+                    ws.channels
+                        .get(id)
+                        .map(state::channel_label)
+                        .unwrap_or_else(|| format!("#{label}"))
+                }),
+            SegmentStyle {
+                mention: true,
+                ..SegmentStyle::default()
+            },
+        )
+    } else if let Some(broadcast) = raw.strip_prefix('!') {
+        (
+            format!("@{}", broadcast.split('|').next().unwrap_or(broadcast)),
+            SegmentStyle {
+                mention: true,
+                broadcast: true,
+                ..SegmentStyle::default()
+            },
+        )
+    } else {
+        let (url, label) = raw.split_once('|').unwrap_or((raw, raw));
+        (
+            label.to_owned(),
+            SegmentStyle {
+                link: state::is_browser_url(url),
+                ..SegmentStyle::default()
+            },
+        )
+    };
+    if !style.link && state::is_browser_url(&label) {
+        style.link = true;
+    }
+    Some(((label, style), end + 1))
+}
+
+fn toggle_style(text: &str, current: &SegmentStyle) -> Option<(SegmentStyle, usize)> {
+    let (delimiter, set): (char, fn(&mut SegmentStyle, bool)) =
+        if text.starts_with('*') && (current.bold || text[1..].contains('*')) {
+            ('*', |style, value| style.bold = value)
+        } else if text.starts_with('_') && (current.italic || text[1..].contains('_')) {
+            ('_', |style, value| style.italic = value)
+        } else if text.starts_with('~') && (current.strike || text[1..].contains('~')) {
+            ('~', |style, value| style.strike = value)
+        } else if text.starts_with('`') && (current.code || text[1..].contains('`')) {
+            ('`', |style, value| style.code = value)
+        } else {
+            return None;
+        };
+    let mut next = current.clone();
+    match delimiter {
+        '*' => set(&mut next, !current.bold),
+        '_' => set(&mut next, !current.italic),
+        '~' => set(&mut next, !current.strike),
+        '`' => set(&mut next, !current.code),
+        _ => {}
+    }
+    Some((next, delimiter.len_utf8()))
+}
+
+fn merge_segments(segments: Vec<RenderSegment>) -> Vec<RenderSegment> {
+    let mut merged: Vec<RenderSegment> = Vec::new();
+    for segment in segments
+        .into_iter()
+        .filter(|segment| !segment.text.is_empty())
+    {
+        match merged.last_mut() {
+            Some(existing) if existing.style == segment.style => {
+                existing.text.push_str(&segment.text)
+            }
+            _ => merged.push(segment),
+        }
+    }
+    merged
 }
 
 fn text_object(value: &Value) -> Option<String> {
@@ -322,10 +583,47 @@ mod tests {
             ]
         })];
 
+        let rendered = render_blocks(&ws(), &blocks);
         assert_eq!(
-            lines(&ws(), &blocks),
-            vec!["run `cargo test` *now* ~_maybe_~", "let x = 1;"]
+            rendered
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run cargo test now maybe", "let x = 1;"]
         );
+        assert!(rendered[0].segments[1].style.code);
+        assert!(rendered[0].segments[3].style.bold);
+        assert!(rendered[0].segments[5].style.italic);
+        assert!(rendered[0].segments[5].style.strike);
+    }
+
+    #[test]
+    fn renders_fallback_mrkdwn_refs_and_styles_as_segments() {
+        let rendered = mrkdwn_lines(
+            &ws(),
+            "hi <@U1> in <#C1|general> see <https://example.com|example> *bold* _em_ ~no~ `code` <!channel>",
+        );
+
+        assert_eq!(
+            rendered[0]
+                .segments
+                .iter()
+                .map(|segment| segment.text.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "hi ", "@alice", " in ", "#general", " see ", "example", " ", "bold", " ", "em",
+                " ", "no", " ", "code", " ", "@channel"
+            ]
+        );
+        assert!(rendered[0].segments[1].style.mention);
+        assert!(rendered[0].segments[3].style.mention);
+        assert!(rendered[0].segments[5].style.link);
+        assert!(rendered[0].segments[7].style.bold);
+        assert!(rendered[0].segments[9].style.italic);
+        assert!(rendered[0].segments[11].style.strike);
+        assert!(rendered[0].segments[13].style.code);
+        assert!(rendered[0].segments[15].style.mention);
+        assert!(rendered[0].segments[15].style.broadcast);
     }
 
     #[test]
@@ -349,21 +647,21 @@ mod tests {
 
         let rendered = render_lines(&ws(), &msg);
         assert_eq!(
-            rendered,
+            rendered
+                .iter()
+                .map(|line| (line.text.as_str(), line.mono))
+                .collect::<Vec<_>>(),
             vec![
-                RenderLine {
-                    text: "prose".into(),
-                    mono: false
-                },
-                RenderLine {
-                    text: "fn main() {}".into(),
-                    mono: true
-                },
-                RenderLine {
-                    text: "    indented".into(),
-                    mono: true
-                },
+                ("prose", false),
+                ("fn main() {}", true),
+                ("    indented", true)
             ]
+        );
+        assert!(
+            rendered[1]
+                .segments
+                .iter()
+                .all(|segment| segment.style.code)
         );
     }
 }

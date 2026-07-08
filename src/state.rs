@@ -347,6 +347,14 @@ impl Workspace {
         user_avatar_url(self.users.get(user_id)?).map(str::to_owned)
     }
 
+    pub fn message_author_name(&self, msg: &SlackMessage) -> String {
+        message_author_name(self, msg)
+    }
+
+    pub fn message_avatar(&self, msg: &SlackMessage) -> (Option<String>, Option<String>) {
+        message_avatar(self, msg)
+    }
+
     pub fn custom_emoji_url(&self, name: &str) -> Option<&str> {
         custom_emoji_url(&self.custom_emoji, name)
     }
@@ -546,6 +554,86 @@ pub fn user_avatar_url(user: &User) -> Option<&str> {
         .or_else(|| non_empty(profile.image_192.as_deref()))
         .or_else(|| non_empty(profile.image_512.as_deref()))
         .or_else(|| non_empty(profile.image_original.as_deref()))
+}
+
+pub fn message_author_name(ws: &Workspace, msg: &SlackMessage) -> String {
+    if let Some(user) = msg
+        .user
+        .as_deref()
+        .filter(|_| msg.bot_profile.is_none() && msg.bot_id.is_none())
+    {
+        return ws.display_name(user);
+    }
+    if let Some(name) = non_empty(msg.username.as_deref()) {
+        return name.to_owned();
+    }
+    if let Some(name) = msg
+        .bot_profile
+        .as_ref()
+        .and_then(|profile| non_empty(profile.name.as_deref()))
+    {
+        return name.to_owned();
+    }
+    if let Some(user) = msg.user.as_deref() {
+        return ws.display_name(user);
+    }
+    msg.bot_id
+        .clone()
+        .filter(|id| !id.trim().is_empty())
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
+pub fn message_avatar(ws: &Workspace, msg: &SlackMessage) -> (Option<String>, Option<String>) {
+    if let Some(user) = msg
+        .user
+        .as_deref()
+        .filter(|_| msg.bot_profile.is_none() && msg.bot_id.is_none())
+    {
+        return (Some(user.to_owned()), ws.avatar_url(user));
+    }
+    if let Some((key, url)) = message_bot_avatar(msg) {
+        return (Some(key), Some(url));
+    }
+    if let Some(user) = msg.user.as_deref() {
+        return (Some(user.to_owned()), ws.avatar_url(user));
+    }
+    (None, None)
+}
+
+pub fn message_bot_avatar(msg: &SlackMessage) -> Option<(String, String)> {
+    let source = msg
+        .bot_id
+        .as_deref()
+        .or_else(|| {
+            msg.bot_profile
+                .as_ref()
+                .and_then(|profile| profile.id.as_deref())
+        })
+        .or_else(|| {
+            msg.bot_profile
+                .as_ref()
+                .and_then(|profile| profile.user_id.as_deref())
+        })?;
+    let url = msg
+        .bot_profile
+        .as_ref()
+        .and_then(|profile| profile.icons.as_ref())
+        .and_then(message_icon_url)
+        .or_else(|| msg.icons.as_ref().and_then(message_icon_url))?
+        .to_owned();
+    let key = format!("bot-icon:{source}:{url}");
+    Some((key, url))
+}
+
+pub fn message_icon_url(icons: &crate::slack::models::MessageIcons) -> Option<&str> {
+    non_empty(icons.image_48.as_deref())
+        .or_else(|| non_empty(icons.image_72.as_deref()))
+        .or_else(|| non_empty(icons.image_64.as_deref()))
+        .or_else(|| non_empty(icons.image_36.as_deref()))
+        .or_else(|| non_empty(icons.image_192.as_deref()))
+        .or_else(|| non_empty(icons.image_512.as_deref()))
+        .or_else(|| non_empty(icons.image_original.as_deref()))
+        .or_else(|| non_empty(icons.icon_url.as_deref()))
 }
 
 pub fn channel_label(channel: &Channel) -> String {
@@ -923,6 +1011,9 @@ fn apply_message_reaction(msg: &mut SlackMessage, user: &str, name: &str, added:
 fn merge_message(existing: &mut SlackMessage, update: SlackMessage) {
     existing.user = update.user.or_else(|| existing.user.take());
     existing.bot_id = update.bot_id.or_else(|| existing.bot_id.take());
+    existing.username = update.username.or_else(|| existing.username.take());
+    existing.bot_profile = update.bot_profile.or_else(|| existing.bot_profile.take());
+    existing.icons = update.icons.or_else(|| existing.icons.take());
     existing.kind = update.kind.or_else(|| existing.kind.take());
     existing.subtype = update.subtype.or_else(|| existing.subtype.take());
     existing.client_msg_id = update
@@ -983,6 +1074,53 @@ pub fn format_ts_hm(ts: &str) -> String {
     }
 }
 
+pub fn date_key_for_ts(ts: &str) -> Option<String> {
+    use chrono::{Datelike, Local, TimeZone};
+    let (secs, _) = ts_key(ts);
+    let date = Local.timestamp_opt(secs as i64, 0).single()?.date_naive();
+    Some(format!(
+        "{:04}-{:02}-{:02}",
+        date.year(),
+        date.month(),
+        date.day()
+    ))
+}
+
+pub fn format_ts_date_label(ts: &str) -> String {
+    use chrono::{Datelike, Local, TimeZone};
+    let (secs, _) = ts_key(ts);
+    let Some(date_time) = Local.timestamp_opt(secs as i64, 0).single() else {
+        return ts.to_owned();
+    };
+    let date = date_time.date_naive();
+    let today = Local::now().date_naive();
+    if date == today {
+        return "Today".to_owned();
+    }
+    if today.signed_duration_since(date).num_days() == 1 {
+        return "Yesterday".to_owned();
+    }
+    format!(
+        "{}, {} {}",
+        date.format("%A"),
+        date.format("%B"),
+        ordinal_day(date.day())
+    )
+}
+
+fn ordinal_day(day: u32) -> String {
+    let suffix = match day % 100 {
+        11..=13 => "th",
+        _ => match day % 10 {
+            1 => "st",
+            2 => "nd",
+            3 => "rd",
+            _ => "th",
+        },
+    };
+    format!("{day}{suffix}")
+}
+
 fn non_empty(s: Option<&str>) -> Option<&str> {
     s.map(str::trim).filter(|s| !s.is_empty())
 }
@@ -1000,7 +1138,9 @@ pub fn scroll_ratio_for_ts(messages: &[SlackMessage], ts: &str) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::slack::models::{BootData, BootSelf, Emoji, Reaction, UserProfile};
+    use crate::slack::models::{
+        BootData, BootSelf, BotProfile, Emoji, MessageIcons, Reaction, UserProfile,
+    };
 
     fn msg(ts: &str, text: &str) -> SlackMessage {
         SlackMessage {
@@ -1014,6 +1154,16 @@ mod tests {
     fn ts_key_orders_numerically_not_lexically() {
         assert!(ts_key("1783372360.000009") < ts_key("1783372360.000010"));
         assert!(ts_key("999.1") < ts_key("1000.0"));
+    }
+
+    #[test]
+    fn ordinal_day_suffixes_match_slack_date_labels() {
+        assert_eq!(ordinal_day(1), "1st");
+        assert_eq!(ordinal_day(2), "2nd");
+        assert_eq!(ordinal_day(3), "3rd");
+        assert_eq!(ordinal_day(4), "4th");
+        assert_eq!(ordinal_day(11), "11th");
+        assert_eq!(ordinal_day(22), "22nd");
     }
 
     #[test]
@@ -1095,6 +1245,89 @@ mod tests {
         assert_eq!(display_name(Some(&u3), "U3"), "uname");
 
         assert_eq!(display_name(None, "U4"), "U4");
+    }
+
+    #[test]
+    fn message_author_prefers_bot_username_and_profile_over_raw_ids() {
+        let ws = Workspace::from_session(&crate::config::WorkspaceSession {
+            team_id: "T1".into(),
+            enterprise_id: None,
+            user_id: "U_SELF".into(),
+            name: "Test".into(),
+            url: "https://test.slack.com".into(),
+            token: "xoxc-test".into(),
+        });
+        let msg = SlackMessage {
+            user: Some("U_APP".into()),
+            bot_id: Some("B_FAKE".into()),
+            username: Some("mattsob".into()),
+            bot_profile: Some(BotProfile {
+                name: Some("app fallback".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(message_author_name(&ws, &msg), "mattsob");
+
+        let profile_only = SlackMessage {
+            bot_id: Some("B_FAKE".into()),
+            bot_profile: Some(BotProfile {
+                name: Some("slimebot".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(message_author_name(&ws, &profile_only), "slimebot");
+    }
+
+    #[test]
+    fn message_bot_avatar_prefers_profile_icon() {
+        let msg = SlackMessage {
+            bot_id: Some("B_FAKE".into()),
+            bot_profile: Some(BotProfile {
+                icons: Some(MessageIcons {
+                    image_48: Some("https://example.test/bot-48.png".into()),
+                    image_72: Some("https://example.test/bot-72.png".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            message_bot_avatar(&msg),
+            Some((
+                "bot-icon:B_FAKE:https://example.test/bot-48.png".into(),
+                "https://example.test/bot-48.png".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn message_bot_avatar_key_includes_per_message_icon_url() {
+        let mut first = SlackMessage {
+            bot_id: Some("B_SAME".into()),
+            icons: Some(MessageIcons {
+                image_48: Some("https://example.test/first.png".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut second = first.clone();
+        second.icons = Some(MessageIcons {
+            image_48: Some("https://example.test/second.png".into()),
+            ..Default::default()
+        });
+
+        let first_avatar = message_bot_avatar(&first).expect("first avatar");
+        let second_avatar = message_bot_avatar(&second).expect("second avatar");
+
+        assert_ne!(first_avatar.0, second_avatar.0);
+        assert_eq!(first_avatar.1, "https://example.test/first.png");
+        assert_eq!(second_avatar.1, "https://example.test/second.png");
+
+        first.icons = second.icons.clone();
+        assert_eq!(message_bot_avatar(&first), Some(second_avatar));
     }
 
     #[test]
