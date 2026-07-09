@@ -1,7 +1,7 @@
 use std::sync::{LazyLock, RwLock};
 
 use iced::theme::palette::Seed;
-use iced::widget::{button, container, scrollable, text_input};
+use iced::widget::{button, container, scrollable, slider, text_input};
 use iced::{Background, Border, Color, Element, Length, Shadow, Theme, Vector};
 
 use crate::config::{AccentColor, Settings};
@@ -627,14 +627,89 @@ pub fn swatch(color: Color, selected: bool) -> impl Fn(&Theme, button::Status) -
 }
 
 pub fn divider<'a, Message: 'a>() -> Element<'a, Message> {
+    divider_faded(1.0)
+}
+
+pub fn divider_faded<'a, Message: 'a>(alpha: f32) -> Element<'a, Message> {
     container(iced::widget::Space::new().width(Length::Fill).height(1.0))
         .width(Length::Fill)
         .height(Length::Fixed(1.0))
-        .style(|_theme| container::Style {
-            background: Some(Background::Color(BORDER)),
+        .style(move |_theme| container::Style {
+            background: Some(Background::Color(BORDER.scale_alpha(alpha))),
             ..container::Style::default()
         })
         .into()
+}
+
+pub fn fade(color: Color, alpha: f32) -> Color {
+    color.scale_alpha(alpha)
+}
+
+pub fn fade_container(
+    style: impl Fn(&Theme) -> container::Style,
+    alpha: f32,
+) -> impl Fn(&Theme) -> container::Style {
+    move |theme| {
+        let mut s = style(theme);
+        s.background = s.background.map(|b| b.scale_alpha(alpha));
+        s.text_color = s.text_color.map(|c| c.scale_alpha(alpha));
+        s.border.color = s.border.color.scale_alpha(alpha);
+        s.shadow.color = s.shadow.color.scale_alpha(alpha);
+        s
+    }
+}
+
+pub fn fade_button(
+    style: impl Fn(&Theme, button::Status) -> button::Style,
+    alpha: f32,
+) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |theme, status| {
+        let mut s = style(theme, status);
+        s.background = s.background.map(|b| b.scale_alpha(alpha));
+        s.text_color = s.text_color.scale_alpha(alpha);
+        s.border.color = s.border.color.scale_alpha(alpha);
+        s.shadow.color = s.shadow.color.scale_alpha(alpha);
+        s
+    }
+}
+
+pub fn fade_input(
+    style: impl Fn(&Theme, text_input::Status) -> text_input::Style,
+    alpha: f32,
+) -> impl Fn(&Theme, text_input::Status) -> text_input::Style {
+    move |theme, status| {
+        let mut s = style(theme, status);
+        s.background = s.background.scale_alpha(alpha);
+        s.border.color = s.border.color.scale_alpha(alpha);
+        s.icon = s.icon.scale_alpha(alpha);
+        s.placeholder = s.placeholder.scale_alpha(alpha);
+        s.value = s.value.scale_alpha(alpha);
+        s.selection = s.selection.scale_alpha(alpha);
+        s
+    }
+}
+
+pub fn fade_slider(alpha: f32) -> impl Fn(&Theme, slider::Status) -> slider::Style {
+    move |theme, status| {
+        let mut s = slider::default(theme, status);
+        s.rail.backgrounds.0 = s.rail.backgrounds.0.scale_alpha(alpha);
+        s.rail.backgrounds.1 = s.rail.backgrounds.1.scale_alpha(alpha);
+        s.rail.border.color = s.rail.border.color.scale_alpha(alpha);
+        s.handle.background = s.handle.background.scale_alpha(alpha);
+        s.handle.border_color = s.handle.border_color.scale_alpha(alpha);
+        s
+    }
+}
+
+pub fn fade_scrollbar(alpha: f32) -> impl Fn(&Theme, scrollable::Status) -> scrollable::Style {
+    move |theme, status| {
+        let mut s = scrollbar(theme, status);
+        s.vertical_rail.scroller.background =
+            s.vertical_rail.scroller.background.scale_alpha(alpha);
+        s.horizontal_rail.scroller.background =
+            s.horizontal_rail.scroller.background.scale_alpha(alpha);
+        s
+    }
 }
 
 pub fn scrollbar(theme: &Theme, status: scrollable::Status) -> scrollable::Style {

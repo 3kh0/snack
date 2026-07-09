@@ -10,7 +10,7 @@ const LAYER: Duration = Duration::from_millis(120);
 const PANEL: Duration = Duration::from_millis(140);
 const MICRO: Duration = Duration::from_millis(90);
 
-const CURVE: animation::Easing = animation::Easing::EaseOutCubic;
+const CURVE: animation::Easing = animation::Easing::Linear;
 
 fn layer_anim() -> Animation<bool> {
     Animation::new(false).duration(LAYER).easing(CURVE)
@@ -26,7 +26,14 @@ fn micro_anim() -> Animation<bool> {
 
 #[inline]
 pub fn t(anim: &Animation<bool>, at: Instant) -> f32 {
-    anim.interpolate(0.0, 1.0, at)
+    let clock: f32 = anim.interpolate(0.0, 1.0, at);
+    let inv = 1.0 - clock.clamp(0.0, 1.0);
+    1.0 - inv * inv * inv
+}
+
+#[inline]
+pub fn closing(anim: &Animation<bool>) -> bool {
+    !anim.value()
 }
 
 pub fn overlay<'a, Message, E>(
@@ -98,13 +105,66 @@ pub fn slide_y<'a, Message: 'a>(
     translate(content, 0.0, offset)
 }
 
-pub fn slide_x<'a, Message: 'a>(
+pub fn fade(progress: f32) -> f32 {
+    ((progress.clamp(0.0, 1.0) - 0.15) / 0.85).clamp(0.0, 1.0)
+}
+
+pub fn zoom_y<'a, Message: 'a>(
     content: Element<'a, Message>,
     progress: f32,
-    dx: f32,
+    dy: f32,
 ) -> Element<'a, Message> {
-    let offset = dx * (1.0 - progress.clamp(0.0, 1.0));
-    translate(content, offset, 0.0)
+    let p = progress.clamp(0.0, 1.0);
+    let offset = dy * (1.0 - p);
+    float(content)
+        .scale(0.97 + 0.03 * p)
+        .translate(move |_bounds, _viewport| Vector::new(0.0, offset))
+        .into()
+}
+
+#[derive(Clone, Copy)]
+pub enum ExitEdge {
+    Top,
+    Bottom,
+}
+
+pub fn fly_y<'a, Message: 'a>(
+    content: Element<'a, Message>,
+    progress: f32,
+    closing: bool,
+    dy_enter: f32,
+    exit: ExitEdge,
+) -> Element<'a, Message> {
+    let p = progress.clamp(0.0, 1.0);
+    if closing {
+        float(content)
+            .translate(move |bounds, viewport| {
+                let travel = match exit {
+                    ExitEdge::Top => -(bounds.y + bounds.height + 24.0),
+                    ExitEdge::Bottom => viewport.height - bounds.y + 24.0,
+                };
+                Vector::new(0.0, travel * (1.0 - p))
+            })
+            .into()
+    } else {
+        let offset = dy_enter * (1.0 - p);
+        float(content)
+            .scale(0.97 + 0.03 * p)
+            .translate(move |_bounds, _viewport| Vector::new(0.0, offset))
+            .into()
+    }
+}
+
+pub fn collapse_x<'a, Message: 'a>(
+    content: Element<'a, Message>,
+    progress: f32,
+    width: f32,
+) -> Element<'a, Message> {
+    container(content)
+        .width(Length::Fixed(width * progress.clamp(0.0, 1.0)))
+        .height(Length::Fill)
+        .clip(true)
+        .into()
 }
 
 fn translate<'a, Message: 'a>(
@@ -112,9 +172,6 @@ fn translate<'a, Message: 'a>(
     x: f32,
     y: f32,
 ) -> Element<'a, Message> {
-    if x == 0.0 && y == 0.0 {
-        return content;
-    }
     float(content)
         .translate(move |_bounds, _viewport| Vector::new(x, y))
         .into()

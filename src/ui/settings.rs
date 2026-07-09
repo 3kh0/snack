@@ -15,8 +15,9 @@ pub fn modal<'a>(
 ) -> Element<'a, Message> {
     let layers = motion::overlay(open, move |anim, at| {
         let progress = motion::t(anim, at);
+        let alpha = motion::fade(progress);
         let scrim = motion::scrim(progress, Message::SettingsClosed);
-        let card = motion::slide_y(card(settings), progress, -12.0);
+        let card = motion::zoom_y(card(settings, alpha), progress, -12.0);
         let centered = container(card)
             .center_x(Fill)
             .center_y(Fill)
@@ -29,10 +30,10 @@ pub fn modal<'a>(
     stack![base, layers].into()
 }
 
-fn card<'a>(s: &Settings) -> Element<'a, Message> {
+fn card<'a>(s: &Settings, alpha: f32) -> Element<'a, Message> {
     let title = text("Settings")
         .size(theme::TEXT_LG)
-        .color(theme::TEXT_1)
+        .color(theme::fade(theme::TEXT_1, alpha))
         .font(iced::Font {
             weight: iced::font::Weight::Bold,
             ..iced::Font::default()
@@ -40,14 +41,15 @@ fn card<'a>(s: &Settings) -> Element<'a, Message> {
 
     let body = column![
         title,
-        theme::divider(),
-        accent_section(s.accent),
+        theme::divider_faded(alpha),
+        accent_section(s.accent, alpha),
         slider_row(
             "Panel gap",
             format!("{} px", s.gap as i32),
             4.0..=24.0,
             s.gap,
             Message::SettingsGapChanged,
+            alpha,
         ),
         slider_row(
             "Corner radius",
@@ -55,6 +57,7 @@ fn card<'a>(s: &Settings) -> Element<'a, Message> {
             0.0..=20.0,
             s.panel_radius,
             Message::SettingsRadiusChanged,
+            alpha,
         ),
         slider_row(
             "Border thickness",
@@ -62,9 +65,10 @@ fn card<'a>(s: &Settings) -> Element<'a, Message> {
             0.0..=4.0,
             s.border_thickness,
             Message::SettingsBorderChanged,
+            alpha,
         ),
-        theme::divider(),
-        actions(),
+        theme::divider_faded(alpha),
+        actions(alpha),
     ]
     .spacing(theme::SPACE_LG)
     .width(Fill);
@@ -72,18 +76,21 @@ fn card<'a>(s: &Settings) -> Element<'a, Message> {
     container(body)
         .width(Length::Fixed(CARD_WIDTH))
         .padding(theme::SPACE_LG)
-        .style(theme::panel)
+        .style(theme::fade_container(theme::panel, alpha))
         .into()
 }
 
-fn accent_section<'a>(selected: AccentColor) -> Element<'a, Message> {
+fn accent_section<'a>(selected: AccentColor, alpha: f32) -> Element<'a, Message> {
     let mut swatches = row![].spacing(theme::SPACE_SM).align_y(Alignment::Center);
     for color in AccentColor::ALL {
         swatches = swatches.push(
             button(Space::new())
                 .width(Length::Fixed(SWATCH_SIZE))
                 .height(Length::Fixed(SWATCH_SIZE))
-                .style(theme::swatch(theme::accent_swatch(color), color == selected))
+                .style(theme::fade_button(
+                    theme::swatch(theme::accent_swatch(color), color == selected),
+                    alpha,
+                ))
                 .on_press(Message::SettingsAccentSelected(color)),
         );
     }
@@ -91,7 +98,7 @@ fn accent_section<'a>(selected: AccentColor) -> Element<'a, Message> {
     column![
         text("Accent")
             .size(theme::TEXT_MD)
-            .color(theme::TEXT_2)
+            .color(theme::fade(theme::TEXT_2, alpha))
             .font(iced::Font {
                 weight: iced::font::Weight::Semibold,
                 ..iced::Font::default()
@@ -108,29 +115,36 @@ fn slider_row<'a>(
     range: std::ops::RangeInclusive<f32>,
     value: f32,
     on_change: fn(f32) -> Message,
+    alpha: f32,
 ) -> Element<'a, Message> {
     column![
         row![
-            text(label).size(theme::TEXT_MD).color(theme::TEXT_2),
+            text(label)
+                .size(theme::TEXT_MD)
+                .color(theme::fade(theme::TEXT_2, alpha)),
             Space::new().width(Fill),
-            text(value_label).size(theme::TEXT_SM).color(theme::TEXT_4),
+            text(value_label)
+                .size(theme::TEXT_SM)
+                .color(theme::fade(theme::TEXT_4, alpha)),
         ]
         .align_y(Alignment::Center),
-        slider(range, value, on_change).step(1.0),
+        slider(range, value, on_change)
+            .step(1.0)
+            .style(theme::fade_slider(alpha)),
     ]
     .spacing(theme::SPACE_SM)
     .into()
 }
 
-fn actions<'a>() -> Element<'a, Message> {
+fn actions<'a>(alpha: f32) -> Element<'a, Message> {
     row![
         button(text("Reset").size(theme::TEXT_SM))
-            .style(theme::secondary_button)
+            .style(theme::fade_button(theme::secondary_button, alpha))
             .padding([theme::SPACE_XS, theme::SPACE_MD])
             .on_press(Message::SettingsReset),
         Space::new().width(Fill),
         button(text("Done").size(theme::TEXT_SM))
-            .style(theme::primary_button)
+            .style(theme::fade_button(theme::primary_button, alpha))
             .padding([theme::SPACE_XS, theme::SPACE_MD])
             .on_press(Message::SettingsClosed),
     ]

@@ -94,7 +94,16 @@ fn main_view(app: &App) -> Element<'_, Message> {
             .style(ui::theme::panel);
         return with_modal(
             app,
-            with_account_menu(app, shell(row![rail, sidebar, content])),
+            with_account_menu(
+                app,
+                shell(
+                    row![rail, sidebar, content]
+                        .spacing(ui::theme::gap())
+                        .width(Fill)
+                        .height(Fill)
+                        .into(),
+                ),
+            ),
         );
     }
 
@@ -158,38 +167,49 @@ fn main_view(app: &App) -> Element<'_, Message> {
         let root = ui::thread::root_message(ws, channel, root_ts);
         let open = app.thread_open;
         let thread_key = (channel.as_str(), root_ts.as_str());
+        let gap = ui::theme::gap();
         let thread_panel = ui::motion::panel_reveal(open, move |anim, at| {
             let progress = ui::motion::t(anim, at);
-            ui::motion::slide_x(
-                ui::thread::view(
-                    ws,
-                    channel,
-                    root,
-                    replies,
-                    &app.thread_composer_text,
-                    &app.file_previews,
-                    &app.avatar_previews,
-                    &app.emoji_previews,
-                    emoji_animation_elapsed,
-                    editing_for(channel),
-                    hovered_for(true),
-                ),
+            let panel = container(ui::thread::view(
+                ws,
+                channel,
+                root,
+                replies,
+                &app.thread_composer_text,
+                &app.file_previews,
+                &app.avatar_previews,
+                &app.emoji_previews,
+                emoji_animation_elapsed,
+                editing_for(channel),
+                hovered_for(true),
+            ))
+            .padding(iced::Padding::ZERO.left(gap));
+            ui::motion::collapse_x(
+                panel.into(),
                 progress,
-                ui::theme::THREAD_WIDTH * 0.2,
+                ui::theme::THREAD_WIDTH + gap,
             )
         })
         .key(thread_key)
         .on_finish_maybe((!open).then_some(Message::ThreadDismissed));
 
+        let body = row![rail, sidebar, main]
+            .spacing(gap)
+            .width(Fill)
+            .height(Fill);
         with_modal(
             app,
-            with_account_menu(app, shell(row![rail, sidebar, main, thread_panel])),
+            with_account_menu(
+                app,
+                shell(row![body, thread_panel].width(Fill).height(Fill).into()),
+            ),
         )
     } else {
-        with_modal(
-            app,
-            with_account_menu(app, shell(row![rail, sidebar, main])),
-        )
+        let body = row![rail, sidebar, main]
+            .spacing(ui::theme::gap())
+            .width(Fill)
+            .height(Fill);
+        with_modal(app, with_account_menu(app, shell(body.into())))
     }
 }
 
@@ -217,10 +237,12 @@ fn with_account_menu<'a>(app: &'a App, base: Element<'a, Message>) -> Element<'a
     let open = app.account_menu_open;
     let menu = ui::motion::overlay(open, move |anim, at| {
         let progress = ui::motion::t(anim, at);
-        let card = ui::motion::slide_y(
+        let card = ui::motion::fly_y(
             opaque(ui::rail::account_menu(ws, &app.avatar_previews)),
             progress,
+            ui::motion::closing(anim),
             8.0,
+            ui::motion::ExitEdge::Bottom,
         );
         Element::from(
             container(card)
@@ -237,8 +259,8 @@ fn with_account_menu<'a>(app: &'a App, base: Element<'a, Message>) -> Element<'a
     stack![base, menu].into()
 }
 
-fn shell(content: iced::widget::Row<'_, Message>) -> Element<'_, Message> {
-    container(content.spacing(ui::theme::gap()).width(Fill).height(Fill))
+fn shell(content: Element<'_, Message>) -> Element<'_, Message> {
+    container(content)
         .style(ui::theme::root)
         .padding(ui::theme::gap())
         .width(Fill)

@@ -26,8 +26,9 @@ pub fn modal<'a>(
 ) -> Element<'a, Message> {
     let layers = motion::overlay(open, move |anim, at| {
         let progress = motion::t(anim, at);
+        let alpha = motion::fade(progress);
         let scrim = motion::scrim(progress, Message::PaletteClosed);
-        let card = motion::slide_y(card(ws, state, avatars), progress, -12.0);
+        let card = motion::zoom_y(card(ws, state, avatars, alpha), progress, -12.0);
         let centered = container(card)
             .center_x(Fill)
             .align_top(Fill)
@@ -44,27 +45,28 @@ fn card<'a>(
     ws: &'a Workspace,
     state: &'a PaletteState,
     avatars: &'a AvatarPreviews,
+    alpha: f32,
 ) -> Element<'a, Message> {
     let input = text_input("Jump to channel or person…", &state.query)
         .id(INPUT_ID)
         .on_input(Message::PaletteQueryChanged)
         .on_submit(Message::PaletteSubmitted)
-        .style(theme::input)
+        .style(theme::fade_input(theme::input, alpha))
         .size(theme::TEXT_LG)
         .padding(theme::SPACE_MD)
         .width(Fill);
 
     let body = column![
         container(input).padding(theme::SPACE_SM),
-        theme::divider(),
-        results(ws, state, avatars),
+        theme::divider_faded(alpha),
+        results(ws, state, avatars, alpha),
     ]
     .width(Fill);
 
     container(body)
         .width(Length::Fixed(CARD_WIDTH))
         .padding(theme::SPACE_SM)
-        .style(theme::panel)
+        .style(theme::fade_container(theme::panel, alpha))
         .into()
 }
 
@@ -72,6 +74,7 @@ fn results<'a>(
     ws: &'a Workspace,
     state: &'a PaletteState,
     avatars: &'a AvatarPreviews,
+    alpha: f32,
 ) -> Element<'a, Message> {
     if state.entries.is_empty() {
         let label = if state.query.trim().is_empty() {
@@ -79,32 +82,44 @@ fn results<'a>(
         } else {
             "No matches."
         };
-        return container(text(label).size(theme::TEXT_MD).color(theme::MUTED))
+        return container(
+            text(label)
+                .size(theme::TEXT_MD)
+                .color(theme::fade(theme::MUTED, alpha)),
+        )
             .padding(theme::SPACE_LG)
             .into();
     }
 
     let mut list = Column::new().spacing(theme::SPACE_XS);
     if state.query.trim().is_empty() {
-        list = list.push(section_header("Recent"));
+        list = list.push(section_header("Recent", alpha));
     }
     let query = state.query.trim();
     for (i, entry) in state.entries.iter().enumerate() {
-        list = list.push(entry_row(ws, avatars, entry, query, i, i == state.selected));
+        list = list.push(entry_row(
+            ws,
+            avatars,
+            entry,
+            query,
+            i,
+            i == state.selected,
+            alpha,
+        ));
     }
 
     scrollable(list)
-        .style(theme::scrollbar)
+        .style(theme::fade_scrollbar(alpha))
         .height(Length::Shrink)
         .width(Fill)
         .into()
 }
 
-fn section_header<'a>(title: &str) -> Element<'a, Message> {
+fn section_header<'a>(title: &str, alpha: f32) -> Element<'a, Message> {
     container(
         text(title.to_ascii_uppercase())
             .size(theme::TEXT_SM)
-            .color(theme::TEXT_4)
+            .color(theme::fade(theme::TEXT_4, alpha))
             .font(iced::Font {
                 weight: font::Weight::Semibold,
                 ..iced::Font::default()
@@ -121,16 +136,17 @@ fn entry_row<'a>(
     query: &str,
     index: usize,
     selected: bool,
+    alpha: f32,
 ) -> Element<'a, Message> {
     let label = highlighted(
         &entry.label,
         query,
         theme::TEXT_MD,
-        theme::TEXT_1,
+        theme::fade(theme::TEXT_1, alpha),
         font::Weight::Semibold,
     );
 
-    let mut content = row![icon(ws, avatars, entry), label]
+    let mut content = row![icon(ws, avatars, entry, alpha), label]
         .spacing(theme::SPACE_SM)
         .align_y(Alignment::Center);
 
@@ -140,7 +156,7 @@ fn entry_row<'a>(
             &entry.sublabel,
             query,
             theme::TEXT_SM,
-            theme::MUTED,
+            theme::fade(theme::MUTED, alpha),
             font::Weight::Normal,
         ));
     }
@@ -148,7 +164,7 @@ fn entry_row<'a>(
     button(content)
         .width(Fill)
         .padding([theme::SPACE_XS, theme::SPACE_MD])
-        .style(theme::channel_row(selected))
+        .style(theme::fade_button(theme::channel_row(selected), alpha))
         .on_press(Message::PaletteEntryPressed(index))
         .into()
 }
@@ -195,6 +211,7 @@ fn icon<'a>(
     ws: &Workspace,
     avatars: &AvatarPreviews,
     entry: &PaletteEntry,
+    alpha: f32,
 ) -> Element<'a, Message> {
     match &entry.target {
         PaletteTarget::User { user, .. } => icon_slot(user_avatar(
@@ -202,12 +219,13 @@ fn icon<'a>(
             user,
             &entry.label,
             ws.presence.get(user).copied().unwrap_or(Presence::Unknown),
+            alpha,
         )),
         PaletteTarget::Channel(id) => {
             let channel = ws.channels.get(id);
             let is_mpim = channel.map(|c| c.is_mpim).unwrap_or(false);
             if is_mpim {
-                return icon_slot(group_chip());
+                return icon_slot(group_chip(alpha));
             }
             let private = channel.map(|c| c.is_private || c.is_group).unwrap_or(false);
             let handle = if private { icons::lock() } else { icons::tag() };
@@ -215,7 +233,7 @@ fn icon<'a>(
                 svg(handle)
                     .width(Length::Fixed(theme::SIDEBAR_ICON))
                     .height(Length::Fixed(theme::SIDEBAR_ICON))
-                    .style(theme::sidebar_icon(theme::TEXT_3))
+                    .style(theme::sidebar_icon(theme::fade(theme::TEXT_3, alpha)))
                     .into(),
             )
         }
@@ -235,6 +253,7 @@ fn user_avatar<'a>(
     user: &str,
     label: &str,
     presence: Presence,
+    alpha: f32,
 ) -> Element<'a, Message> {
     let size = Length::Fixed(theme::SIDEBAR_AVATAR);
     let base: Element<'a, Message> = if let Some(FilePreview::Loaded(handle)) = avatars.get(user) {
@@ -243,6 +262,7 @@ fn user_avatar<'a>(
             .height(size)
             .content_fit(ContentFit::Cover)
             .border_radius(theme::SIDEBAR_AVATAR_RADIUS)
+            .opacity(alpha)
             .into()
     } else {
         let initial = label
@@ -258,14 +278,14 @@ fn user_avatar<'a>(
         .height(size)
         .center_x(size)
         .center_y(size)
-        .style(theme::avatar_placeholder)
+        .style(theme::fade_container(theme::avatar_placeholder, alpha))
         .into()
     };
 
-    stack![base, presence_badge(presence)].into()
+    stack![base, presence_badge(presence, alpha)].into()
 }
 
-fn presence_badge<'a>(presence: Presence) -> Element<'a, Message> {
+fn presence_badge<'a>(presence: Presence, alpha: f32) -> Element<'a, Message> {
     let style = if presence == Presence::Active {
         theme::presence_online
     } else {
@@ -274,7 +294,7 @@ fn presence_badge<'a>(presence: Presence) -> Element<'a, Message> {
     let dot = container(Space::new())
         .width(Length::Fixed(theme::PRESENCE_DOT))
         .height(Length::Fixed(theme::PRESENCE_DOT))
-        .style(style);
+        .style(theme::fade_container(style, alpha));
     container(dot)
         .width(Length::Fixed(theme::SIDEBAR_AVATAR))
         .height(Length::Fixed(theme::SIDEBAR_AVATAR))
@@ -283,11 +303,11 @@ fn presence_badge<'a>(presence: Presence) -> Element<'a, Message> {
         .into()
 }
 
-fn group_chip<'a>() -> Element<'a, Message> {
+fn group_chip<'a>(alpha: f32) -> Element<'a, Message> {
     container(
         text("#")
             .size(theme::TEXT_SM)
-            .color(theme::accent_bright())
+            .color(theme::fade(theme::accent_bright(), alpha))
             .font(iced::Font {
                 weight: font::Weight::Bold,
                 ..iced::Font::default()
@@ -297,6 +317,6 @@ fn group_chip<'a>() -> Element<'a, Message> {
     .height(Length::Fixed(theme::SIDEBAR_AVATAR))
     .center_x(Length::Fixed(theme::SIDEBAR_AVATAR))
     .center_y(Length::Fixed(theme::SIDEBAR_AVATAR))
-    .style(theme::avatar_placeholder) // shares squarish radius with user avatars
+    .style(theme::fade_container(theme::avatar_placeholder, alpha)) // shares squarish radius with user avatars
     .into()
 }
