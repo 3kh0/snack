@@ -116,7 +116,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
             let label = ws
                 .channels
                 .get(channel_id)
-                .map(crate::state::channel_label)
+                .map(|c| crate::state::channel_display_name(ws, c))
                 .unwrap_or_else(|| channel_id.to_owned());
             let chat = column![
                 container(ui::channel::view(

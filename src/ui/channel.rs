@@ -1,13 +1,21 @@
-use iced::widget::{Column, Id, Row, Space, column, container, mouse_area, scrollable, text};
-use iced::{Alignment, Element, Fill, Length};
+use iced::widget::{
+    Column, Id, Row, Space, column, container, image, mouse_area, row, scrollable, stack, text,
+};
+use iced::{Alignment, ContentFit, Element, Fill, Length, font};
 
 use super::{message, theme};
 use crate::app::{FilePreview, Message};
-use crate::state::{self, Workspace};
+use crate::slack::models::{Channel, UserId};
+use crate::state::{self, Presence, Workspace};
 use std::collections::HashMap;
 use std::time::Duration;
 
 pub const VISIBLE_MESSAGE_LIMIT: usize = 200;
+
+const HEADER_AVATAR: f32 = 28.0;
+const HEADER_AVATAR_RADIUS: f32 = 6.0;
+
+type AvatarPreviews = HashMap<UserId, FilePreview>;
 
 pub fn scrollable_id(channel_id: &str) -> Id {
     Id::from(format!("channel-messages:{channel_id}"))
@@ -23,20 +31,7 @@ pub fn view<'a>(
     editing: Option<(&str, &str)>,
     hovered_ts: Option<&str>,
 ) -> Element<'a, Message> {
-    let label = ws
-        .channels
-        .get(channel_id)
-        .map(state::channel_label)
-        .unwrap_or_else(|| channel_id.to_owned());
-
-    let header = container(text(label).size(theme::TEXT_LG).color(theme::TEXT_1).font(
-        iced::Font {
-            weight: iced::font::Weight::Bold,
-            ..iced::Font::default()
-        },
-    ))
-    .padding(theme::SPACE_MD)
-    .width(Fill);
+    let header = channel_header(ws, channel_id, avatar_previews);
 
     let list: Element<'a, Message> = match ws.messages.get(channel_id) {
         Some(cm) if !cm.messages.is_empty() => {
@@ -125,6 +120,159 @@ pub fn view<'a>(
     ]
     .width(Fill)
     .height(Fill)
+    .into()
+}
+
+fn channel_header<'a>(
+    ws: &Workspace,
+    channel_id: &str,
+    avatars: &AvatarPreviews,
+) -> Element<'a, Message> {
+    let Some(channel) = ws.channels.get(channel_id) else {
+        return plain_header(channel_id.to_owned());
+    };
+
+    if channel.is_im {
+        return dm_header(ws, channel, avatars);
+    }
+
+    let label = if channel.is_mpim {
+        state::channel_display_name(ws, channel)
+    } else {
+        state::channel_label(channel)
+    };
+    plain_header(label)
+}
+
+fn plain_header<'a>(label: String) -> Element<'a, Message> {
+    container(
+        text(label)
+            .size(theme::TEXT_LG)
+            .color(theme::TEXT_1)
+            .font(iced::Font {
+                weight: iced::font::Weight::Bold,
+                ..iced::Font::default()
+            }),
+    )
+    .padding(theme::SPACE_MD)
+    .width(Fill)
+    .into()
+}
+
+fn dm_header<'a>(
+    ws: &Workspace,
+    channel: &Channel,
+    avatars: &AvatarPreviews,
+) -> Element<'a, Message> {
+    let name = state::channel_display_name(ws, channel);
+    let presence = ws.presence_for_channel(channel);
+    let avatar = dm_avatar_with_presence(ws, avatars, channel, &name, presence);
+
+    let mut title = row![
+        avatar,
+        text(name)
+            .size(theme::TEXT_LG)
+            .color(theme::TEXT_1)
+            .font(iced::Font {
+                weight: iced::font::Weight::Bold,
+                ..iced::Font::default()
+            }),
+    ]
+    .spacing(theme::SPACE_SM)
+    .align_y(Alignment::Center);
+
+    if state::is_vip_channel(ws, channel) {
+        title = title.push(vip_badge());
+    }
+
+    container(title)
+        .padding(theme::SPACE_MD)
+        .width(Fill)
+        .into()
+}
+
+fn dm_avatar_with_presence<'a>(
+    ws: &Workspace,
+    avatars: &AvatarPreviews,
+    channel: &Channel,
+    label: &str,
+    presence: Presence,
+) -> Element<'a, Message> {
+    let size = Length::Fixed(HEADER_AVATAR);
+    let base: Element<'a, Message> = if let Some(user) = state::dm_user_id(channel) {
+        if ws.avatar_url(user).is_some() {
+            if let Some(FilePreview::Loaded(handle)) = avatars.get(user) {
+                image(handle.clone())
+                    .width(size)
+                    .height(size)
+                    .content_fit(ContentFit::Cover)
+                    .border_radius(HEADER_AVATAR_RADIUS)
+                    .into()
+            } else {
+                avatar_placeholder(label)
+            }
+        } else {
+            avatar_placeholder(label)
+        }
+    } else {
+        avatar_placeholder(label)
+    };
+
+    stack![base, presence_badge(presence)].into()
+}
+
+fn avatar_placeholder<'a>(label: &str) -> Element<'a, Message> {
+    let size = Length::Fixed(HEADER_AVATAR);
+    let initial = label
+        .chars()
+        .find(|ch| ch.is_alphanumeric())
+        .map(|ch| ch.to_uppercase().collect::<String>())
+        .unwrap_or_else(|| "?".to_owned());
+    container(
+        text(initial)
+            .size(theme::TEXT_MD)
+            .font(iced::Font {
+                weight: font::Weight::Bold,
+                ..iced::Font::default()
+            }),
+    )
+    .width(size)
+    .height(size)
+    .center_x(size)
+    .center_y(size)
+    .style(theme::avatar_placeholder)
+    .into()
+}
+
+fn presence_badge<'a>(presence: Presence) -> Element<'a, Message> {
+    let style = if presence == Presence::Active {
+        theme::presence_online
+    } else {
+        theme::presence_offline
+    };
+    let dot = container(Space::new())
+        .width(Length::Fixed(theme::PRESENCE_DOT))
+        .height(Length::Fixed(theme::PRESENCE_DOT))
+        .style(style);
+    container(dot)
+        .width(Length::Fixed(HEADER_AVATAR))
+        .height(Length::Fixed(HEADER_AVATAR))
+        .align_right(Length::Fixed(HEADER_AVATAR))
+        .align_bottom(Length::Fixed(HEADER_AVATAR))
+        .into()
+}
+
+fn vip_badge<'a>() -> Element<'a, Message> {
+    container(
+        text("VIP")
+            .size(10.0)
+            .font(iced::Font {
+                weight: font::Weight::Bold,
+                ..iced::Font::default()
+            }),
+    )
+    .padding([2.0, 6.0])
+    .style(theme::vip_badge)
     .into()
 }
 

@@ -725,6 +725,30 @@ pub fn dm_label(ws: &Workspace, c: &Channel) -> String {
     channel_label(c).trim_start_matches('#').to_owned()
 }
 
+/// Whether this conversation is treated as VIP (priority sidebar / channel metadata).
+pub fn is_vip_channel(ws: &Workspace, c: &Channel) -> bool {
+    if ws.priority_sidebar_section && ws.priority_score(&c.id).is_some() {
+        return true;
+    }
+    c.extra.iter().any(|(key, value)| {
+        let key = key.to_ascii_lowercase();
+        key.contains("vip")
+            || (key.contains("priority") && value.as_bool().unwrap_or(false))
+            || value_names_vip(value)
+    })
+}
+
+fn value_names_vip(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(value) => value.to_ascii_lowercase().contains("vip"),
+        serde_json::Value::Array(values) => values.iter().any(value_names_vip),
+        serde_json::Value::Object(values) => values
+            .iter()
+            .any(|(key, value)| key.to_ascii_lowercase().contains("vip") || value_names_vip(value)),
+        _ => false,
+    }
+}
+
 pub fn mpdm_name_label(name: &str) -> Option<String> {
     let rest = name.strip_prefix("mpdm-")?;
     let rest = rest
@@ -1474,6 +1498,59 @@ mod tests {
             ws.avatar_url("U_SELF"),
             Some("https://example.test/self.png".into())
         );
+    }
+
+    #[test]
+    fn is_vip_channel_from_priority_and_metadata() {
+        let mut ws = Workspace {
+            team_id: "T".into(),
+            name: "Test".into(),
+            url: "https://test.slack.com".into(),
+            self_user_id: "U_SELF".into(),
+            channels: BTreeMap::new(),
+            starred_order: Vec::new(),
+            dm_order: Vec::new(),
+            recent_channels: Vec::new(),
+            last_active_channel: None,
+            priority_scores: BTreeMap::new(),
+            frecency: BTreeMap::new(),
+            hide_read_channels_unless_starred: false,
+            priority_sidebar_section: true,
+            users: HashMap::new(),
+            custom_emoji: HashMap::new(),
+            messages: HashMap::new(),
+            typing: HashMap::new(),
+            presence: HashMap::new(),
+            rt: RealtimeStatus::default(),
+            rt_generation: 0,
+        };
+        ws.priority_scores.insert("D_VIP".into(), 0.8);
+
+        let vip_dm = Channel {
+            id: "D_VIP".into(),
+            is_im: true,
+            user: Some("U_ALFIE".into()),
+            ..Default::default()
+        };
+        assert!(is_vip_channel(&ws, &vip_dm));
+
+        let plain_dm = Channel {
+            id: "D_PLAIN".into(),
+            is_im: true,
+            user: Some("U_OTHER".into()),
+            ..Default::default()
+        };
+        assert!(!is_vip_channel(&ws, &plain_dm));
+
+        let mut named_vip = Channel {
+            id: "C_NAMED".into(),
+            is_channel: true,
+            ..Default::default()
+        };
+        named_vip
+            .extra
+            .insert("sidebar_section_name".into(), serde_json::json!("VIP unreads"));
+        assert!(is_vip_channel(&ws, &named_vip));
     }
 
     #[test]

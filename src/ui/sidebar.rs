@@ -443,26 +443,7 @@ fn unread_total(ws: &Workspace, c: &Channel) -> u32 {
 }
 
 fn is_vip(ws: &Workspace, c: &Channel) -> bool {
-    if ws.priority_sidebar_section && ws.priority_score(&c.id).is_some() {
-        return true;
-    }
-    c.extra.iter().any(|(key, value)| {
-        let key = key.to_ascii_lowercase();
-        key.contains("vip")
-            || key.contains("priority") && value.as_bool().unwrap_or(false)
-            || value_names_vip(value)
-    })
-}
-
-fn value_names_vip(value: &serde_json::Value) -> bool {
-    match value {
-        serde_json::Value::String(value) => value.to_ascii_lowercase().contains("vip"),
-        serde_json::Value::Array(values) => values.iter().any(value_names_vip),
-        serde_json::Value::Object(values) => values
-            .iter()
-            .any(|(key, value)| key.to_ascii_lowercase().contains("vip") || value_names_vip(value)),
-        _ => false,
-    }
+    state::is_vip_channel(ws, c)
 }
 
 #[cfg(test)]

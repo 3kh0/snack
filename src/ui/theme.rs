@@ -272,6 +272,18 @@ pub fn app_badge(_theme: &Theme) -> container::Style {
     }
 }
 
+pub fn vip_badge(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(Color {
+            a: 0.92,
+            ..TEXT_1
+        })),
+        text_color: Some(BG_BASE),
+        border: Border::default().rounded(4.0),
+        ..container::Style::default()
+    }
+}
+
 pub fn sidebar_icon(
     color: Color,
 ) -> impl Fn(&Theme, iced::widget::svg::Status) -> iced::widget::svg::Style {
