@@ -239,6 +239,11 @@ pub enum Message {
         seq: u64,
         result: Result<Vec<User>, SlackError>,
     },
+    PaletteRemoteChannelsLoaded {
+        team: TeamId,
+        seq: u64,
+        result: Result<Vec<Channel>, SlackError>,
+    },
     DmOpened {
         team: TeamId,
         user: UserId,

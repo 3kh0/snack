@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
-use crate::slack::models::{ChannelId, UserId};
+use crate::slack::models::{Channel, ChannelId, UserId};
 use crate::state::{self, Workspace};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,6 +22,7 @@ pub struct PaletteState {
     pub selected: usize,
     pub entries: Vec<PaletteEntry>,
     pub remote_seq: u64,
+    pub remote_channels: BTreeMap<ChannelId, Channel>,
 }
 
 const MAX_RESULTS: usize = 12;
@@ -124,6 +125,40 @@ fn user_handle(ws: &Workspace, user: &str) -> String {
         .unwrap_or_default()
 }
 
+fn score_channel(
+    ws: &Workspace,
+    channel: &Channel,
+    needle: &str,
+    frecency: &FrecencyCtx,
+) -> Option<Scored> {
+    let label = state::channel_display_name(ws, channel);
+    let name_score = state::channel_name(channel);
+    let prev_score = channel
+        .previous_names
+        .iter()
+        .filter_map(|prev| match_score(prev, needle))
+        .max();
+    let score = match_score(&label, needle)
+        .into_iter()
+        .chain(match_score(&name_score, needle))
+        .chain(prev_score.map(|s| s - 200))
+        .max()?;
+    Some(Scored {
+        score: score + frecency.bonus(ws, Some(channel.id.as_str())),
+        unread: ws.unread_total(channel),
+        sort_label: label.to_lowercase(),
+        entry: PaletteEntry {
+            label,
+            sublabel: channel
+                .previous_names
+                .first()
+                .map(|prev| format!("formerly #{prev}"))
+                .unwrap_or_default(),
+            target: PaletteTarget::Channel(channel.id.clone()),
+        },
+    })
+}
+
 pub fn recents(ws: &Workspace, active: Option<&str>) -> Vec<PaletteEntry> {
     ws.recent_channels
         .iter()
@@ -132,7 +167,11 @@ pub fn recents(ws: &Workspace, active: Option<&str>) -> Vec<PaletteEntry> {
         .collect()
 }
 
-pub fn rank(ws: &Workspace, query: &str) -> Vec<PaletteEntry> {
+pub fn rank(
+    ws: &Workspace,
+    query: &str,
+    remote_channels: &BTreeMap<ChannelId, Channel>,
+) -> Vec<PaletteEntry> {
     let needle = query.trim().to_lowercase();
     if needle.is_empty() {
         return recents(ws, None);
@@ -152,23 +191,20 @@ pub fn rank(ws: &Workspace, query: &str) -> Vec<PaletteEntry> {
             }
             continue;
         }
-        let label = state::channel_display_name(ws, channel);
-        let name_score = state::channel_name(channel);
-        let score = match_score(&label, &needle)
-            .into_iter()
-            .chain(match_score(&name_score, &needle))
-            .max();
-        if let Some(score) = score {
-            scored.push(Scored {
-                score: score + frecency.bonus(ws, Some(channel.id.as_str())),
-                unread: ws.unread_total(channel),
-                sort_label: label.to_lowercase(),
-                entry: PaletteEntry {
-                    label,
-                    sublabel: String::new(),
-                    target: PaletteTarget::Channel(channel.id.clone()),
-                },
-            });
+        if let Some(scored_entry) = score_channel(ws, channel, &needle, &frecency) {
+            scored.push(scored_entry);
+        }
+    }
+
+    for channel in remote_channels.values() {
+        if channel.is_archived || channel.is_im {
+            continue;
+        }
+        if ws.channels.contains_key(&channel.id) {
+            continue;
+        }
+        if let Some(scored_entry) = score_channel(ws, channel, &needle, &frecency) {
+            scored.push(scored_entry);
         }
     }
 
@@ -287,7 +323,7 @@ mod tests {
         insert_channel(&mut ws, channel("C_LOUNGE", "lounge"));
         insert_channel(&mut ws, channel("C_GEN", "general"));
 
-        let hits = rank(&ws, "lounge");
+        let hits = rank(&ws, "lounge", &BTreeMap::new());
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].label, "lounge");
         assert_eq!(hits[0].target, PaletteTarget::Channel("C_LOUNGE".into()));
@@ -299,7 +335,7 @@ mod tests {
         insert_channel(&mut ws, channel("C_ANN", "announcements"));
         insert_channel(&mut ws, channel("C_AN", "analytics"));
 
-        let hits = rank(&ws, "an");
+        let hits = rank(&ws, "an", &BTreeMap::new());
         assert_eq!(hits[0].label, "analytics");
     }
 
@@ -310,7 +346,7 @@ mod tests {
             .insert("U_ALICE".into(), user("U_ALICE", "alice", "Alice"));
         insert_channel(&mut ws, im("D_ALICE", "U_ALICE"));
 
-        let hits = rank(&ws, "alice");
+        let hits = rank(&ws, "alice", &BTreeMap::new());
         assert_eq!(hits.len(), 1, "person listed once, not duplicated by DM");
         assert_eq!(
             hits[0].target,
@@ -326,7 +362,7 @@ mod tests {
         let mut ws = ws();
         ws.users.insert("U_BOB".into(), user("U_BOB", "bob", "Bob"));
 
-        let hits = rank(&ws, "bob");
+        let hits = rank(&ws, "bob", &BTreeMap::new());
         assert_eq!(
             hits[0].target,
             PaletteTarget::User {
@@ -347,9 +383,34 @@ mod tests {
         bot.is_bot = true;
         ws.users.insert("U_BOT".into(), bot);
 
-        assert!(rank(&ws, "me").is_empty());
-        assert!(rank(&ws, "ghost").is_empty());
-        assert!(rank(&ws, "botty").is_empty());
+        assert!(rank(&ws, "me", &BTreeMap::new()).is_empty());
+        assert!(rank(&ws, "ghost", &BTreeMap::new()).is_empty());
+        assert!(rank(&ws, "botty", &BTreeMap::new()).is_empty());
+    }
+
+    #[test]
+    fn previous_name_matches_with_formerly_sublabel() {
+        let mut ws = ws();
+        let mut renamed = channel("C_NEW", "new-name");
+        renamed.previous_names = vec!["old-name".into()];
+        insert_channel(&mut ws, renamed);
+
+        let hits = rank(&ws, "old", &BTreeMap::new());
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].label, "new-name");
+        assert_eq!(hits[0].sublabel, "formerly #old-name");
+    }
+
+    #[test]
+    fn remote_channels_appear_without_being_in_workspace() {
+        let ws = ws();
+        let mut remote = BTreeMap::new();
+        remote.insert("C_REMOTE".into(), channel("C_REMOTE", "remote-only"));
+
+        let hits = rank(&ws, "remote", &remote);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].target, PaletteTarget::Channel("C_REMOTE".into()));
+        assert!(!ws.channels.contains_key("C_REMOTE"));
     }
 
     #[test]

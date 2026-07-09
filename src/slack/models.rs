@@ -327,6 +327,10 @@ pub struct UserProfile {
     #[serde(default)]
     pub image_original: Option<String>,
     #[serde(default)]
+    pub avatar_hash: Option<String>,
+    #[serde(default)]
+    pub team: Option<String>,
+    #[serde(default)]
     pub status_text: Option<String>,
     #[serde(default)]
     pub status_emoji: Option<String>,
@@ -367,6 +371,8 @@ pub struct Channel {
     pub has_unreads: bool,
     #[serde(default)]
     pub last_read: Option<MessageTs>,
+    #[serde(default)]
+    pub previous_names: Vec<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }

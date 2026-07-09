@@ -487,6 +487,19 @@ pub async fn fetch_users_search(
     Ok(page.results)
 }
 
+pub async fn fetch_channels_search(
+    transport: &Transport,
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    query: String,
+) -> Result<Vec<Channel>, Error> {
+    let request = super::edge::channels_search(client, workspace, &query, 30)
+        .map_err(|e| Error::Transport(format!("build channels/search: {e}")))?;
+    let value = transport.execute(request).await?;
+    let page: EdgeResults<Channel> = decode(value, "channels/search")?;
+    Ok(page.results)
+}
+
 pub async fn open_dm(
     transport: &Transport,
     client: &SlackClient,

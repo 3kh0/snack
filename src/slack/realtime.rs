@@ -57,6 +57,10 @@ pub fn user_typing_frame(channel: &str) -> String {
     )
 }
 
+pub fn presence_query_frame(ids: &[String]) -> String {
+    serde_json::json!({ "type": "presence_query", "ids": ids }).to_string()
+}
+
 pub fn connect(params: ConnectParams) -> Subscription<(TeamId, RtUpdate)> {
     Subscription::run_with(params.clone(), build_live_stream)
 }
@@ -377,5 +381,13 @@ mod tests {
             user_typing_frame("C1"),
             r#"{"type":"user_typing","channel":"C1"}"#
         );
+    }
+
+    #[test]
+    fn presence_query_frame_contains_ids() {
+        let frame = presence_query_frame(&["U1".into(), "U2".into()]);
+        let value: serde_json::Value = serde_json::from_str(&frame).unwrap();
+        assert_eq!(value["type"], "presence_query");
+        assert_eq!(value["ids"], serde_json::json!(["U1", "U2"]));
     }
 }

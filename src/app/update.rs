@@ -590,6 +590,9 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::PaletteRemoteUsersLoaded { team, seq, result } => {
             palette_remote_users_loaded(app, team, seq, result)
         }
+        Message::PaletteRemoteChannelsLoaded { team, seq, result } => {
+            palette_remote_channels_loaded(app, team, seq, result)
+        }
         Message::DmOpened { team, user, result } => dm_opened(app, team, user, result),
 
         Message::FileDownloadPressed { url, filename } => download_file_pressed(app, url, filename),
@@ -1695,30 +1698,41 @@ fn palette_toggled(app: &mut App) -> Task<Message> {
         entries,
         ..PaletteState::default()
     });
-    operation::focus(ui::palette::INPUT_ID)
+    let team = app.active_team.clone();
+    let avatars = team
+        .map(|team| load_palette_avatar_previews(app, &team))
+        .unwrap_or_else(Task::none);
+    Task::batch([operation::focus(ui::palette::INPUT_ID), avatars])
 }
 
 fn palette_query_changed(app: &mut App, query: String) -> Task<Message> {
     let Some(ws) = app.active_workspace() else {
         return Task::none();
     };
+    let remote = std::collections::BTreeMap::new();
     let entries = if query.trim().is_empty() {
         palette::recents(ws, app.active_channel.as_deref())
     } else {
-        palette::rank(ws, &query)
+        palette::rank(ws, &query, &remote)
     };
     let Some(state) = app.palette.as_mut() else {
         return Task::none();
     };
     state.query = query.clone();
+    state.remote_channels = remote;
     state.entries = entries;
     state.selected = 0;
     state.remote_seq += 1;
+    let seq = state.remote_seq;
+
+    let local_avatars = match app.active_team.clone() {
+        Some(team) => load_palette_avatar_previews(app, &team),
+        None => Task::none(),
+    };
 
     if query.trim().chars().count() < 2 {
-        return Task::none();
+        return local_avatars;
     }
-    let seq = state.remote_seq;
     let Some((transport, session)) = app.live() else {
         return Task::none();
     };
@@ -1731,14 +1745,30 @@ fn palette_query_changed(app: &mut App, query: String) -> Task<Message> {
     let transport = transport.clone();
     let client = app.client.clone();
     let ws_session = ws_session.clone();
-    Task::perform(
-        async move { api::fetch_users_search(&transport, &client, &ws_session, query).await },
-        move |result| Message::PaletteRemoteUsersLoaded {
+    let users_task = {
+        let transport = transport.clone();
+        let client = client.clone();
+        let ws_session = ws_session.clone();
+        let team = team.clone();
+        let query = query.clone();
+        Task::perform(
+            async move { api::fetch_users_search(&transport, &client, &ws_session, query).await },
+            move |result| Message::PaletteRemoteUsersLoaded {
+                team: team.clone(),
+                seq,
+                result,
+            },
+        )
+    };
+    let channels_task = Task::perform(
+        async move { api::fetch_channels_search(&transport, &client, &ws_session, query).await },
+        move |result| Message::PaletteRemoteChannelsLoaded {
             team: team.clone(),
             seq,
             result,
         },
-    )
+    );
+    Task::batch([local_avatars, users_task, channels_task])
 }
 
 fn palette_moved(app: &mut App, delta: isize) {
@@ -1772,6 +1802,15 @@ fn palette_activate(app: &mut App, index: usize) -> Task<Message> {
     };
     match entry.target {
         PaletteTarget::Channel(id) => {
+            if let Some(remote) = app
+                .palette
+                .as_ref()
+                .and_then(|s| s.remote_channels.get(&id).cloned())
+            {
+                if let Some(ws) = app.workspaces.get_mut(&team) {
+                    ws.channels.entry(id.clone()).or_insert(remote);
+                }
+            }
             app.palette = None;
             Task::done(Message::ChannelSelected(id))
         }
@@ -1824,17 +1863,136 @@ fn palette_remote_users_loaded(
     }
     if let Some(ws) = app.workspaces.get_mut(&team) {
         for user in users {
-            ws.users.entry(user.id.clone()).or_insert(user);
+            merge_searched_user(ws, user);
         }
     }
     mark_workspace_dirty(app, &team);
-    if let (Some(ws), Some(state)) = (app.workspaces.get(&team), app.palette.as_mut()) {
-        state.entries = palette::rank(ws, &state.query);
+    rerank_palette(app, &team);
+    load_palette_avatar_previews(app, &team)
+}
+
+fn palette_remote_channels_loaded(
+    app: &mut App,
+    team: TeamId,
+    seq: u64,
+    result: Result<Vec<Channel>, SlackError>,
+) -> Task<Message> {
+    if app.active_team.as_deref() != Some(&team) {
+        return Task::none();
+    }
+    let channels = match result {
+        Ok(channels) => channels,
+        Err(e) => {
+            tracing::debug!(error = %e, "palette channel search failed");
+            return Task::none();
+        }
+    };
+    if app.palette.as_ref().map(|s| s.remote_seq) != Some(seq) {
+        return Task::none();
+    }
+
+    let mut known_updates = Vec::new();
+    let mut remote_only = Vec::new();
+    if let Some(ws) = app.workspaces.get(&team) {
+        for channel in channels {
+            if channel.is_archived || channel.is_im {
+                continue;
+            }
+            if ws.channels.contains_key(&channel.id) {
+                known_updates.push(channel);
+            } else {
+                remote_only.push(channel);
+            }
+        }
+    } else {
+        remote_only = channels
+            .into_iter()
+            .filter(|c| !c.is_archived && !c.is_im)
+            .collect();
+    }
+
+    if let Some(ws) = app.workspaces.get_mut(&team) {
+        for channel in known_updates {
+            if let Some(existing) = ws.channels.get_mut(&channel.id) {
+                if !channel.previous_names.is_empty() {
+                    existing.previous_names = channel.previous_names;
+                }
+                if existing.name.as_ref().is_none_or(|n| n.trim().is_empty()) {
+                    if channel.name.as_ref().is_some_and(|n| !n.trim().is_empty()) {
+                        existing.name = channel.name;
+                    }
+                }
+            }
+        }
+    }
+    if let Some(state) = app.palette.as_mut() {
+        for channel in remote_only {
+            state.remote_channels.insert(channel.id.clone(), channel);
+        }
+    }
+    mark_workspace_dirty(app, &team);
+    rerank_palette(app, &team);
+    Task::none()
+}
+
+fn rerank_palette(app: &mut App, team: &str) {
+    let Some(state) = app.palette.as_ref() else {
+        return;
+    };
+    let query = state.query.clone();
+    let remote = state.remote_channels.clone();
+    let active = app.active_channel.clone();
+    let Some(ws) = app.workspaces.get(team) else {
+        return;
+    };
+    let entries = if query.trim().is_empty() {
+        palette::recents(ws, active.as_deref())
+    } else {
+        palette::rank(ws, &query, &remote)
+    };
+    if let Some(state) = app.palette.as_mut() {
+        state.entries = entries;
         if state.selected >= state.entries.len() {
             state.selected = 0;
         }
     }
-    Task::none()
+}
+
+fn merge_searched_user(ws: &mut Workspace, incoming: crate::slack::models::User) {
+    match ws.users.get_mut(&incoming.id) {
+        Some(existing) if crate::state::user_avatar_url(existing).is_none() => {
+            if crate::state::user_avatar_url(&incoming).is_some() {
+                existing.profile = incoming.profile;
+            }
+        }
+        Some(_) => {}
+        None => {
+            ws.users.insert(incoming.id.clone(), incoming);
+        }
+    }
+}
+
+fn load_palette_avatar_previews(app: &mut App, team: &str) -> Task<Message> {
+    let Some(state) = app.palette.as_ref() else {
+        return Task::none();
+    };
+    let users: Vec<UserId> = state
+        .entries
+        .iter()
+        .filter_map(|entry| match &entry.target {
+            PaletteTarget::User { user, .. } => Some(user.clone()),
+            PaletteTarget::Channel(_) => None,
+        })
+        .collect();
+    if users.is_empty() {
+        return Task::none();
+    }
+    if let Some(crate::state::RealtimeStatus::Connected(conn)) =
+        app.workspaces.get(team).map(|ws| &ws.rt)
+    {
+        conn.send(crate::slack::realtime::presence_query_frame(&users));
+    }
+    load_user_avatar_previews(app, team, users)
 }
 
 fn dm_opened(

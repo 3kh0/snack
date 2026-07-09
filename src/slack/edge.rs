@@ -68,6 +68,25 @@ pub fn users_search(
     )
 }
 
+pub fn channels_search(
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    query: &str,
+    count: u32,
+) -> serde_json::Result<PreparedRequest> {
+    client.edge_json(
+        workspace,
+        "channels/search",
+        serde_json::json!({
+            "query": query,
+            "count": count,
+            "fuzz": 1,
+            "filter": "xws",
+            "include_record_channels": true,
+        }),
+    )
+}
+
 fn ids_payload(ids: &[String]) -> UpdatedIds<'_> {
     UpdatedIds {
         updated_ids: ids.iter().map(|id| (id.as_str(), 0)).collect(),

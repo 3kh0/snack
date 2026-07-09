@@ -1387,7 +1387,10 @@ mod tests {
             }),
             ..Default::default()
         };
-        assert_eq!(user_avatar_url(&user), Some("https://example.test/48.png"));
+        assert_eq!(
+            user_avatar_url(&user),
+            Some("https://example.test/48.png")
+        );
 
         let fallback = User {
             id: "U2".into(),
@@ -1415,6 +1418,17 @@ mod tests {
             user_avatar_url(&original_only),
             Some("https://example.test/original.png")
         );
+
+        let hash_only = User {
+            id: "U4".into(),
+            profile: Some(UserProfile {
+                avatar_hash: Some("31dc9a4e9298".into()),
+                team: Some("E1".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(user_avatar_url(&hash_only), None);
     }
 
     #[test]

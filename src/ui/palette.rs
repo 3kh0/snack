@@ -1,15 +1,15 @@
 use std::collections::HashMap;
 
 use iced::widget::{
-    Column, Space, button, column, container, image, mouse_area, row, scrollable, stack, svg, text,
-    text_input,
+    Column, Space, button, column, container, image, mouse_area, rich_text, row, scrollable, span,
+    stack, svg, text, text_input,
 };
 use iced::{Alignment, ContentFit, Element, Fill, Length, font};
 
 use super::{icons, theme};
 use crate::app::{FilePreview, Message, PaletteEntry, PaletteState, PaletteTarget};
 use crate::slack::models::UserId;
-use crate::state::Workspace;
+use crate::state::{Presence, Workspace};
 
 type AvatarPreviews = HashMap<UserId, FilePreview>;
 
@@ -87,8 +87,9 @@ fn results<'a>(
     if state.query.trim().is_empty() {
         list = list.push(section_header("Recent"));
     }
+    let query = state.query.trim();
     for (i, entry) in state.entries.iter().enumerate() {
-        list = list.push(entry_row(ws, avatars, entry, i, i == state.selected));
+        list = list.push(entry_row(ws, avatars, entry, query, i, i == state.selected));
     }
 
     scrollable(list)
@@ -116,16 +117,17 @@ fn entry_row<'a>(
     ws: &'a Workspace,
     avatars: &'a AvatarPreviews,
     entry: &'a PaletteEntry,
+    query: &str,
     index: usize,
     selected: bool,
 ) -> Element<'a, Message> {
-    let label = text(entry.label.clone())
-        .size(theme::TEXT_MD)
-        .color(theme::TEXT_1)
-        .font(iced::Font {
-            weight: font::Weight::Semibold,
-            ..iced::Font::default()
-        });
+    let label = highlighted(
+        &entry.label,
+        query,
+        theme::TEXT_MD,
+        theme::TEXT_1,
+        font::Weight::Semibold,
+    );
 
     let mut content = row![icon(ws, avatars, entry), label]
         .spacing(theme::SPACE_SM)
@@ -133,11 +135,13 @@ fn entry_row<'a>(
 
     if !entry.sublabel.is_empty() {
         content = content.push(Space::new().width(Fill));
-        content = content.push(
-            text(entry.sublabel.clone())
-                .size(theme::TEXT_SM)
-                .color(theme::MUTED),
-        );
+        content = content.push(highlighted(
+            &entry.sublabel,
+            query,
+            theme::TEXT_SM,
+            theme::MUTED,
+            font::Weight::Normal,
+        ));
     }
 
     button(content)
@@ -148,13 +152,56 @@ fn entry_row<'a>(
         .into()
 }
 
+fn highlighted<'a>(
+    label: &str,
+    query: &str,
+    size: f32,
+    color: iced::Color,
+    base_weight: font::Weight,
+) -> Element<'a, Message> {
+    let base_font = iced::Font {
+        weight: base_weight,
+        ..iced::Font::default()
+    };
+    let bold_font = iced::Font {
+        weight: font::Weight::Bold,
+        ..iced::Font::default()
+    };
+    let mk = |s: &str, font: iced::Font| -> iced::advanced::text::Span<'a, Message, iced::Font> {
+        span(s.to_owned()).font(font).color(color)
+    };
+
+    let start = if query.is_empty() || !label.is_ascii() || !query.is_ascii() {
+        None
+    } else {
+        label.to_lowercase().find(&query.to_lowercase())
+    };
+    let spans = match start {
+        Some(start) => {
+            let end = start + query.len();
+            vec![
+                mk(&label[..start], base_font),
+                mk(&label[start..end], bold_font),
+                mk(&label[end..], base_font),
+            ]
+        }
+        None => vec![mk(label, base_font)],
+    };
+    rich_text(spans).size(size).into()
+}
+
 fn icon<'a>(
     ws: &Workspace,
     avatars: &AvatarPreviews,
     entry: &PaletteEntry,
 ) -> Element<'a, Message> {
     match &entry.target {
-        PaletteTarget::User { user, .. } => icon_slot(user_avatar(avatars, user, &entry.label)),
+        PaletteTarget::User { user, .. } => icon_slot(user_avatar(
+            avatars,
+            user,
+            &entry.label,
+            ws.presence.get(user).copied().unwrap_or(Presence::Unknown),
+        )),
         PaletteTarget::Channel(id) => {
             let channel = ws.channels.get(id);
             let is_mpim = channel.map(|c| c.is_mpim).unwrap_or(false);
@@ -182,31 +229,56 @@ fn icon_slot<'a>(inner: Element<'a, Message>) -> Element<'a, Message> {
         .into()
 }
 
-fn user_avatar<'a>(avatars: &AvatarPreviews, user: &str, label: &str) -> Element<'a, Message> {
+fn user_avatar<'a>(
+    avatars: &AvatarPreviews,
+    user: &str,
+    label: &str,
+    presence: Presence,
+) -> Element<'a, Message> {
     let size = Length::Fixed(theme::SIDEBAR_AVATAR);
-    if let Some(FilePreview::Loaded(handle)) = avatars.get(user) {
-        return image(handle.clone())
+    let base: Element<'a, Message> = if let Some(FilePreview::Loaded(handle)) = avatars.get(user) {
+        image(handle.clone())
             .width(size)
             .height(size)
             .content_fit(ContentFit::Cover)
             .border_radius(theme::SIDEBAR_AVATAR / 2.0)
-            .into();
+            .into()
+    } else {
+        let initial = label
+            .chars()
+            .find(|ch| ch.is_alphanumeric())
+            .map(|ch| ch.to_uppercase().collect::<String>())
+            .unwrap_or_else(|| "?".to_owned());
+        container(text(initial).size(theme::TEXT_SM).font(iced::Font {
+            weight: font::Weight::Bold,
+            ..iced::Font::default()
+        }))
+        .width(size)
+        .height(size)
+        .center_x(size)
+        .center_y(size)
+        .style(theme::avatar_placeholder)
+        .into()
+    };
+
+    if presence == Presence::Active {
+        stack![base, presence_dot()].into()
+    } else {
+        base
     }
-    let initial = label
-        .chars()
-        .find(|ch| ch.is_alphanumeric())
-        .map(|ch| ch.to_uppercase().collect::<String>())
-        .unwrap_or_else(|| "?".to_owned());
-    container(text(initial).size(theme::TEXT_SM).font(iced::Font {
-        weight: font::Weight::Bold,
-        ..iced::Font::default()
-    }))
-    .width(size)
-    .height(size)
-    .center_x(size)
-    .center_y(size)
-    .style(theme::avatar_placeholder)
-    .into()
+}
+
+fn presence_dot<'a>() -> Element<'a, Message> {
+    let dot = container(Space::new())
+        .width(Length::Fixed(theme::PRESENCE_DOT))
+        .height(Length::Fixed(theme::PRESENCE_DOT))
+        .style(theme::presence_online);
+    container(dot)
+        .width(Length::Fixed(theme::SIDEBAR_AVATAR))
+        .height(Length::Fixed(theme::SIDEBAR_AVATAR))
+        .align_right(Length::Fixed(theme::SIDEBAR_AVATAR))
+        .align_bottom(Length::Fixed(theme::SIDEBAR_AVATAR))
+        .into()
 }
 
 fn group_chip<'a>() -> Element<'a, Message> {

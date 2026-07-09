@@ -53,6 +53,7 @@ pub const BROADCAST_BG: Color = Color {
 pub const SIDEBAR_ICON: f32 = 16.0; // svg glyph size
 pub const SIDEBAR_ICON_SLOT: f32 = 24.0; // fixed leading column so labels align
 pub const SIDEBAR_AVATAR: f32 = 20.0; // dm avatar / group-count chip
+pub const PRESENCE_DOT: f32 = 8.0; // online indicator on avatars
 pub const PING_BADGE_H: f32 = 18.0; // normalized ping badge height
 
 pub const MUTED: Color = TEXT_5;
@@ -452,6 +453,18 @@ pub fn input(_theme: &Theme, status: text_input::Status) -> text_input::Style {
             a: 0.30,
             ..accent()
         },
+    }
+}
+
+pub fn presence_online(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(ONLINE)),
+        border: Border {
+            color: BG_PANEL,
+            width: 1.5,
+            radius: 999.0.into(),
+        },
+        ..container::Style::default()
     }
 }
 
