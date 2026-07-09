@@ -18,7 +18,7 @@ panic = "abort"
 
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
-emojis = "0.6"
+emojis = "0.9"
 gif = "0.14.2"
 unicode-segmentation = "1"
 iced = { git = "https://github.com/iced-rs/iced", rev = "7c6ce8789c4671db81a3920d06e87ab6d8edef1d", features = ["tokio", "image", "svg", "advanced", "lazy"] }
