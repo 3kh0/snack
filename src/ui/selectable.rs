@@ -21,8 +21,8 @@ use iced::advanced::widget::text::{Style as TextStyle, draw as draw_paragraph};
 use iced::advanced::widget::{Widget, tree};
 use iced::advanced::{Renderer as _, Shell, clipboard, mouse};
 use iced::{
-    Background, Color, Element, Event, Font, Length, Pixels, Point, Rectangle, Size, Vector,
-    alignment, keyboard,
+    Background, Border, Color, Element, Event, Font, Length, Pixels, Point, Rectangle, Size,
+    Vector, alignment, keyboard,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -32,9 +32,14 @@ type Renderer = iced::Renderer;
 type Theme = iced::Theme;
 type IcedParagraph = <Renderer as iced::advanced::text::Renderer>::Paragraph;
 
+const CHIP_PAD_Y: f32 = 1.0;
+const CHIP_PAD_X: f32 = 3.0;
+const CHIP_RADIUS: f32 = 4.0;
+
 /// A run of body text sharing one style, before it is exploded into clusters.
 pub struct Segment {
     pub text: String,
+    pub channel: Option<String>,
     pub mono: bool,
     pub color: Option<Color>,
     pub background: Option<Color>,
@@ -48,6 +53,7 @@ impl Segment {
     pub fn plain(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
+            channel: None,
             mono: false,
             color: None,
             background: None,
@@ -59,8 +65,17 @@ impl Segment {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct HighlightRun {
+    start: usize,
+    end: usize,
+    color: Color,
+}
+
 pub struct SelectableText {
     spans: Vec<Span<'static, (), Font>>,
+    channels: Vec<Option<String>>,
+    highlight_runs: Vec<HighlightRun>,
     size: Pixels,
     color: Color,
     selection_color: Color,
@@ -72,33 +87,11 @@ impl SelectableText {
     /// paragraph. Newlines inside segment text create wrapped lines that
     /// selection spans naturally.
     pub fn new(segments: &[Segment], size: f32, color: Color, selection_color: Color) -> Self {
-        let mut spans = Vec::new();
-        for seg in segments {
-            let styled_font = (seg.mono || seg.bold || seg.italic).then(|| styled_font(seg));
-            for cluster in seg.text.graphemes(true) {
-                let mut span = Span::new(cluster.to_owned());
-                if let Some(font) = styled_font {
-                    span = span.font(font);
-                }
-                if let Some(color) = seg.color {
-                    span = span.color(color);
-                }
-                if let Some(background) = seg.background {
-                    span = span
-                        .background(Background::Color(background))
-                        .padding([1.0, 3.0]);
-                }
-                if seg.underline {
-                    span = span.underline(true);
-                }
-                if seg.strikethrough {
-                    span = span.strikethrough(true);
-                }
-                spans.push(span.to_static());
-            }
-        }
+        let (spans, channels, highlight_runs) = explode_segments(segments);
         Self {
             spans,
+            channels,
+            highlight_runs,
             size: Pixels(size),
             color,
             selection_color,
@@ -116,6 +109,10 @@ impl SelectableText {
             .get(lo..=hi)
             .map(|s| s.iter().map(|span| span.text.as_ref()).collect())
             .unwrap_or_default()
+    }
+
+    fn channel_at(&self, index: usize) -> Option<&str> {
+        self.channels.get(index).and_then(Option::as_deref)
     }
 
     /// Maps a cursor position to a cluster index. Falls back to the nearest
@@ -283,61 +280,61 @@ impl Widget<Message, Theme, Renderer> for SelectableText {
             }
         }
 
-        // Span decorations (highlight / underline / strikethrough) for future
-        // rich formatting; plain bodies simply skip this.
+        for run in &self.highlight_runs {
+            let mut regions = Vec::new();
+            for index in run.start..=run.end {
+                regions.extend(state.paragraph.span_bounds(index));
+            }
+            for r in merge_line_regions(regions) {
+                renderer.fill_quad(
+                    renderer::Quad {
+                        bounds: Rectangle::new(
+                            r.position() - Vector::new(CHIP_PAD_X, CHIP_PAD_Y),
+                            r.size() + Size::new(CHIP_PAD_X * 2.0, CHIP_PAD_Y * 2.0),
+                        ) + translation,
+                        border: Border::default().rounded(CHIP_RADIUS),
+                        ..Default::default()
+                    },
+                    Background::Color(run.color),
+                );
+            }
+        }
+
         for (index, span) in self.spans.iter().enumerate() {
-            if span.highlight.is_none() && !span.underline && !span.strikethrough {
+            if !span.underline && !span.strikethrough {
                 continue;
             }
             let regions = state.paragraph.span_bounds(index);
-            if let Some(highlight) = span.highlight {
+            let size = span.size.unwrap_or(self.size);
+            let line_height = span.line_height.unwrap_or_default().to_absolute(size);
+            let color = span.color.unwrap_or(self.color);
+            let baseline = translation + Vector::new(0.0, size.0 + (line_height.0 - size.0) / 2.0);
+            if span.underline {
                 for r in &regions {
                     renderer.fill_quad(
                         renderer::Quad {
                             bounds: Rectangle::new(
-                                r.position() - Vector::new(span.padding.left, span.padding.top),
-                                r.size() + Size::new(span.padding.x(), span.padding.y()),
-                            ) + translation,
-                            border: highlight.border,
+                                r.position() + baseline - Vector::new(0.0, size.0 * 0.08),
+                                Size::new(r.width, 1.0),
+                            ),
                             ..Default::default()
                         },
-                        highlight.background,
+                        color,
                     );
                 }
             }
-            if span.underline || span.strikethrough {
-                let size = span.size.unwrap_or(self.size);
-                let line_height = span.line_height.unwrap_or_default().to_absolute(size);
-                let color = span.color.unwrap_or(self.color);
-                let baseline =
-                    translation + Vector::new(0.0, size.0 + (line_height.0 - size.0) / 2.0);
-                if span.underline {
-                    for r in &regions {
-                        renderer.fill_quad(
-                            renderer::Quad {
-                                bounds: Rectangle::new(
-                                    r.position() + baseline - Vector::new(0.0, size.0 * 0.08),
-                                    Size::new(r.width, 1.0),
-                                ),
-                                ..Default::default()
-                            },
-                            color,
-                        );
-                    }
-                }
-                if span.strikethrough {
-                    for r in &regions {
-                        renderer.fill_quad(
-                            renderer::Quad {
-                                bounds: Rectangle::new(
-                                    r.position() + baseline - Vector::new(0.0, size.0 / 2.0),
-                                    Size::new(r.width, 1.0),
-                                ),
-                                ..Default::default()
-                            },
-                            color,
-                        );
-                    }
+            if span.strikethrough {
+                for r in &regions {
+                    renderer.fill_quad(
+                        renderer::Quad {
+                            bounds: Rectangle::new(
+                                r.position() + baseline - Vector::new(0.0, size.0 / 2.0),
+                                Size::new(r.width, 1.0),
+                            ),
+                            ..Default::default()
+                        },
+                        color,
+                    );
                 }
             }
         }
@@ -397,8 +394,20 @@ impl Widget<Message, Theme, Renderer> for SelectableText {
                 }
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                let index = cursor
+                    .is_over(bounds)
+                    .then(|| self.locate(tree.state.downcast_ref::<State>(), layout, cursor))
+                    .flatten();
                 let state = tree.state.downcast_mut::<State>();
-                if state.drag_anchor.take().is_some() {
+                let anchor = state.drag_anchor.take();
+                if state.selection.is_none()
+                    && anchor == index
+                    && let Some(channel) = index.and_then(|index| self.channel_at(index))
+                {
+                    shell.publish(Message::ChannelSelected(channel.to_owned()));
+                    shell.capture_event();
+                }
+                if anchor.is_some() {
                     shell.request_redraw();
                 }
             }
@@ -426,7 +435,15 @@ impl Widget<Message, Theme, Renderer> for SelectableText {
         _viewport: &Rectangle,
         _renderer: &Renderer,
     ) -> mouse::Interaction {
-        if tree.state.downcast_ref::<State>().hovered {
+        let state = tree.state.downcast_ref::<State>();
+        if state.hovered
+            && self
+                .locate(state, _layout, _cursor)
+                .and_then(|index| self.channel_at(index))
+                .is_some()
+        {
+            mouse::Interaction::Pointer
+        } else if state.hovered {
             mouse::Interaction::Text
         } else {
             mouse::Interaction::None
@@ -437,5 +454,157 @@ impl Widget<Message, Theme, Renderer> for SelectableText {
 impl<'a> From<SelectableText> for Element<'a, Message, Theme, Renderer> {
     fn from(widget: SelectableText) -> Self {
         Element::new(widget)
+    }
+}
+
+fn explode_segments(
+    segments: &[Segment],
+) -> (
+    Vec<Span<'static, (), Font>>,
+    Vec<Option<String>>,
+    Vec<HighlightRun>,
+) {
+    let mut spans = Vec::new();
+    let mut channels = Vec::new();
+    let mut highlight_runs = Vec::new();
+
+    for seg in segments {
+        let styled_font = (seg.mono || seg.bold || seg.italic).then(|| styled_font(seg));
+        let run_start = spans.len();
+        for cluster in seg.text.graphemes(true) {
+            let mut span = Span::new(cluster.to_owned());
+            if let Some(font) = styled_font {
+                span = span.font(font);
+            }
+            if let Some(color) = seg.color {
+                span = span.color(color);
+            }
+            if seg.underline {
+                span = span.underline(true);
+            }
+            if seg.strikethrough {
+                span = span.strikethrough(true);
+            }
+            spans.push(span.to_static());
+            channels.push(seg.channel.clone());
+        }
+        if let Some(color) = seg.background {
+            if spans.len() > run_start {
+                highlight_runs.push(HighlightRun {
+                    start: run_start,
+                    end: spans.len() - 1,
+                    color,
+                });
+            }
+        }
+    }
+
+    (spans, channels, highlight_runs)
+}
+
+fn merge_line_regions(mut regions: Vec<Rectangle>) -> Vec<Rectangle> {
+    if regions.is_empty() {
+        return regions;
+    }
+    regions.sort_by(|a, b| {
+        a.y.partial_cmp(&b.y)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
+    });
+
+    let mut merged = Vec::new();
+    let mut current = regions[0];
+    for region in regions.into_iter().skip(1) {
+        let same_line =
+            (region.y - current.y).abs() < 0.5 && (region.height - current.height).abs() < 0.5;
+        let contiguous = same_line && region.x <= current.x + current.width + 1.0;
+        if contiguous {
+            let right = (current.x + current.width).max(region.x + region.width);
+            current.width = right - current.x;
+            current.height = current.height.max(region.height);
+        } else {
+            merged.push(current);
+            current = region;
+        }
+    }
+    merged.push(current);
+    merged
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mention_segment(text: &str, channel: Option<&str>, bg: Color) -> Segment {
+        Segment {
+            text: text.into(),
+            channel: channel.map(str::to_owned),
+            mono: false,
+            color: Some(Color::from_rgb(0.1, 0.7, 0.9)),
+            background: Some(bg),
+            bold: false,
+            italic: false,
+            underline: false,
+            strikethrough: false,
+        }
+    }
+
+    #[test]
+    fn channel_mention_is_one_highlight_run_not_per_grapheme() {
+        let bg = Color {
+            r: 0.08,
+            g: 0.36,
+            b: 0.52,
+            a: 0.52,
+        };
+        let segments = vec![
+            Segment::plain("see "),
+            mention_segment("#what-is-my-slack-id", Some("C1"), bg),
+            Segment::plain(" please"),
+        ];
+        let (spans, channels, runs) = explode_segments(&segments);
+
+        assert_eq!(
+            spans.len(),
+            "see #what-is-my-slack-id please".chars().count()
+        );
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].start, 4);
+        assert_eq!(runs[0].end, 4 + "#what-is-my-slack-id".chars().count() - 1);
+        assert_eq!(runs[0].color, bg);
+
+        for index in runs[0].start..=runs[0].end {
+            assert_eq!(channels[index].as_deref(), Some("C1"));
+            assert!(spans[index].highlight.is_none());
+        }
+        assert!(channels[0].is_none());
+        assert!(channels[spans.len() - 1].is_none());
+    }
+
+    #[test]
+    fn adjacent_mentions_stay_separate_chips() {
+        let bg = Color::from_rgb(0.1, 0.2, 0.3);
+        let segments = vec![
+            mention_segment("#a", Some("C1"), bg),
+            Segment::plain(" "),
+            mention_segment("#b", Some("C2"), bg),
+        ];
+        let (_, channels, runs) = explode_segments(&segments);
+        assert_eq!(runs.len(), 2);
+        assert_eq!(channels[runs[0].start].as_deref(), Some("C1"));
+        assert_eq!(channels[runs[1].start].as_deref(), Some("C2"));
+    }
+
+    #[test]
+    fn merge_line_regions_joins_same_line_boxes() {
+        let a = Rectangle::new(Point::new(0.0, 0.0), Size::new(8.0, 14.0));
+        let b = Rectangle::new(Point::new(8.0, 0.0), Size::new(8.0, 14.0));
+        let c = Rectangle::new(Point::new(0.0, 16.0), Size::new(8.0, 14.0));
+        let merged = merge_line_regions(vec![a, b, c]);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].x, 0.0);
+        assert_eq!(merged[0].width, 16.0);
+        assert_eq!(merged[1].y, 16.0);
+        assert_eq!(merged[1].width, 8.0);
     }
 }

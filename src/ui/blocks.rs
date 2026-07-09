@@ -13,6 +13,7 @@ pub struct RenderLine {
 pub struct RenderSegment {
     pub text: String,
     pub style: SegmentStyle,
+    pub channel: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -76,13 +77,23 @@ impl RenderSegment {
         Self {
             text: text.into(),
             style: SegmentStyle::default(),
+            channel: None,
         }
     }
 
     fn styled(text: impl Into<String>, style: SegmentStyle) -> Self {
+        Self::styled_channel(text, style, None)
+    }
+
+    fn styled_channel(
+        text: impl Into<String>,
+        style: SegmentStyle,
+        channel: Option<String>,
+    ) -> Self {
         Self {
             text: text.into(),
             style,
+            channel,
         }
     }
 }
@@ -222,7 +233,7 @@ fn rich_leaf_segments(ws: &Workspace, leaf: &Value) -> Vec<RenderSegment> {
                     .unwrap_or_else(|| format!("#{channel}"));
                 let mut style = style.clone();
                 style.mention = true;
-                RenderSegment::styled(label, style)
+                RenderSegment::styled_channel(label, style, Some(channel.to_owned()))
             })
             .into_iter()
             .collect(),
@@ -332,7 +343,7 @@ fn mrkdwn_segments(ws: &Workspace, text: &str) -> Vec<RenderSegment> {
             .strip_prefix('<')
             .and_then(|_| parse_slack_ref(ws, rest))
         {
-            out.push(RenderSegment::styled(token.0, token.1));
+            out.push(RenderSegment::styled_channel(token.0, token.1, token.2));
             i += len;
             continue;
         }
@@ -357,10 +368,13 @@ fn mrkdwn_segments(ws: &Workspace, text: &str) -> Vec<RenderSegment> {
     merge_segments(out)
 }
 
-fn parse_slack_ref(ws: &Workspace, text: &str) -> Option<((String, SegmentStyle), usize)> {
+fn parse_slack_ref(
+    ws: &Workspace,
+    text: &str,
+) -> Option<((String, SegmentStyle, Option<String>), usize)> {
     let end = text.find('>')?;
     let raw = &text[1..end];
-    let (label, mut style) = if let Some(user) = raw.strip_prefix('@') {
+    let (label, mut style, channel_target) = if let Some(user) = raw.strip_prefix('@') {
         (
             format!(
                 "@{}",
@@ -370,23 +384,20 @@ fn parse_slack_ref(ws: &Workspace, text: &str) -> Option<((String, SegmentStyle)
                 mention: true,
                 ..SegmentStyle::default()
             },
+            None,
         )
     } else if let Some(channel) = raw.strip_prefix('#') {
-        let (id, label) = channel.split_once('|').unwrap_or((channel, channel));
+        let (id, fallback_label) = channel.split_once('|').unwrap_or((channel, channel));
         (
-            label
-                .strip_prefix('#')
-                .map(|label| format!("#{label}"))
-                .unwrap_or_else(|| {
-                    ws.channels
-                        .get(id)
-                        .map(state::channel_label)
-                        .unwrap_or_else(|| format!("#{label}"))
-                }),
+            ws.channels
+                .get(id)
+                .map(state::channel_label)
+                .unwrap_or_else(|| format!("#{}", fallback_label.trim_start_matches('#'))),
             SegmentStyle {
                 mention: true,
                 ..SegmentStyle::default()
             },
+            Some(id.to_owned()),
         )
     } else if let Some(broadcast) = raw.strip_prefix('!') {
         (
@@ -396,6 +407,7 @@ fn parse_slack_ref(ws: &Workspace, text: &str) -> Option<((String, SegmentStyle)
                 broadcast: true,
                 ..SegmentStyle::default()
             },
+            None,
         )
     } else {
         let (url, label) = raw.split_once('|').unwrap_or((raw, raw));
@@ -405,12 +417,76 @@ fn parse_slack_ref(ws: &Workspace, text: &str) -> Option<((String, SegmentStyle)
                 link: state::is_browser_url(url),
                 ..SegmentStyle::default()
             },
+            None,
         )
     };
     if !style.link && state::is_browser_url(&label) {
         style.link = true;
     }
-    Some(((label, style), end + 1))
+    Some(((label, style, channel_target), end + 1))
+}
+
+/// Returns every channel referenced by a Slack message's rich text or fallback
+/// mrkdwn. The update layer uses this to fill channel names not included in the
+/// initial sidebar payload.
+pub fn mentioned_channel_ids(msg: &crate::slack::models::Message) -> Vec<String> {
+    let mut ids = Vec::new();
+    for block in &msg.blocks {
+        collect_channel_ids(block, &mut ids);
+    }
+    if let Some(text) = &msg.text {
+        collect_mrkdwn_channel_ids(text, &mut ids);
+    }
+    ids
+}
+
+fn collect_channel_ids(value: &Value, ids: &mut Vec<String>) {
+    if value_type(value) == Some("channel") {
+        if let Some(id) = value
+            .get("channel_id")
+            .or_else(|| value.get("channel"))
+            .and_then(Value::as_str)
+        {
+            push_channel_id(ids, id);
+        }
+    }
+    match value {
+        Value::Object(fields) => {
+            for (key, value) in fields {
+                if key == "text" {
+                    if let Some(text) = value.as_str() {
+                        collect_mrkdwn_channel_ids(text, ids);
+                    }
+                }
+                collect_channel_ids(value, ids);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                collect_channel_ids(value, ids);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_mrkdwn_channel_ids(text: &str, ids: &mut Vec<String>) {
+    let mut rest = text;
+    while let Some(start) = rest.find("<#") {
+        let Some(end) = rest[start + 2..].find('>') else {
+            break;
+        };
+        let raw = &rest[start + 2..start + 2 + end];
+        let id = raw.split_once('|').map_or(raw, |(id, _)| id);
+        push_channel_id(ids, id);
+        rest = &rest[start + 3 + end..];
+    }
+}
+
+fn push_channel_id(ids: &mut Vec<String>, id: &str) {
+    if !id.is_empty() && !ids.iter().any(|existing| existing == id) {
+        ids.push(id.to_owned());
+    }
 }
 
 fn toggle_style(text: &str, current: &SegmentStyle) -> Option<(SegmentStyle, usize)> {
@@ -444,7 +520,9 @@ fn merge_segments(segments: Vec<RenderSegment>) -> Vec<RenderSegment> {
         .filter(|segment| !segment.text.is_empty())
     {
         match merged.last_mut() {
-            Some(existing) if existing.style == segment.style => {
+            Some(existing)
+                if existing.style == segment.style && existing.channel == segment.channel =>
+            {
                 existing.text.push_str(&segment.text)
             }
             _ => merged.push(segment),
@@ -602,7 +680,7 @@ mod tests {
     fn renders_fallback_mrkdwn_refs_and_styles_as_segments() {
         let rendered = mrkdwn_lines(
             &ws(),
-            "hi <@U1> in <#C1|general> see <https://example.com|example> *bold* _em_ ~no~ `code` <!channel>",
+            "hi <@U1> in <#C1|old-general> see <https://example.com|example> *bold* _em_ ~no~ `code` <!channel>",
         );
 
         assert_eq!(
@@ -618,6 +696,7 @@ mod tests {
         );
         assert!(rendered[0].segments[1].style.mention);
         assert!(rendered[0].segments[3].style.mention);
+        assert_eq!(rendered[0].segments[3].channel.as_deref(), Some("C1"));
         assert!(rendered[0].segments[5].style.link);
         assert!(rendered[0].segments[7].style.bold);
         assert!(rendered[0].segments[9].style.italic);
@@ -625,6 +704,56 @@ mod tests {
         assert!(rendered[0].segments[13].style.code);
         assert!(rendered[0].segments[15].style.mention);
         assert!(rendered[0].segments[15].style.broadcast);
+    }
+
+    #[test]
+    fn finds_rich_text_and_mrkdwn_channel_mentions() {
+        let msg = crate::slack::models::Message {
+            text: Some("also <#C2|random> and <#C1>".into()),
+            blocks: vec![json!({
+                "type": "rich_text",
+                "elements": [{
+                    "type": "rich_text_section",
+                    "elements": [{"type": "channel", "channel_id": "C1"}]
+                }]
+            })],
+            ..Default::default()
+        };
+
+        assert_eq!(mentioned_channel_ids(&msg), vec!["C1", "C2"]);
+    }
+
+    #[test]
+    fn channel_mention_keeps_target_id_and_prefers_workspace_name() {
+        let rendered = mrkdwn_lines(&ws(), "ping <#C1|old-general> now");
+        assert_eq!(
+            rendered[0]
+                .segments
+                .iter()
+                .map(|s| (s.text.as_str(), s.channel.as_deref(), s.style.mention))
+                .collect::<Vec<_>>(),
+            vec![
+                ("ping ", None, false),
+                ("#general", Some("C1"), true),
+                (" now", None, false),
+            ]
+        );
+
+        let blocks = vec![json!({
+            "type": "rich_text",
+            "elements": [{
+                "type": "rich_text_section",
+                "elements": [
+                    {"type": "text", "text": "see "},
+                    {"type": "channel", "channel_id": "C1"}
+                ]
+            }]
+        })];
+        let rich = render_blocks(&ws(), &blocks);
+        assert_eq!(rich[0].segments.len(), 2);
+        assert_eq!(rich[0].segments[1].text, "#general");
+        assert_eq!(rich[0].segments[1].channel.as_deref(), Some("C1"));
+        assert!(rich[0].segments[1].style.mention);
     }
 
     #[test]

@@ -3,11 +3,12 @@ use std::collections::{BTreeMap, HashMap};
 use serde_json::json;
 
 use super::update::{
-    channel_open_scroll_target, emoji_preview_from_bytes, needs_user_hydration,
-    notification_for_message, pending_target_ts, preferred_channel, should_load_older_history,
-    unique_download_path, update,
+    begin_mark, channel_open_scroll_target, emoji_preview_from_bytes, is_permanent_mark_error,
+    needs_user_hydration, notification_for_message, pending_target_ts, preferred_channel,
+    should_load_older_history, unique_download_path, update,
 };
 use super::*;
+use crate::slack::Error as SlackError;
 use crate::slack::events::RtEvent;
 use crate::slack::models::{
     Channel, HistoryPage, Message as SlackMessage, SearchItem, SearchMessagesPage,
@@ -962,4 +963,130 @@ fn search_result_opens_channel_and_thread_and_clears_search() {
         app.active_thread.as_ref(),
         Some(&("C_GENERAL".into(), "1783372200.000000".into()))
     );
+}
+
+#[test]
+fn permanent_mark_errors_are_classified() {
+    assert!(is_permanent_mark_error(&SlackError::Api(
+        "channel_not_found".into()
+    )));
+    assert!(is_permanent_mark_error(&SlackError::Api(
+        "is_archived".into()
+    )));
+    assert!(!is_permanent_mark_error(&SlackError::Api(
+        "fatal_error".into()
+    )));
+    assert!(!is_permanent_mark_error(&SlackError::Transport(
+        "connection reset".into()
+    )));
+    assert!(!is_permanent_mark_error(&SlackError::RateLimited {
+        retry_after_secs: Some(1)
+    }));
+}
+
+#[test]
+fn mark_gate_dedupes_in_flight_and_blocks_channel_not_found() {
+    let mut app = test_app();
+    let team = app.active_team.clone().unwrap();
+    let channel = "C_DEAD".to_string();
+    let ts = "1783370000.000200".to_string();
+
+    assert!(begin_mark(&mut app, &team, &channel, &ts));
+    assert!(
+        !begin_mark(&mut app, &team, &channel, &ts),
+        "identical in-flight (team, channel, ts) must not reschedule"
+    );
+    assert_eq!(app.pending_marks.len(), 1);
+
+    let _ = update(
+        &mut app,
+        Message::ChannelMarked(
+            team.clone(),
+            channel.clone(),
+            ts.clone(),
+            Err(SlackError::Api("channel_not_found".into())),
+        ),
+    );
+
+    assert!(app.pending_marks.is_empty());
+    assert!(app.mark_blocked.contains(&(team.clone(), channel.clone())));
+    assert!(
+        !begin_mark(&mut app, &team, &channel, &ts),
+        "channel_not_found must block further marks this session"
+    );
+    assert!(!begin_mark(
+        &mut app,
+        &team,
+        &channel,
+        &"1783370000.000300".into()
+    ));
+    assert!(begin_mark(
+        &mut app,
+        &team,
+        &"C_GENERAL".into(),
+        &"1783372300.000100".into()
+    ));
+}
+
+#[test]
+fn mark_gate_allows_retry_after_transient_error() {
+    let mut app = test_app();
+    let team = app.active_team.clone().unwrap();
+    let channel = "C_GENERAL".to_string();
+    let ts = "1783372300.000100".to_string();
+
+    assert!(begin_mark(&mut app, &team, &channel, &ts));
+    let _ = update(
+        &mut app,
+        Message::ChannelMarked(
+            team.clone(),
+            channel.clone(),
+            ts.clone(),
+            Err(SlackError::Transport("timeout".into())),
+        ),
+    );
+
+    assert!(app.pending_marks.is_empty());
+    assert!(!app.mark_blocked.contains(&(team.clone(), channel.clone())));
+    assert!(
+        begin_mark(&mut app, &team, &channel, &ts),
+        "transient failures must remain retryable"
+    );
+}
+
+#[test]
+fn mark_success_updates_last_read_without_optimistic_write() {
+    let mut app = test_app();
+    let team = app.active_team.clone().unwrap();
+    let channel = "C_GENERAL".to_string();
+    let ts = "1783372300.000100".to_string();
+
+    {
+        let cm = app
+            .workspaces
+            .get_mut(&team)
+            .unwrap()
+            .messages
+            .get_mut(&channel)
+            .unwrap();
+        cm.last_read = Some("1783370000.000100".into());
+    }
+    assert!(begin_mark(&mut app, &team, &channel, &ts));
+    assert_eq!(
+        app.workspaces[&team].messages[&channel]
+            .last_read
+            .as_deref(),
+        Some("1783370000.000100")
+    );
+
+    let _ = update(
+        &mut app,
+        Message::ChannelMarked(team.clone(), channel.clone(), ts.clone(), Ok(())),
+    );
+
+    assert!(app.pending_marks.is_empty());
+    let cm = &app.workspaces[&team].messages[&channel];
+    assert_eq!(cm.last_read.as_deref(), Some(ts.as_str()));
+    assert_eq!(cm.unread_count, 0);
+    assert_eq!(cm.mention_count, 0);
 }

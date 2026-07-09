@@ -320,6 +320,7 @@ fn selectable_segments(line: &blocks::RenderLine) -> Vec<selectable::Segment> {
     if line.segments.is_empty() {
         return vec![selectable::Segment {
             text: state::emoji_text_to_display(&line.text),
+            channel: None,
             mono: line.mono,
             color: None,
             background: None,
@@ -335,6 +336,7 @@ fn selectable_segments(line: &blocks::RenderLine) -> Vec<selectable::Segment> {
             let style = &segment.style;
             selectable::Segment {
                 text: state::emoji_text_to_display(&segment.text),
+                channel: segment.channel.clone(),
                 mono: line.mono || style.code,
                 color: segment_fg(style),
                 background: segment_bg(style),
@@ -362,7 +364,12 @@ fn emoji_body<'a>(
                 match token {
                     state::EmojiTextToken::Text(value) if !value.is_empty() => {
                         for run in text_runs(&value) {
-                            row = row.push(text_run(run, mono, &segment.style));
+                            row = row.push(text_run(
+                                run,
+                                mono,
+                                &segment.style,
+                                segment.channel.as_deref(),
+                            ));
                         }
                     }
                     state::EmojiTextToken::Text(_) => {}
@@ -410,6 +417,7 @@ fn line_segments(line: &blocks::RenderLine) -> Vec<blocks::RenderSegment> {
         vec![blocks::RenderSegment {
             text: line.text.clone(),
             style: blocks::SegmentStyle::default(),
+            channel: None,
         }]
     } else {
         line.segments.clone()
@@ -431,7 +439,12 @@ fn text_runs(value: &str) -> Vec<String> {
     out
 }
 
-fn text_run<'a>(value: String, mono: bool, style: &blocks::SegmentStyle) -> Element<'a, Message> {
+fn text_run<'a>(
+    value: String,
+    mono: bool,
+    style: &blocks::SegmentStyle,
+    channel: Option<&str>,
+) -> Element<'a, Message> {
     let mut font = if mono { Font::MONOSPACE } else { Font::DEFAULT };
     if style.bold {
         font.weight = iced::font::Weight::Bold;
@@ -443,12 +456,17 @@ fn text_run<'a>(value: String, mono: bool, style: &blocks::SegmentStyle) -> Elem
         .size(theme::TEXT_MD)
         .font(font)
         .color(segment_fg(style).unwrap_or(theme::TEXT_2));
-    match segment_bg(style) {
-        Some(_) => container(styled)
+    match (segment_bg(style), channel) {
+        (Some(_), Some(channel)) => button(styled)
+            .padding([0.0, 3.0])
+            .style(theme::inline_mention_button(style.broadcast))
+            .on_press(Message::ChannelSelected(channel.to_owned()))
+            .into(),
+        (Some(_), None) => container(styled)
             .padding([0.0, 3.0])
             .style(theme::inline_mention(style.broadcast))
             .into(),
-        None => styled.into(),
+        (None, _) => styled.into(),
     }
 }
 

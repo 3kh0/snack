@@ -78,6 +78,7 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                 }
                 return Task::batch([
                     hydrate_visible_missing_users(app, &team, &id),
+                    hydrate_visible_channels(app, &team, &id),
                     mark_latest_visible(app, &team, &id),
                     load_visible_file_previews(app, &team, &id),
                     load_visible_avatar_previews(app, &team, &id),
@@ -152,6 +153,7 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                     tracing::info!(%channel, %root_ts, messages = n, "thread loaded");
                     return Task::batch([
                         hydrate_missing_users(app, &team, &messages),
+                        hydrate_message_channels(app, &team, &messages),
                         hydrate_emojis(app, &team, &messages),
                         load_avatar_previews(app, &team, messages),
                         load_thread_file_previews(app, &team, &channel, &root_ts),
@@ -364,6 +366,7 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                     mark_workspace_dirty(app, &team);
                     let mut tasks = vec![
                         hydrate_missing_users(app, &team, &messages),
+                        hydrate_message_channels(app, &team, &messages),
                         hydrate_emojis(app, &team, &messages),
                         load_avatar_previews(app, &team, messages),
                         load_visible_file_previews(app, &team, &channel),
@@ -401,6 +404,8 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::ChannelScrolled { channel, y } => channel_scrolled(app, channel, y),
 
         Message::ChannelMarked(team, channel, ts, result) => {
+            app.pending_marks
+                .remove(&(team.clone(), channel.clone(), ts.clone()));
             match result {
                 Ok(()) => {
                     if let Some(cm) = app
@@ -414,7 +419,19 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                     }
                     mark_workspace_dirty(app, &team);
                 }
-                Err(e) => tracing::warn!(%team, %channel, error = %e, "mark failed"),
+                Err(e) => {
+                    if is_permanent_mark_error(&e) {
+                        app.mark_blocked.insert((team.clone(), channel.clone()));
+                        tracing::warn!(
+                            %team,
+                            %channel,
+                            error = %e,
+                            "mark failed permanently; blocking further attempts this session"
+                        );
+                    } else {
+                        tracing::warn!(%team, %channel, error = %e, "mark failed");
+                    }
+                }
             }
             Task::none()
         }
@@ -717,7 +734,13 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
 
-        Message::ChannelsLoaded { team, result } => {
+        Message::ChannelsLoaded {
+            team,
+            requested,
+            result,
+        } => {
+            app.channel_hydrated
+                .extend(requested.into_iter().map(|channel| (team.clone(), channel)));
             match result {
                 Ok(channels) => {
                     if let Some(ws) = app.workspaces.get_mut(&team) {
@@ -775,6 +798,7 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
             if app.active_team.as_deref() == Some(&team) {
                 if let Some(channel) = app.active_channel.clone() {
                     tasks.push(hydrate_visible_missing_users(app, &team, &channel));
+                    tasks.push(hydrate_visible_channels(app, &team, &channel));
                     tasks.push(mark_latest_visible(app, &team, &channel));
                     tasks.push(load_visible_file_previews(app, &team, &channel));
                     tasks.push(load_visible_avatar_previews(app, &team, &channel));
@@ -1180,7 +1204,7 @@ fn maybe_send_typing(app: &mut App) {
     app.last_typing.insert(key, now);
 }
 
-fn mark_latest_visible(app: &App, team: &str, channel: &ChannelId) -> Task<Message> {
+fn mark_latest_visible(app: &mut App, team: &str, channel: &ChannelId) -> Task<Message> {
     let Some(ws) = app.workspaces.get(team) else {
         return Task::none();
     };
@@ -1200,7 +1224,36 @@ fn mark_latest_visible(app: &App, team: &str, channel: &ChannelId) -> Task<Messa
     {
         return Task::none();
     }
+    if app.live().is_none() {
+        return Task::none();
+    }
+    if !begin_mark(app, team, channel, &latest) {
+        return Task::none();
+    }
     app.mark_channel_read(team, channel, latest)
+}
+
+pub(super) fn begin_mark(app: &mut App, team: &str, channel: &ChannelId, ts: &MessageTs) -> bool {
+    let team_channel = (team.to_owned(), channel.clone());
+    if app.mark_blocked.contains(&team_channel) {
+        return false;
+    }
+    let key = (team.to_owned(), channel.clone(), ts.clone());
+    if app.pending_marks.contains(&key) {
+        return false;
+    }
+    app.pending_marks.insert(key);
+    true
+}
+
+pub(super) fn is_permanent_mark_error(error: &SlackError) -> bool {
+    match error {
+        SlackError::Api(code) => matches!(
+            code.as_str(),
+            "channel_not_found" | "is_archived" | "not_in_channel" | "invalid_channel"
+        ),
+        _ => false,
+    }
 }
 
 fn send_pressed(app: &mut App) -> Task<Message> {
@@ -2814,9 +2867,13 @@ fn hydrate_sidebar_channels(app: &App, team: &str) -> Task<Message> {
     let ws_session = ws_session.clone();
     let team = team.to_owned();
     Task::perform(
-        async move { api::fetch_channels_info(&transport, &client, &ws_session, channels).await },
+        {
+            let channels = channels.clone();
+            async move { api::fetch_channels_info(&transport, &client, &ws_session, channels).await }
+        },
         move |result| Message::ChannelsLoaded {
             team: team.clone(),
+            requested: channels.clone(),
             result,
         },
     )
@@ -2828,6 +2885,55 @@ fn channel_needs_hydration(channel: &Channel) -> bool {
         .as_deref()
         .map(str::trim)
         .is_none_or(str::is_empty)
+}
+
+fn hydrate_visible_channels(app: &App, team: &str, channel: &str) -> Task<Message> {
+    let messages = visible_channel_messages(app, team, channel);
+    hydrate_message_channels(app, team, &messages)
+}
+
+fn hydrate_message_channels(app: &App, team: &str, messages: &[SlackMessage]) -> Task<Message> {
+    let Some((transport, session)) = app.live() else {
+        return Task::none();
+    };
+    let Some(ws_session) = session.workspaces.get(team) else {
+        return Task::none();
+    };
+    let Some(ws) = app.workspaces.get(team) else {
+        return Task::none();
+    };
+
+    let mut seen = HashSet::new();
+    let channels: Vec<_> = messages
+        .iter()
+        .flat_map(ui::blocks::mentioned_channel_ids)
+        .filter(|channel| ws.channels.get(channel).is_none_or(channel_needs_hydration))
+        .filter(|channel| {
+            !app.channel_hydrated
+                .contains(&(team.to_owned(), channel.clone()))
+        })
+        .filter(|channel| seen.insert(channel.clone()))
+        .collect();
+
+    if channels.is_empty() {
+        return Task::none();
+    }
+
+    let transport = transport.clone();
+    let client = app.client.clone();
+    let ws_session = ws_session.clone();
+    let team = team.to_owned();
+    Task::perform(
+        {
+            let channels = channels.clone();
+            async move { api::fetch_channels_info(&transport, &client, &ws_session, channels).await }
+        },
+        move |result| Message::ChannelsLoaded {
+            team: team.clone(),
+            requested: channels.clone(),
+            result,
+        },
+    )
 }
 
 fn hydrate_sidebar_dm_users(app: &App, team: &str) -> Task<Message> {

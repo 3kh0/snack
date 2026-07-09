@@ -356,6 +356,31 @@ pub fn inline_mention(broadcast: bool) -> impl Fn(&Theme) -> container::Style {
     }
 }
 
+pub fn inline_mention_button(broadcast: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let (background, text_color) = if broadcast {
+            (BROADCAST_BG, BROADCAST_FG)
+        } else {
+            (MENTION_BG, MENTION_FG)
+        };
+        button::Style {
+            background: Some(Background::Color(
+                if matches!(status, button::Status::Hovered) {
+                    Color {
+                        a: 0.78,
+                        ..background
+                    }
+                } else {
+                    background
+                },
+            )),
+            text_color,
+            border: Border::default().rounded(4.0),
+            ..button::Style::default()
+        }
+    }
+}
+
 pub fn reaction_button(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |_theme, status| {
         let hovered = matches!(status, button::Status::Hovered);
