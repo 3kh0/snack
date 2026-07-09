@@ -232,21 +232,13 @@ pub fn sidebar(theme: &Theme) -> container::Style {
 pub fn channel_row(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |_theme, status| {
         let (bg, text_color) = match (active, status) {
-            (true, button::Status::Pressed) => (
-                Some(Background::Color(Color {
-                    a: 0.28,
-                    ..ACTIVE
-                })),
-                TEXT_1,
-            ),
+            (true, button::Status::Pressed) => {
+                (Some(Background::Color(Color { a: 0.28, ..ACTIVE })), TEXT_1)
+            }
             (true, _) => (Some(Background::Color(ACTIVE)), TEXT_1),
-            (false, button::Status::Pressed) => (
-                Some(Background::Color(Color {
-                    a: 0.16,
-                    ..HOVER
-                })),
-                TEXT_1,
-            ),
+            (false, button::Status::Pressed) => {
+                (Some(Background::Color(Color { a: 0.16, ..HOVER })), TEXT_1)
+            }
             (false, button::Status::Hovered) => (Some(Background::Color(HOVER)), TEXT_2),
             (false, _) => (None, TEXT_3),
         };
@@ -279,10 +271,7 @@ pub fn app_badge(_theme: &Theme) -> container::Style {
 
 pub fn vip_badge(_theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(Color {
-            a: 0.92,
-            ..TEXT_1
-        })),
+        background: Some(Background::Color(Color { a: 0.92, ..TEXT_1 })),
         text_color: Some(BG_BASE),
         border: Border::default().rounded(4.0),
         ..container::Style::default()

@@ -1411,10 +1411,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        assert_eq!(
-            user_avatar_url(&user),
-            Some("https://example.test/48.png")
-        );
+        assert_eq!(user_avatar_url(&user), Some("https://example.test/48.png"));
 
         let fallback = User {
             id: "U2".into(),
@@ -1547,9 +1544,10 @@ mod tests {
             is_channel: true,
             ..Default::default()
         };
-        named_vip
-            .extra
-            .insert("sidebar_section_name".into(), serde_json::json!("VIP unreads"));
+        named_vip.extra.insert(
+            "sidebar_section_name".into(),
+            serde_json::json!("VIP unreads"),
+        );
         assert!(is_vip_channel(&ws, &named_vip));
     }
 

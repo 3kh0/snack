@@ -184,11 +184,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
                 hovered_for(true),
             ))
             .padding(iced::Padding::ZERO.left(gap));
-            ui::motion::collapse_x(
-                panel.into(),
-                progress,
-                ui::theme::THREAD_WIDTH + gap,
-            )
+            ui::motion::collapse_x(panel.into(), progress, ui::theme::THREAD_WIDTH + gap)
         })
         .key(thread_key)
         .on_finish_maybe((!open).then_some(Message::ThreadDismissed));

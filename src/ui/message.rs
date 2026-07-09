@@ -98,8 +98,8 @@ pub fn row<'a>(
                 let progress = super::motion::t(anim, at);
                 let mut actions = Row::new();
                 if can_copy {
-                    actions = actions
-                        .push(action_item("Copy", Message::CopyMessage(copy_text.clone())));
+                    actions =
+                        actions.push(action_item("Copy", Message::CopyMessage(copy_text.clone())));
                 }
                 if let Some(ts) = edit_ts.clone() {
                     actions = actions

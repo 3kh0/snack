@@ -87,8 +87,8 @@ fn results<'a>(
                 .size(theme::TEXT_MD)
                 .color(theme::fade(theme::MUTED, alpha)),
         )
-            .padding(theme::SPACE_LG)
-            .into();
+        .padding(theme::SPACE_LG)
+        .into();
     }
 
     let mut list = Column::new().spacing(theme::SPACE_XS);

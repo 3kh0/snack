@@ -69,10 +69,7 @@ where
     transition(open, micro_anim, view)
 }
 
-pub fn scrim<'a, Message: Clone + 'a>(
-    progress: f32,
-    on_press: Message,
-) -> Element<'a, Message> {
+pub fn scrim<'a, Message: Clone + 'a>(progress: f32, on_press: Message) -> Element<'a, Message> {
     let p = progress.clamp(0.0, 1.0);
     let color = Color {
         r: 0.0,

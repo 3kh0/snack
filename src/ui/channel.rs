@@ -185,10 +185,7 @@ fn dm_header<'a>(
         title = title.push(vip_badge());
     }
 
-    container(title)
-        .padding(theme::SPACE_MD)
-        .width(Fill)
-        .into()
+    container(title).padding(theme::SPACE_MD).width(Fill).into()
 }
 
 fn dm_avatar_with_presence<'a>(
@@ -228,14 +225,10 @@ fn avatar_placeholder<'a>(label: &str) -> Element<'a, Message> {
         .find(|ch| ch.is_alphanumeric())
         .map(|ch| ch.to_uppercase().collect::<String>())
         .unwrap_or_else(|| "?".to_owned());
-    container(
-        text(initial)
-            .size(theme::TEXT_MD)
-            .font(iced::Font {
-                weight: font::Weight::Bold,
-                ..iced::Font::default()
-            }),
-    )
+    container(text(initial).size(theme::TEXT_MD).font(iced::Font {
+        weight: font::Weight::Bold,
+        ..iced::Font::default()
+    }))
     .width(size)
     .height(size)
     .center_x(size)
@@ -263,14 +256,10 @@ fn presence_badge<'a>(presence: Presence) -> Element<'a, Message> {
 }
 
 fn vip_badge<'a>() -> Element<'a, Message> {
-    container(
-        text("VIP")
-            .size(10.0)
-            .font(iced::Font {
-                weight: font::Weight::Bold,
-                ..iced::Font::default()
-            }),
-    )
+    container(text("VIP").size(10.0).font(iced::Font {
+        weight: font::Weight::Bold,
+        ..iced::Font::default()
+    }))
     .padding([2.0, 6.0])
     .style(theme::vip_badge)
     .into()
