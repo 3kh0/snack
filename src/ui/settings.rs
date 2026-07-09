@@ -1,28 +1,31 @@
-use iced::widget::{Space, button, column, container, mouse_area, row, slider, stack, text};
+use iced::widget::{Space, button, column, container, row, slider, stack, text};
 use iced::{Alignment, Element, Fill, Length};
 
-use super::theme;
+use super::{motion, theme};
 use crate::app::Message;
 use crate::config::{AccentColor, Settings};
 
 const CARD_WIDTH: f32 = 420.0;
 const SWATCH_SIZE: f32 = 34.0;
 
-pub fn modal<'a>(base: Element<'a, Message>, settings: &Settings) -> Element<'a, Message> {
-    let scrim = mouse_area(
-        container(Space::new())
-            .width(Fill)
-            .height(Fill)
-            .style(theme::overlay_dim),
-    )
-    .on_press(Message::SettingsClosed);
+pub fn modal<'a>(
+    base: Element<'a, Message>,
+    settings: &'a Settings,
+    open: bool,
+) -> Element<'a, Message> {
+    let layers = motion::overlay(open, move |anim, at| {
+        let progress = motion::t(anim, at);
+        let scrim = motion::scrim(progress, Message::SettingsClosed);
+        let card = motion::slide_y(card(settings), progress, -12.0);
+        let centered = container(card)
+            .center_x(Fill)
+            .center_y(Fill)
+            .padding(theme::SPACE_LG);
 
-    let centered = container(card(settings))
-        .center_x(Fill)
-        .center_y(Fill)
-        .padding(theme::SPACE_LG);
+        Element::from(stack![scrim, centered].width(Fill).height(Fill))
+    })
+    .on_finish_maybe((!open).then_some(Message::SettingsDismissed));
 
-    let layers = stack![scrim, centered].width(Fill).height(Fill);
     stack![base, layers].into()
 }
 
@@ -80,60 +83,57 @@ fn accent_section<'a>(selected: AccentColor) -> Element<'a, Message> {
             button(Space::new())
                 .width(Length::Fixed(SWATCH_SIZE))
                 .height(Length::Fixed(SWATCH_SIZE))
-                .style(theme::swatch(
-                    theme::accent_swatch(color),
-                    color == selected,
-                ))
+                .style(theme::swatch(theme::accent_swatch(color), color == selected))
                 .on_press(Message::SettingsAccentSelected(color)),
         );
     }
 
-    column![label("Accent color"), swatches]
-        .spacing(theme::SPACE_SM)
-        .width(Fill)
-        .into()
+    column![
+        text("Accent")
+            .size(theme::TEXT_MD)
+            .color(theme::TEXT_2)
+            .font(iced::Font {
+                weight: iced::font::Weight::Semibold,
+                ..iced::Font::default()
+            }),
+        swatches,
+    ]
+    .spacing(theme::SPACE_SM)
+    .into()
 }
 
 fn slider_row<'a>(
-    name: &str,
+    label: &'a str,
     value_label: String,
     range: std::ops::RangeInclusive<f32>,
     value: f32,
-    on_change: impl Fn(f32) -> Message + 'a,
+    on_change: fn(f32) -> Message,
 ) -> Element<'a, Message> {
-    let header = row![
-        label(name),
-        Space::new().width(Fill),
-        text(value_label).size(theme::TEXT_SM).color(theme::TEXT_2),
+    column![
+        row![
+            text(label).size(theme::TEXT_MD).color(theme::TEXT_2),
+            Space::new().width(Fill),
+            text(value_label).size(theme::TEXT_SM).color(theme::TEXT_4),
+        ]
+        .align_y(Alignment::Center),
+        slider(range, value, on_change).step(1.0),
     ]
-    .align_y(Alignment::Center);
-
-    column![header, slider(range, value, on_change).step(1.0_f32)]
-        .spacing(theme::SPACE_SM)
-        .width(Fill)
-        .into()
+    .spacing(theme::SPACE_SM)
+    .into()
 }
 
 fn actions<'a>() -> Element<'a, Message> {
     row![
         button(text("Reset").size(theme::TEXT_SM))
-            .padding([theme::SPACE_XS, theme::SPACE_MD])
             .style(theme::secondary_button)
+            .padding([theme::SPACE_XS, theme::SPACE_MD])
             .on_press(Message::SettingsReset),
         Space::new().width(Fill),
         button(text("Done").size(theme::TEXT_SM))
-            .padding([theme::SPACE_XS, theme::SPACE_MD])
             .style(theme::primary_button)
+            .padding([theme::SPACE_XS, theme::SPACE_MD])
             .on_press(Message::SettingsClosed),
     ]
     .align_y(Alignment::Center)
-    .width(Fill)
     .into()
-}
-
-fn label<'a>(name: &str) -> Element<'a, Message> {
-    text(name.to_owned())
-        .size(theme::TEXT_MD)
-        .color(theme::TEXT_2)
-        .into()
 }

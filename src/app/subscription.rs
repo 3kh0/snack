@@ -16,7 +16,7 @@ pub(super) fn subscription(app: &App) -> Subscription<Message> {
     }
 
     subs.push(iced::event::listen_with(palette_hotkey));
-    if app.palette.is_some() {
+    if app.palette_open {
         subs.push(iced::event::listen_with(palette_navigation));
     }
     if app

@@ -231,23 +231,28 @@ pub fn sidebar(theme: &Theme) -> container::Style {
 
 pub fn channel_row(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |_theme, status| {
-        let hovered = matches!(status, button::Status::Hovered);
-        let bg = if active {
-            Some(Background::Color(ACTIVE))
-        } else if hovered {
-            Some(Background::Color(HOVER))
-        } else {
-            None
+        let (bg, text_color) = match (active, status) {
+            (true, button::Status::Pressed) => (
+                Some(Background::Color(Color {
+                    a: 0.28,
+                    ..ACTIVE
+                })),
+                TEXT_1,
+            ),
+            (true, _) => (Some(Background::Color(ACTIVE)), TEXT_1),
+            (false, button::Status::Pressed) => (
+                Some(Background::Color(Color {
+                    a: 0.16,
+                    ..HOVER
+                })),
+                TEXT_1,
+            ),
+            (false, button::Status::Hovered) => (Some(Background::Color(HOVER)), TEXT_2),
+            (false, _) => (None, TEXT_3),
         };
         button::Style {
             background: bg,
-            text_color: if active {
-                TEXT_1
-            } else if hovered {
-                TEXT_2
-            } else {
-                TEXT_3
-            },
+            text_color,
             border: Border::default().rounded(CONTROL_RADIUS),
             ..button::Style::default()
         }

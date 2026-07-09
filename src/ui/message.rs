@@ -88,39 +88,42 @@ pub fn row<'a>(
         && msg.ts.is_some()
         && msg.user.as_deref() == Some(ws.self_user_id.as_str());
 
-    // Slack-style toolbar overlaid on the message, revealed only on hover.
     let action_bar: Option<Element<'a, Message>> = if hovered && edit_text.is_none() {
-        let mut actions = Row::new();
-        let mut has_actions = false;
-        if !copy_text.is_empty() {
-            actions = actions.push(action_item("Copy", Message::CopyMessage(copy_text.clone())));
-            has_actions = true;
-        }
-        if editable {
-            if let Some(ts) = msg.ts.clone() {
-                actions = actions
-                    .push(action_item(
-                        "Edit",
-                        Message::EditPressed {
-                            channel: channel_id.to_owned(),
-                            ts: ts.clone(),
-                        },
-                    ))
-                    .push(action_item(
-                        "Delete",
-                        Message::DeletePressed {
-                            channel: channel_id.to_owned(),
-                            ts,
-                        },
-                    ));
-                has_actions = true;
-            }
-        }
-        has_actions.then(|| {
-            container(actions.padding(2))
-                .padding(2)
-                .style(theme::action_bar)
-                .into()
+        let can_copy = !copy_text.is_empty();
+        let edit_ts = editable.then(|| msg.ts.clone()).flatten();
+        (can_copy || edit_ts.is_some()).then(|| {
+            let copy_text = copy_text.clone();
+            let channel_id = channel_id.to_owned();
+            super::motion::micro_reveal(true, move |anim, at| {
+                let progress = super::motion::t(anim, at);
+                let mut actions = Row::new();
+                if can_copy {
+                    actions = actions
+                        .push(action_item("Copy", Message::CopyMessage(copy_text.clone())));
+                }
+                if let Some(ts) = edit_ts.clone() {
+                    actions = actions
+                        .push(action_item(
+                            "Edit",
+                            Message::EditPressed {
+                                channel: channel_id.clone(),
+                                ts: ts.clone(),
+                            },
+                        ))
+                        .push(action_item(
+                            "Delete",
+                            Message::DeletePressed {
+                                channel: channel_id.clone(),
+                                ts,
+                            },
+                        ));
+                }
+                let bar = container(actions.padding(2))
+                    .padding(2)
+                    .style(theme::action_bar);
+                super::motion::slide_y(bar.into(), progress, -6.0)
+            })
+            .into()
         })
     } else {
         None

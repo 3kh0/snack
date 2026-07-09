@@ -122,21 +122,31 @@ fn account_menu_toggles_and_closes_for_settings() {
 
     let _ = update(&mut app, Message::AccountMenuToggled);
     assert!(app.show_account_menu);
+    assert!(app.account_menu_open);
 
     let _ = update(&mut app, Message::SettingsOpened);
-    assert!(!app.show_account_menu);
+    assert!(app.show_account_menu);
+    assert!(!app.account_menu_open);
     assert!(app.show_settings);
+    assert!(app.settings_open);
+
+    let _ = update(&mut app, Message::AccountMenuDismissed);
+    assert!(!app.show_account_menu);
 }
 
 #[test]
 fn self_presence_selection_updates_active_workspace() {
     let mut app = test_app();
     app.show_account_menu = true;
+    app.account_menu_open = true;
 
     let _ = update(&mut app, Message::SelfPresenceSelected(Presence::Active));
 
     let ws = app.active_workspace().unwrap();
     assert_eq!(ws.presence.get(SELF_USER), Some(&Presence::Active));
+    assert!(!app.account_menu_open);
+
+    let _ = update(&mut app, Message::AccountMenuDismissed);
     assert!(!app.show_account_menu);
 }
 

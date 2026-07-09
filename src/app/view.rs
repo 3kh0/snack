@@ -26,7 +26,9 @@ fn overlay_host<'a>(
 
 fn with_palette<'a>(app: &'a App, base: Element<'a, Message>) -> Element<'a, Message> {
     match (app.palette.as_ref(), app.active_workspace()) {
-        (Some(state), Some(ws)) => ui::palette::modal(base, ws, state, &app.avatar_previews),
+        (Some(state), Some(ws)) => {
+            ui::palette::modal(base, ws, state, &app.avatar_previews, app.palette_open)
+        }
         _ => overlay_host(base, None),
     }
 }
@@ -118,7 +120,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
                 .get(channel_id)
                 .map(|c| crate::state::channel_display_name(ws, c))
                 .unwrap_or_else(|| channel_id.to_owned());
-            let chat = column![
+            let body = column![
                 container(ui::channel::view(
                     ws,
                     channel_id,
@@ -134,7 +136,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
             ]
             .width(Fill)
             .height(Fill);
-            container(chat)
+            container(body)
                 .width(Fill)
                 .height(Fill)
                 .style(ui::theme::panel)
@@ -154,29 +156,34 @@ fn main_view(app: &App) -> Element<'_, Message> {
             .threads
             .get(&(team.clone(), channel.clone(), root_ts.clone()));
         let root = ui::thread::root_message(ws, channel, root_ts);
+        let open = app.thread_open;
+        let thread_key = (channel.as_str(), root_ts.as_str());
+        let thread_panel = ui::motion::panel_reveal(open, move |anim, at| {
+            let progress = ui::motion::t(anim, at);
+            ui::motion::slide_x(
+                ui::thread::view(
+                    ws,
+                    channel,
+                    root,
+                    replies,
+                    &app.thread_composer_text,
+                    &app.file_previews,
+                    &app.avatar_previews,
+                    &app.emoji_previews,
+                    emoji_animation_elapsed,
+                    editing_for(channel),
+                    hovered_for(true),
+                ),
+                progress,
+                ui::theme::THREAD_WIDTH * 0.2,
+            )
+        })
+        .key(thread_key)
+        .on_finish_maybe((!open).then_some(Message::ThreadDismissed));
+
         with_modal(
             app,
-            with_account_menu(
-                app,
-                shell(row![
-                    rail,
-                    sidebar,
-                    main,
-                    ui::thread::view(
-                        ws,
-                        channel,
-                        root,
-                        replies,
-                        &app.thread_composer_text,
-                        &app.file_previews,
-                        &app.avatar_previews,
-                        &app.emoji_previews,
-                        emoji_animation_elapsed,
-                        editing_for(channel),
-                        hovered_for(true),
-                    )
-                ]),
-            ),
+            with_account_menu(app, shell(row![rail, sidebar, main, thread_panel])),
         )
     } else {
         with_modal(
@@ -196,7 +203,7 @@ fn resize_handle<'a>() -> Element<'a, Message> {
 
 fn with_modal<'a>(app: &'a App, base: Element<'a, Message>) -> Element<'a, Message> {
     if app.show_settings {
-        ui::settings::modal(base, &app.settings)
+        ui::settings::modal(base, &app.settings, app.settings_open)
     } else {
         overlay_host(base, None)
     }
@@ -206,19 +213,28 @@ fn with_account_menu<'a>(app: &'a App, base: Element<'a, Message>) -> Element<'a
     let Some(ws) = app.active_workspace().filter(|_| app.show_account_menu) else {
         return overlay_host(base, None);
     };
-    overlay_host(
-        base,
-        Some(
-            container(opaque(ui::rail::account_menu(ws, &app.avatar_previews)))
+
+    let open = app.account_menu_open;
+    let menu = ui::motion::overlay(open, move |anim, at| {
+        let progress = ui::motion::t(anim, at);
+        let card = ui::motion::slide_y(
+            opaque(ui::rail::account_menu(ws, &app.avatar_previews)),
+            progress,
+            8.0,
+        );
+        Element::from(
+            container(card)
                 .align_left(Fill)
                 .align_bottom(Fill)
                 .padding([
                     ui::theme::gap() + ui::rail::ICON_SIZE + ui::theme::SPACE_LG,
                     ui::theme::gap() + ui::theme::SPACE_SM,
-                ])
-                .into(),
-        ),
-    )
+                ]),
+        )
+    })
+    .on_finish_maybe((!open).then_some(Message::AccountMenuDismissed));
+
+    stack![base, menu].into()
 }
 
 fn shell(content: iced::widget::Row<'_, Message>) -> Element<'_, Message> {

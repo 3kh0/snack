@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
 use iced::widget::{
-    Column, Space, button, column, container, image, mouse_area, rich_text, row, scrollable, span,
-    stack, svg, text, text_input,
+    Column, Space, button, column, container, image, rich_text, row, scrollable, span, stack, svg,
+    text, text_input,
 };
 use iced::{Alignment, ContentFit, Element, Fill, Length, font};
 
-use super::{icons, theme};
+use super::{icons, motion, theme};
 use crate::app::{FilePreview, Message, PaletteEntry, PaletteState, PaletteTarget};
 use crate::slack::models::UserId;
 use crate::state::{Presence, Workspace};
@@ -22,21 +22,21 @@ pub fn modal<'a>(
     ws: &'a Workspace,
     state: &'a PaletteState,
     avatars: &'a AvatarPreviews,
+    open: bool,
 ) -> Element<'a, Message> {
-    let scrim = mouse_area(
-        container(Space::new())
-            .width(Fill)
-            .height(Fill)
-            .style(theme::overlay_dim),
-    )
-    .on_press(Message::PaletteClosed);
+    let layers = motion::overlay(open, move |anim, at| {
+        let progress = motion::t(anim, at);
+        let scrim = motion::scrim(progress, Message::PaletteClosed);
+        let card = motion::slide_y(card(ws, state, avatars), progress, -12.0);
+        let centered = container(card)
+            .center_x(Fill)
+            .align_top(Fill)
+            .padding(theme::SPACE_LG * 5.0);
 
-    let centered = container(card(ws, state, avatars))
-        .center_x(Fill)
-        .align_top(Fill)
-        .padding(theme::SPACE_LG * 5.0);
+        Element::from(stack![scrim, centered].width(Fill).height(Fill))
+    })
+    .on_finish_maybe((!open).then_some(Message::PaletteDismissed));
 
-    let layers = stack![scrim, centered].width(Fill).height(Fill);
     stack![base, layers].into()
 }
 

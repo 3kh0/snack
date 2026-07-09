@@ -64,6 +64,7 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                 .is_some_and(|(channel, _)| channel != &id)
             {
                 app.active_thread = None;
+                app.thread_open = false;
                 app.thread_composer_text.clear();
             }
             if let Some(team) = app.active_team.clone() {
@@ -91,6 +92,7 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::ThreadOpened { channel, ts } => {
             app.active_channel = Some(channel.clone());
             app.active_thread = Some((channel.clone(), ts.clone()));
+            app.thread_open = true;
             let Some(team) = app.active_team.clone() else {
                 return Task::none();
             };
@@ -112,8 +114,15 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
         }
 
         Message::ThreadClosed => {
-            app.active_thread = None;
-            app.thread_composer_text.clear();
+            app.thread_open = false;
+            Task::none()
+        }
+
+        Message::ThreadDismissed => {
+            if !app.thread_open {
+                app.active_thread = None;
+                app.thread_composer_text.clear();
+            }
             Task::none()
         }
 
@@ -577,7 +586,13 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
 
         Message::PaletteToggled => palette_toggled(app),
         Message::PaletteClosed => {
-            app.palette = None;
+            app.palette_open = false;
+            Task::none()
+        }
+        Message::PaletteDismissed => {
+            if !app.palette_open {
+                app.palette = None;
+            }
             Task::none()
         }
         Message::PaletteQueryChanged(query) => palette_query_changed(app, query),
@@ -820,7 +835,19 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::RetryAuth => app.load_session(),
 
         Message::AccountMenuToggled => {
-            app.show_account_menu = !app.show_account_menu;
+            if app.account_menu_open {
+                app.account_menu_open = false;
+            } else {
+                app.show_account_menu = true;
+                app.account_menu_open = true;
+            }
+            Task::none()
+        }
+
+        Message::AccountMenuDismissed => {
+            if !app.account_menu_open {
+                app.show_account_menu = false;
+            }
             Task::none()
         }
 
@@ -855,13 +882,21 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::SignOutPressed => sign_out(app),
 
         Message::SettingsOpened => {
-            app.show_account_menu = false;
+            app.account_menu_open = false;
             app.show_settings = true;
+            app.settings_open = true;
             Task::none()
         }
 
         Message::SettingsClosed => {
-            app.show_settings = false;
+            app.settings_open = false;
+            Task::none()
+        }
+
+        Message::SettingsDismissed => {
+            if !app.settings_open {
+                app.show_settings = false;
+            }
             Task::none()
         }
 
@@ -964,12 +999,14 @@ fn select_workspace(app: &mut App, team: TeamId) -> Task<Message> {
 
     app.active_team = Some(team.clone());
     app.show_account_menu = false;
+    app.account_menu_open = false;
     app.active_channel = preferred_channel(app, &team);
     if let (Some(ws), Some(channel)) = (app.workspaces.get_mut(&team), app.active_channel.clone()) {
         ws.last_active_channel = Some(channel);
         mark_workspace_dirty(app, &team);
     }
     app.active_thread = None;
+    app.thread_open = false;
     app.search = None;
     app.search_input.clear();
     app.editing = None;
@@ -1014,6 +1051,7 @@ fn sign_out(app: &mut App) -> Task<Message> {
     app.active_team = None;
     app.active_channel = None;
     app.active_thread = None;
+    app.thread_open = false;
     app.workspaces.clear();
     app.threads.clear();
     app.composer_text.clear();
@@ -1032,14 +1070,18 @@ fn sign_out(app: &mut App) -> Task<Message> {
     app.cache_dirty.clear();
     app.cache_saving.clear();
     app.show_account_menu = false;
+    app.account_menu_open = false;
     app.show_settings = false;
+    app.settings_open = false;
+    app.palette = None;
+    app.palette_open = false;
     app.screen = Screen::Login;
     Task::none()
 }
 
 fn set_self_presence(app: &mut App, presence: Presence) -> Task<Message> {
     let Some(team) = app.active_team.clone() else {
-        app.show_account_menu = false;
+        app.account_menu_open = false;
         return Task::none();
     };
     let previous = app
@@ -1049,7 +1091,7 @@ fn set_self_presence(app: &mut App, presence: Presence) -> Task<Message> {
     if let Some(ws) = app.workspaces.get_mut(&team) {
         ws.set_presence(ws.self_user_id.clone(), presence);
     }
-    app.show_account_menu = false;
+    app.account_menu_open = false;
     mark_workspace_dirty(app, &team);
 
     let Some((transport, session)) = app.live() else {
@@ -1669,6 +1711,7 @@ fn open_search_result(
     match thread_ts {
         Some(root) => {
             app.active_thread = Some((channel.clone(), root.clone()));
+            app.thread_open = true;
             let needs_thread = !app
                 .threads
                 .get(&(team.clone(), channel.clone(), root.clone()))
@@ -1680,14 +1723,15 @@ fn open_search_result(
         }
         None => {
             app.active_thread = None;
+            app.thread_open = false;
         }
     }
     Task::batch(tasks)
 }
 
 fn palette_toggled(app: &mut App) -> Task<Message> {
-    if app.palette.is_some() {
-        app.palette = None;
+    if app.palette_open {
+        app.palette_open = false;
         return Task::none();
     }
     let entries = app
@@ -1698,6 +1742,7 @@ fn palette_toggled(app: &mut App) -> Task<Message> {
         entries,
         ..PaletteState::default()
     });
+    app.palette_open = true;
     let team = app.active_team.clone();
     let avatars = team
         .map(|team| load_palette_avatar_previews(app, &team))
@@ -1811,14 +1856,17 @@ fn palette_activate(app: &mut App, index: usize) -> Task<Message> {
                     ws.channels.entry(id.clone()).or_insert(remote);
                 }
             }
+            app.palette_open = false;
             app.palette = None;
             Task::done(Message::ChannelSelected(id))
         }
         PaletteTarget::User { dm: Some(id), .. } => {
+            app.palette_open = false;
             app.palette = None;
             Task::done(Message::ChannelSelected(id))
         }
         PaletteTarget::User { user, dm: None } => {
+            app.palette_open = false;
             app.palette = None;
             let Some((transport, session)) = app.live() else {
                 return Task::none();
