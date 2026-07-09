@@ -241,7 +241,7 @@ fn user_avatar<'a>(
             .width(size)
             .height(size)
             .content_fit(ContentFit::Cover)
-            .border_radius(theme::SIDEBAR_AVATAR / 2.0)
+            .border_radius(theme::SIDEBAR_AVATAR_RADIUS)
             .into()
     } else {
         let initial = label
@@ -261,18 +261,19 @@ fn user_avatar<'a>(
         .into()
     };
 
-    if presence == Presence::Active {
-        stack![base, presence_dot()].into()
-    } else {
-        base
-    }
+    stack![base, presence_badge(presence)].into()
 }
 
-fn presence_dot<'a>() -> Element<'a, Message> {
+fn presence_badge<'a>(presence: Presence) -> Element<'a, Message> {
+    let style = if presence == Presence::Active {
+        theme::presence_online
+    } else {
+        theme::presence_offline
+    };
     let dot = container(Space::new())
         .width(Length::Fixed(theme::PRESENCE_DOT))
         .height(Length::Fixed(theme::PRESENCE_DOT))
-        .style(theme::presence_online);
+        .style(style);
     container(dot)
         .width(Length::Fixed(theme::SIDEBAR_AVATAR))
         .height(Length::Fixed(theme::SIDEBAR_AVATAR))
@@ -295,6 +296,6 @@ fn group_chip<'a>() -> Element<'a, Message> {
     .height(Length::Fixed(theme::SIDEBAR_AVATAR))
     .center_x(Length::Fixed(theme::SIDEBAR_AVATAR))
     .center_y(Length::Fixed(theme::SIDEBAR_AVATAR))
-    .style(theme::avatar_placeholder)
+    .style(theme::avatar_placeholder) // shares squarish radius with user avatars
     .into()
 }
