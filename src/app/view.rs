@@ -1,4 +1,4 @@
-use iced::widget::{button, column, container, opaque, row, text};
+use iced::widget::{button, column, container, opaque, row, stack, text};
 use iced::{Element, Fill};
 
 use crate::state::Screen;
@@ -14,14 +14,21 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
     }
 }
 
+fn overlay_host<'a>(
+    base: Element<'a, Message>,
+    overlay: Option<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    match overlay {
+        Some(layer) => stack![base, layer].into(),
+        None => stack![base].into(),
+    }
+}
+
 fn with_palette<'a>(app: &'a App, base: Element<'a, Message>) -> Element<'a, Message> {
-    let Some(state) = app.palette.as_ref() else {
-        return base;
-    };
-    let Some(ws) = app.active_workspace() else {
-        return base;
-    };
-    ui::palette::modal(base, ws, state, &app.avatar_previews)
+    match (app.palette.as_ref(), app.active_workspace()) {
+        (Some(state), Some(ws)) => ui::palette::modal(base, ws, state, &app.avatar_previews),
+        _ => overlay_host(base, None),
+    }
 }
 
 fn login_view() -> Element<'static, Message> {
@@ -191,25 +198,27 @@ fn with_modal<'a>(app: &'a App, base: Element<'a, Message>) -> Element<'a, Messa
     if app.show_settings {
         ui::settings::modal(base, &app.settings)
     } else {
-        base
+        overlay_host(base, None)
     }
 }
 
 fn with_account_menu<'a>(app: &'a App, base: Element<'a, Message>) -> Element<'a, Message> {
     let Some(ws) = app.active_workspace().filter(|_| app.show_account_menu) else {
-        return base;
+        return overlay_host(base, None);
     };
-    iced::widget::stack![
+    overlay_host(
         base,
-        container(opaque(ui::rail::account_menu(ws, &app.avatar_previews)))
-            .align_left(Fill)
-            .align_bottom(Fill)
-            .padding([
-                ui::theme::gap() + ui::rail::ICON_SIZE + ui::theme::SPACE_LG,
-                ui::theme::gap() + ui::theme::SPACE_SM,
-            ]),
-    ]
-    .into()
+        Some(
+            container(opaque(ui::rail::account_menu(ws, &app.avatar_previews)))
+                .align_left(Fill)
+                .align_bottom(Fill)
+                .padding([
+                    ui::theme::gap() + ui::rail::ICON_SIZE + ui::theme::SPACE_LG,
+                    ui::theme::gap() + ui::theme::SPACE_SM,
+                ])
+                .into(),
+        ),
+    )
 }
 
 fn shell(content: iced::widget::Row<'_, Message>) -> Element<'_, Message> {

@@ -36,7 +36,8 @@ pub fn modal<'a>(
         .align_top(Fill)
         .padding(theme::SPACE_LG * 5.0);
 
-    stack![base, scrim, centered].into()
+    let layers = stack![scrim, centered].width(Fill).height(Fill);
+    stack![base, layers].into()
 }
 
 fn card<'a>(

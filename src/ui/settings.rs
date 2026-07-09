@@ -22,7 +22,8 @@ pub fn modal<'a>(base: Element<'a, Message>, settings: &Settings) -> Element<'a,
         .center_y(Fill)
         .padding(theme::SPACE_LG);
 
-    stack![base, scrim, centered].into()
+    let layers = stack![scrim, centered].width(Fill).height(Fill);
+    stack![base, layers].into()
 }
 
 fn card<'a>(s: &Settings) -> Element<'a, Message> {
