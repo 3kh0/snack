@@ -82,15 +82,28 @@ pub fn row<'a>(
         && msg.ts.is_some()
         && msg.user.as_deref() == Some(ws.self_user_id.as_str());
 
+    let thread_ts = thread_target_ts(msg);
+    let can_reply = !in_thread && thread_ts.is_some();
+
     let action_bar: Option<Element<'a, Message>> = if hovered && edit_text.is_none() {
         let can_copy = !copy_text.is_empty();
         let edit_ts = editable.then(|| msg.ts.clone()).flatten();
-        (can_copy || edit_ts.is_some()).then(|| {
+        (can_reply || can_copy || edit_ts.is_some()).then(|| {
             let copy_text = copy_text.clone();
             let channel_id = channel_id.to_owned();
+            let reply_ts = thread_ts.clone();
             super::motion::micro_reveal(true, move |anim, at| {
                 let progress = super::motion::t(anim, at);
                 let mut actions = Row::new();
+                if let Some(ts) = reply_ts.clone() {
+                    actions = actions.push(action_item(
+                        "Reply",
+                        Message::ThreadOpened {
+                            channel: channel_id.clone(),
+                            ts,
+                        },
+                    ));
+                }
                 if can_copy {
                     actions =
                         actions.push(action_item("Copy", Message::CopyMessage(copy_text.clone())));
@@ -211,27 +224,18 @@ pub fn row<'a>(
         col = col.push(attachment_row(att, file_previews));
     }
 
-    let thread_ts = match (msg.thread_ts.as_deref(), msg.ts.as_deref()) {
-        (Some(root), Some(ts)) if root != ts => Some(root.to_owned()),
-        (_, Some(ts)) => Some(ts.to_owned()),
-        _ => None,
-    };
     // Inside the thread panel there is no reply-to-reply, so hide the link.
-    if let Some(ts) = thread_ts.filter(|_| !in_thread) {
-        let reply_label = msg
-            .reply_count
-            .filter(|c| *c > 0)
-            .map(|count| format!("{count} repl{}", if count == 1 { "y" } else { "ies" }))
-            .unwrap_or_else(|| "Reply".to_owned());
-        col = col.push(
-            button(text(reply_label).size(theme::TEXT_SM))
-                .padding([2, 0])
-                .style(theme::link_button)
-                .on_press(Message::ThreadOpened {
-                    channel: channel_id.to_owned(),
-                    ts,
-                }),
-        );
+    if let (Some(ts), Some(count)) = (thread_ts.filter(|_| !in_thread), msg.reply_count) {
+        if count > 0 {
+            col = col.push(thread_summary(
+                ws,
+                msg,
+                avatar_previews,
+                channel_id,
+                &ts,
+                count,
+            ));
+        }
     }
 
     if !msg.reactions.is_empty() {
@@ -314,6 +318,82 @@ pub fn row<'a>(
 
 fn is_app_message(msg: &SlackMessage) -> bool {
     msg.subtype.as_deref() == Some("bot_message")
+}
+
+fn thread_target_ts(msg: &SlackMessage) -> Option<String> {
+    match (msg.thread_ts.as_deref(), msg.ts.as_deref()) {
+        (Some(root), Some(ts)) if root != ts => Some(root.to_owned()),
+        (_, Some(ts)) => Some(ts.to_owned()),
+        _ => None,
+    }
+}
+
+fn thread_summary<'a>(
+    ws: &Workspace,
+    msg: &SlackMessage,
+    avatar_previews: &HashMap<String, FilePreview>,
+    channel_id: &str,
+    ts: &str,
+    count: u32,
+) -> Element<'a, Message> {
+    let mut content = Row::new()
+        .spacing(theme::SPACE_XS)
+        .align_y(Alignment::Center);
+
+    let users = thread_participants(msg);
+    if !users.is_empty() {
+        let mut avatars = Row::new().spacing(2).align_y(Alignment::Center);
+        for user in users {
+            avatars = avatars.push(thread_participant_avatar(ws, avatar_previews, user));
+        }
+        content = content.push(avatars);
+    }
+
+    content = content.push(
+        text(format!(
+            "{count} repl{}",
+            if count == 1 { "y" } else { "ies" }
+        ))
+        .size(theme::TEXT_SM),
+    );
+
+    button(content)
+        .padding([2, 0])
+        .style(theme::link_button)
+        .on_press(Message::ThreadOpened {
+            channel: channel_id.to_owned(),
+            ts: ts.to_owned(),
+        })
+        .into()
+}
+
+fn thread_participants(msg: &SlackMessage) -> Vec<&str> {
+    let mut users = Vec::new();
+    for user in &msg.reply_users {
+        if users.len() >= 5 {
+            break;
+        }
+        if !users.contains(&user.as_str()) {
+            users.push(user.as_str());
+        }
+    }
+    users
+}
+
+fn thread_participant_avatar<'a>(
+    ws: &Workspace,
+    avatar_previews: &HashMap<String, FilePreview>,
+    user: &str,
+) -> Element<'a, Message> {
+    let fallback = ws.display_name(user).chars().next();
+    avatar_with_size(
+        Some(user),
+        ws.avatar_url(user).as_deref(),
+        avatar_previews,
+        fallback,
+        20.0,
+        5.0,
+    )
 }
 
 fn avatar_spacer<'a>() -> Element<'a, Message> {
@@ -709,16 +789,25 @@ fn avatar<'a>(
     avatar_previews: &HashMap<String, FilePreview>,
     fallback: Option<char>,
 ) -> Element<'a, Message> {
-    const SIZE: f32 = 32.0;
-    const RADIUS: f32 = 7.0;
+    avatar_with_size(key, url, avatar_previews, fallback, 32.0, 7.0)
+}
+
+fn avatar_with_size<'a>(
+    key: Option<&str>,
+    url: Option<&str>,
+    avatar_previews: &HashMap<String, FilePreview>,
+    fallback: Option<char>,
+    size: f32,
+    radius: f32,
+) -> Element<'a, Message> {
     if let Some(key) = key {
         if url.is_some() {
             if let Some(FilePreview::Loaded(handle)) = avatar_previews.get(key) {
                 return image::Image::new(handle.clone())
-                    .width(Length::Fixed(SIZE))
-                    .height(Length::Fixed(SIZE))
+                    .width(Length::Fixed(size))
+                    .height(Length::Fixed(size))
                     .content_fit(ContentFit::Cover)
-                    .border_radius(RADIUS)
+                    .border_radius(radius)
                     .into();
             }
         }
@@ -732,10 +821,10 @@ fn avatar<'a>(
         weight: iced::font::Weight::Bold,
         ..Font::default()
     }))
-    .width(Length::Fixed(SIZE))
-    .height(Length::Fixed(SIZE))
-    .center_x(Length::Fixed(SIZE))
-    .center_y(Length::Fixed(SIZE))
+    .width(Length::Fixed(size))
+    .height(Length::Fixed(size))
+    .center_x(Length::Fixed(size))
+    .center_y(Length::Fixed(size))
     .style(theme::avatar_placeholder)
     .into()
 }
