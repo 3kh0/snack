@@ -16,6 +16,16 @@ pub(super) fn subscription(app: &App) -> Subscription<Message> {
     }
 
     subs.push(iced::event::listen_with(palette_hotkey));
+    if app.text_selection.is_some() {
+        subs.push(iced::event::listen_with(selection_copy_hotkey));
+    }
+    if app
+        .text_selection
+        .as_ref()
+        .is_some_and(|selection| selection.dragging)
+    {
+        subs.push(iced::event::listen_with(selection_mouse_release));
+    }
     if app.palette_open {
         subs.push(iced::event::listen_with(palette_navigation));
     }
@@ -56,6 +66,39 @@ pub(super) fn subscription(app: &App) -> Subscription<Message> {
     }
 
     Subscription::batch(subs)
+}
+
+fn selection_copy_hotkey(
+    event: iced::Event,
+    status: iced::event::Status,
+    _id: iced::window::Id,
+) -> Option<Message> {
+    use iced::keyboard::{Event, Key};
+    if status == iced::event::Status::Captured {
+        return None;
+    }
+    let iced::Event::Keyboard(Event::KeyPressed { key, modifiers, .. }) = event else {
+        return None;
+    };
+    match key {
+        Key::Character(c) if c.as_str().eq_ignore_ascii_case("c") && modifiers.command() => {
+            Some(Message::TextSelectionCopyRequested)
+        }
+        _ => None,
+    }
+}
+
+fn selection_mouse_release(
+    event: iced::Event,
+    _status: iced::event::Status,
+    _id: iced::window::Id,
+) -> Option<Message> {
+    match event {
+        iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
+            Some(Message::TextSelectionEnded)
+        }
+        _ => None,
+    }
 }
 
 fn has_pending_sends(app: &App) -> bool {

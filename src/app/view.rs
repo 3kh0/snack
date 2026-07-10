@@ -139,6 +139,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
                     emoji_animation_elapsed,
                     editing_for(channel_id),
                     hovered_for(false),
+                    app.text_selection.as_ref(),
                 ))
                 .height(Fill),
                 ui::composer::view(&app.composer, &label, crate::app::ComposerTarget::Channel,),
@@ -173,6 +174,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
             let panel = container(ui::thread::view(
                 ws,
                 channel,
+                root_ts,
                 root,
                 replies,
                 &app.thread_composer,
@@ -182,6 +184,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
                 emoji_animation_elapsed,
                 editing_for(channel),
                 hovered_for(true),
+                app.text_selection.as_ref(),
             ))
             .padding(iced::Padding::ZERO.left(gap));
             ui::motion::collapse_x(panel.into(), progress, ui::theme::THREAD_WIDTH + gap)

@@ -5,9 +5,10 @@ use std::time::Duration;
 use iced::widget::image::Handle as ImageHandle;
 use iced::widget::{Column, Row, button, container, image, svg, text, text_input};
 use iced::{Alignment, Color, ContentFit, Element, Fill, Font, Length, Point};
+use unicode_segmentation::UnicodeSegmentation;
 
 use super::{blocks, selectable, theme};
-use crate::app::{FilePreview, Message};
+use crate::app::{FilePreview, Message, TextSelection, TextSelectionSurface};
 use crate::slack::models::Message as SlackMessage;
 use crate::state::{self, Workspace};
 
@@ -24,6 +25,9 @@ pub fn row<'a>(
     emoji_previews: &HashMap<String, FilePreview>,
     emoji_animation_elapsed: Duration,
     edit_text: Option<&str>,
+    selection_surface: TextSelectionSurface,
+    message_index: usize,
+    text_selection: Option<&TextSelection>,
 ) -> Element<'a, Message> {
     let author = ws.message_author_name(msg);
 
@@ -67,15 +71,7 @@ pub fn row<'a>(
     }
 
     let block_lines = blocks::render_lines(ws, msg);
-    let copy_text = if block_lines.is_empty() {
-        state::message_text(msg)
-    } else {
-        block_lines
-            .iter()
-            .map(|l| l.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
+    let copy_text = selectable_copy_text_from_lines(ws, msg, &block_lines);
 
     let editable = !pending
         && msg.bot_id.is_none()
@@ -207,12 +203,34 @@ pub fn row<'a>(
                 }
                 segments.extend(selectable_segments(&line));
             }
-            col = col.push(selectable::SelectableText::new(
+            let selected_range = msg.ts.as_deref().and_then(|ts| {
+                selection_range_for_message(
+                    text_selection,
+                    &selection_surface,
+                    ts,
+                    message_index,
+                    selectable_span_count(&segments),
+                )
+            });
+            let selection_active = text_selection.is_some_and(|selection| {
+                selection.dragging && selection.anchor.surface == selection_surface
+            });
+            let mut body = selectable::SelectableText::new(
                 &segments,
                 theme::TEXT_MD,
                 theme::TEXT_2,
                 theme::selection(),
-            ));
+            )
+            .selection(selected_range);
+            if let Some(ts) = msg.ts.clone() {
+                body = body.context(
+                    selection_surface.clone(),
+                    ts,
+                    message_index,
+                    selection_active,
+                );
+            }
+            col = col.push(body);
         }
     }
 
@@ -447,6 +465,100 @@ fn body_lines(
         Vec::new()
     } else {
         blocks::mrkdwn_lines(ws, &body)
+    }
+}
+
+pub fn selectable_copy_text(ws: &Workspace, msg: &SlackMessage) -> String {
+    let block_lines = blocks::render_lines(ws, msg);
+    selectable_copy_text_from_lines(ws, msg, &block_lines)
+}
+
+fn selectable_copy_text_from_lines(
+    ws: &Workspace,
+    msg: &SlackMessage,
+    block_lines: &[blocks::RenderLine],
+) -> String {
+    body_lines(ws, msg, block_lines.to_vec())
+        .into_iter()
+        .map(|line| {
+            if line.segments.is_empty() {
+                state::emoji_text_to_display(&line.text)
+            } else {
+                line.segments
+                    .iter()
+                    .map(|segment| state::emoji_text_to_display(&segment.text))
+                    .collect()
+            }
+        })
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
+fn selectable_span_count(segments: &[selectable::Segment]) -> usize {
+    segments
+        .iter()
+        .map(|segment| segment.text.graphemes(true).count())
+        .sum()
+}
+
+fn selection_range_for_message(
+    selection: Option<&TextSelection>,
+    surface: &TextSelectionSurface,
+    ts: &str,
+    index: usize,
+    len: usize,
+) -> Option<(usize, usize)> {
+    let selection = selection?;
+    if len == 0
+        || &selection.anchor.surface != surface
+        || &selection.focus.surface != surface
+        || (selection.anchor.message_ts != ts && selection.focus.message_ts != ts)
+            && (index
+                < selection
+                    .anchor
+                    .message_index
+                    .min(selection.focus.message_index)
+                || index
+                    > selection
+                        .anchor
+                        .message_index
+                        .max(selection.focus.message_index))
+    {
+        return None;
+    }
+
+    let anchor = &selection.anchor;
+    let focus = &selection.focus;
+    let start_index = anchor.message_index.min(focus.message_index);
+    let end_index = anchor.message_index.max(focus.message_index);
+    if index < start_index || index > end_index {
+        return None;
+    }
+
+    let anchor_offset = anchor.offset.min(len - 1);
+    let focus_offset = focus.offset.min(len - 1);
+    let forward = anchor.message_index < focus.message_index
+        || (anchor.message_index == focus.message_index && anchor.offset <= focus.offset);
+
+    if anchor.message_index == focus.message_index {
+        return Some((
+            anchor_offset.min(focus_offset),
+            anchor_offset.max(focus_offset),
+        ));
+    }
+    if index != anchor.message_index && index != focus.message_index {
+        return Some((0, len - 1));
+    }
+    if forward {
+        if index == anchor.message_index {
+            Some((anchor_offset, len - 1))
+        } else {
+            Some((0, focus_offset))
+        }
+    } else if index == focus.message_index {
+        Some((focus_offset, len - 1))
+    } else {
+        Some((0, anchor_offset))
     }
 }
 

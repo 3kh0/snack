@@ -5,13 +5,14 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use super::{composer, message, theme};
-use crate::app::{ComposerTarget, FilePreview, Message};
+use crate::app::{ComposerTarget, FilePreview, Message, TextSelection, TextSelectionSurface};
 use crate::slack::models::Message as SlackMessage;
 use crate::state::{ChannelMessages, Workspace};
 
 pub fn view<'a>(
     ws: &Workspace,
     channel_id: &str,
+    root_ts: &str,
     root: Option<&SlackMessage>,
     replies: Option<&ChannelMessages>,
     content: &'a Content,
@@ -21,6 +22,7 @@ pub fn view<'a>(
     emoji_animation_elapsed: Duration,
     editing: Option<(&str, &str)>,
     hovered_ts: Option<&str>,
+    text_selection: Option<&TextSelection>,
 ) -> Element<'a, Message> {
     let header = row![
         text("Thread")
@@ -42,7 +44,11 @@ pub fn view<'a>(
     let list: Element<'a, Message> = match replies {
         Some(cm) if !cm.messages.is_empty() => {
             let mut col = Column::new().spacing(theme::SPACE_XS);
-            for msg in &cm.messages {
+            let surface = TextSelectionSurface::Thread {
+                channel: channel_id.to_owned(),
+                root_ts: root_ts.to_owned(),
+            };
+            for (message_index, msg) in cm.messages.iter().enumerate() {
                 let pending = msg
                     .ts
                     .as_deref()
@@ -65,6 +71,9 @@ pub fn view<'a>(
                     emoji_previews,
                     emoji_animation_elapsed,
                     edit,
+                    surface.clone(),
+                    message_index,
+                    text_selection,
                 );
                 let row: Element<'a, Message> = match msg.ts.clone() {
                     Some(ts) => mouse_area(row)
@@ -100,6 +109,12 @@ pub fn view<'a>(
                     emoji_previews,
                     emoji_animation_elapsed,
                     edit,
+                    TextSelectionSurface::Thread {
+                        channel: channel_id.to_owned(),
+                        root_ts: root_ts.to_owned(),
+                    },
+                    0,
+                    text_selection,
                 );
                 let root_row: Element<'a, Message> = match root.ts.clone() {
                     Some(ts) => mouse_area(root_row)

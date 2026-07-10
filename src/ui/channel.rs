@@ -4,7 +4,7 @@ use iced::widget::{
 use iced::{Alignment, ContentFit, Element, Fill, Length, font};
 
 use super::{message, theme};
-use crate::app::{FilePreview, Message};
+use crate::app::{FilePreview, Message, TextSelection, TextSelectionSurface};
 use crate::slack::models::{Channel, UserId};
 use crate::state::{self, Presence, Workspace};
 use std::collections::HashMap;
@@ -30,6 +30,7 @@ pub fn view<'a>(
     emoji_animation_elapsed: Duration,
     editing: Option<(&str, &str)>,
     hovered_ts: Option<&str>,
+    text_selection: Option<&TextSelection>,
 ) -> Element<'a, Message> {
     let header = channel_header(ws, channel_id, avatar_previews);
 
@@ -46,7 +47,10 @@ pub fn view<'a>(
             visible.reverse();
             let mut last_date = None;
             let mut previous_group_message = None;
-            for m in visible {
+            let surface = TextSelectionSurface::Channel {
+                channel: channel_id.to_owned(),
+            };
+            for (message_index, m) in visible.into_iter().enumerate() {
                 if let Some(ts) = m.ts.as_deref() {
                     let date = state::date_key_for_ts(ts);
                     if date.is_some() && date != last_date {
@@ -76,6 +80,9 @@ pub fn view<'a>(
                     emoji_previews,
                     emoji_animation_elapsed,
                     edit,
+                    surface.clone(),
+                    message_index,
+                    text_selection,
                 );
                 let row: Element<'a, Message> = match m.ts.clone() {
                     Some(ts) => mouse_area(row)

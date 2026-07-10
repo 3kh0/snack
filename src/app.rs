@@ -36,6 +36,32 @@ type ActiveThreadKey = (ChannelId, MessageTs);
 type ThreadKey = (TeamId, ChannelId, MessageTs);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TextSelectionSurface {
+    Channel {
+        channel: ChannelId,
+    },
+    Thread {
+        channel: ChannelId,
+        root_ts: MessageTs,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextSelectionPoint {
+    pub surface: TextSelectionSurface,
+    pub message_ts: MessageTs,
+    pub message_index: usize,
+    pub offset: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextSelection {
+    pub anchor: TextSelectionPoint,
+    pub focus: TextSelectionPoint,
+    pub dragging: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum PendingScrollTarget {
     Message(MessageTs),
     FirstUnreadAfter(MessageTs),
@@ -103,6 +129,7 @@ pub struct App {
     editing: Option<(ChannelId, MessageTs)>,
     edit_text: String,
     hovered_message: Option<(bool, MessageTs)>,
+    text_selection: Option<TextSelection>,
     search_input: String,
     search: Option<SearchState>,
     palette: Option<PaletteState>,
@@ -208,6 +235,10 @@ pub enum Message {
     EditComposerChanged(String),
     EditSubmit,
     CopyMessage(String),
+    TextSelectionStarted(TextSelectionPoint),
+    TextSelectionDragged(TextSelectionPoint),
+    TextSelectionEnded,
+    TextSelectionCopyRequested,
     MessageHovered {
         in_thread: bool,
         ts: MessageTs,
@@ -386,6 +417,7 @@ impl App {
             emoji_hydrated: HashSet::new(),
             channel_hydrated: HashSet::new(),
             avatar_profile_hydrated: HashSet::new(),
+            text_selection: None,
             pending_scroll_to: None,
             pending_marks: HashSet::new(),
             mark_blocked: HashSet::new(),

@@ -19,14 +19,14 @@ use iced::advanced::text::{
 };
 use iced::advanced::widget::text::{Style as TextStyle, draw as draw_paragraph};
 use iced::advanced::widget::{Widget, tree};
-use iced::advanced::{Renderer as _, Shell, clipboard, mouse};
+use iced::advanced::{Renderer as _, Shell, mouse};
 use iced::{
     Background, Border, Color, Element, Event, Font, Length, Pixels, Point, Rectangle, Size,
-    Vector, alignment, keyboard,
+    Vector, alignment,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::app::Message;
+use crate::app::{Message, TextSelectionPoint, TextSelectionSurface};
 
 type Renderer = iced::Renderer;
 type Theme = iced::Theme;
@@ -80,6 +80,11 @@ pub struct SelectableText {
     color: Color,
     selection_color: Color,
     width: Length,
+    surface: Option<TextSelectionSurface>,
+    message_ts: Option<String>,
+    message_index: usize,
+    selection_active: bool,
+    selection: Option<(usize, usize)>,
 }
 
 impl SelectableText {
@@ -96,6 +101,11 @@ impl SelectableText {
             color,
             selection_color,
             width: Length::Fill,
+            surface: None,
+            message_ts: None,
+            message_index: 0,
+            selection_active: false,
+            selection: None,
         }
     }
 
@@ -104,11 +114,32 @@ impl SelectableText {
         self
     }
 
-    fn selected_text(&self, (lo, hi): (usize, usize)) -> String {
-        self.spans
-            .get(lo..=hi)
-            .map(|s| s.iter().map(|span| span.text.as_ref()).collect())
-            .unwrap_or_default()
+    pub fn context(
+        mut self,
+        surface: TextSelectionSurface,
+        message_ts: String,
+        message_index: usize,
+        selection_active: bool,
+    ) -> Self {
+        self.surface = Some(surface);
+        self.message_ts = Some(message_ts);
+        self.message_index = message_index;
+        self.selection_active = selection_active;
+        self
+    }
+
+    pub fn selection(mut self, selection: Option<(usize, usize)>) -> Self {
+        self.selection = selection;
+        self
+    }
+
+    fn point(&self, offset: usize) -> Option<TextSelectionPoint> {
+        Some(TextSelectionPoint {
+            surface: self.surface.clone()?,
+            message_ts: self.message_ts.clone()?,
+            message_index: self.message_index,
+            offset,
+        })
     }
 
     fn channel_at(&self, index: usize) -> Option<&str> {
@@ -169,7 +200,6 @@ struct State {
     spans: Vec<Span<'static, (), Font>>,
     paragraph: IcedParagraph,
     drag_anchor: Option<usize>,
-    selection: Option<(usize, usize)>,
     hovered: bool,
 }
 
@@ -183,7 +213,6 @@ impl Widget<Message, Theme, Renderer> for SelectableText {
             spans: Vec::new(),
             paragraph: IcedParagraph::default(),
             drag_anchor: None,
-            selection: None,
             hovered: false,
         })
     }
@@ -266,7 +295,7 @@ impl Widget<Message, Theme, Renderer> for SelectableText {
         let state = tree.state.downcast_ref::<State>();
         let translation = layout.position() - Point::ORIGIN;
 
-        if let Some((lo, hi)) = state.selection {
+        if let Some((lo, hi)) = self.selection {
             for k in lo..=hi {
                 for r in state.paragraph.span_bounds(k) {
                     renderer.fill_quad(
@@ -373,23 +402,21 @@ impl Widget<Message, Theme, Renderer> for SelectableText {
                     let index = self.locate(tree.state.downcast_ref::<State>(), layout, cursor);
                     let state = tree.state.downcast_mut::<State>();
                     state.drag_anchor = index;
-                    state.selection = None;
+                    if let Some(point) = index.and_then(|index| self.point(index)) {
+                        shell.publish(Message::TextSelectionStarted(point));
+                    }
                     shell.request_redraw();
                 }
             }
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
-                let anchor = tree.state.downcast_ref::<State>().drag_anchor;
-                if let Some(anchor) = anchor {
-                    if let Some(index) =
-                        self.locate(tree.state.downcast_ref::<State>(), layout, cursor)
+                if self.selection_active && cursor.is_over(bounds) {
+                    if let Some(point) = self
+                        .locate(tree.state.downcast_ref::<State>(), layout, cursor)
+                        .and_then(|index| self.point(index))
                     {
-                        let selection = Some((anchor.min(index), anchor.max(index)));
-                        let state = tree.state.downcast_mut::<State>();
-                        if state.selection != selection {
-                            state.selection = selection;
-                            shell.request_redraw();
-                        }
+                        shell.publish(Message::TextSelectionDragged(point));
                     }
+                    shell.request_redraw();
                     shell.capture_event();
                 }
             }
@@ -400,7 +427,11 @@ impl Widget<Message, Theme, Renderer> for SelectableText {
                     .flatten();
                 let state = tree.state.downcast_mut::<State>();
                 let anchor = state.drag_anchor.take();
-                if state.selection.is_none()
+                if self.selection_active && (cursor.is_over(bounds) || anchor.is_some()) {
+                    shell.publish(Message::TextSelectionEnded);
+                    shell.capture_event();
+                }
+                if self.selection.is_none()
                     && anchor == index
                     && let Some(channel) = index.and_then(|index| self.channel_at(index))
                 {
@@ -409,18 +440,6 @@ impl Widget<Message, Theme, Renderer> for SelectableText {
                 }
                 if anchor.is_some() {
                     shell.request_redraw();
-                }
-            }
-            Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
-                let is_copy = modifiers.contains(keyboard::Modifiers::COMMAND)
-                    && matches!(key.as_ref(), keyboard::Key::Character(c) if c.eq_ignore_ascii_case("c"));
-                let state = tree.state.downcast_ref::<State>();
-                if let Some(selection) = state.selection.filter(|_| is_copy && state.hovered) {
-                    let text = self.selected_text(selection);
-                    if !text.is_empty() {
-                        shell.write_clipboard(clipboard::Content::Text(text));
-                        shell.capture_event();
-                    }
                 }
             }
             _ => {}

@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use iced::Task;
 use iced::widget::image::Handle as ImageHandle;
 use iced::widget::operation::{self, RelativeOffset};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::cache::Cache;
 use crate::config;
@@ -23,7 +24,8 @@ use crate::ui;
 use super::palette::{self, PaletteEntry, PaletteState, PaletteTarget};
 use super::{
     App, ComposerTarget, DesktopNotification, FilePreview, HistoryLoadKind, Message,
-    PendingScrollTarget, SearchHit, SearchState, ThreadKey,
+    PendingScrollTarget, SearchHit, SearchState, TextSelection, TextSelectionPoint,
+    TextSelectionSurface, ThreadKey,
 };
 use iced::widget::text_editor::Content;
 
@@ -36,6 +38,7 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
 
         Message::ChannelSelected(id) => {
             app.search = None;
+            app.text_selection = None;
             let same_channel = app.active_channel.as_deref() == Some(id.as_str());
             if app
                 .editing
@@ -92,6 +95,7 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
         }
 
         Message::ThreadOpened { channel, ts } => {
+            app.text_selection = None;
             app.active_channel = Some(channel.clone());
             app.active_thread = Some((channel.clone(), ts.clone()));
             app.thread_open = true;
@@ -116,6 +120,7 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
         }
 
         Message::ThreadClosed => {
+            app.text_selection = None;
             app.thread_open = false;
             Task::none()
         }
@@ -472,6 +477,42 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::EditSubmit => edit_submit(app),
 
         Message::CopyMessage(text) => iced::clipboard::write(text).discard(),
+
+        Message::TextSelectionStarted(point) => {
+            app.text_selection = Some(TextSelection {
+                anchor: point.clone(),
+                focus: point,
+                dragging: true,
+            });
+            Task::none()
+        }
+
+        Message::TextSelectionDragged(point) => {
+            if let Some(selection) = app
+                .text_selection
+                .as_mut()
+                .filter(|selection| selection.dragging && selection.anchor.surface == point.surface)
+            {
+                selection.focus = point;
+            }
+            Task::none()
+        }
+
+        Message::TextSelectionEnded => {
+            if let Some(selection) = app.text_selection.as_mut() {
+                if selection.anchor == selection.focus {
+                    app.text_selection = None;
+                } else {
+                    selection.dragging = false;
+                }
+            }
+            Task::none()
+        }
+
+        Message::TextSelectionCopyRequested => match selected_text(app) {
+            Some(text) if !text.is_empty() => iced::clipboard::write(text).discard(),
+            _ => Task::none(),
+        },
 
         Message::MessageHovered { in_thread, ts } => {
             app.hovered_message = Some((in_thread, ts));
@@ -1050,6 +1091,7 @@ fn select_workspace(app: &mut App, team: TeamId) -> Task<Message> {
     app.search_input.clear();
     app.editing = None;
     app.edit_text.clear();
+    app.text_selection = None;
     app.composer = Content::new();
     app.thread_composer = Content::new();
 
@@ -1601,6 +1643,114 @@ fn find_message_text(app: &App, channel: &str, ts: &str) -> Option<String> {
                 .find(|m| m.ts.as_deref() == Some(ts))
                 .and_then(|m| m.text.clone())
         })
+}
+
+fn selected_text(app: &App) -> Option<String> {
+    let selection = app.text_selection.as_ref()?;
+    if selection.anchor.surface != selection.focus.surface {
+        return None;
+    }
+    let ws = app.active_workspace()?;
+    let messages = selected_surface_messages(app, ws, &selection.anchor.surface)?;
+
+    let mut parts = Vec::new();
+    for (index, msg) in messages.into_iter().enumerate() {
+        let full = ui::message::selectable_copy_text(ws, msg);
+        if full.is_empty() {
+            continue;
+        }
+        let len = full.graphemes(true).count();
+        if let Some((lo, hi)) = selection_range_for_index(selection, index, len) {
+            let text = slice_graphemes(&full, lo, hi);
+            if !text.is_empty() {
+                parts.push(text);
+            }
+        }
+    }
+
+    (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
+fn selected_surface_messages<'a>(
+    app: &'a App,
+    ws: &'a Workspace,
+    surface: &TextSelectionSurface,
+) -> Option<Vec<&'a SlackMessage>> {
+    match surface {
+        TextSelectionSurface::Channel { channel } => {
+            let cm = ws.messages.get(channel)?;
+            let mut visible: Vec<_> = cm
+                .messages
+                .iter()
+                .rev()
+                .filter(|m| crate::state::is_channel_timeline_visible(m))
+                .take(ui::channel::VISIBLE_MESSAGE_LIMIT)
+                .collect();
+            visible.reverse();
+            Some(visible)
+        }
+        TextSelectionSurface::Thread { channel, root_ts } => {
+            let team = app.active_team.as_ref()?;
+            let replies = app
+                .threads
+                .get(&(team.clone(), channel.clone(), root_ts.clone()));
+            match replies {
+                Some(cm) if !cm.messages.is_empty() => Some(cm.messages.iter().collect()),
+                _ => ui::thread::root_message(ws, channel, root_ts).map(|root| vec![root]),
+            }
+        }
+    }
+}
+
+fn selection_range_for_index(
+    selection: &TextSelection,
+    index: usize,
+    len: usize,
+) -> Option<(usize, usize)> {
+    if len == 0 {
+        return None;
+    }
+    let anchor = &selection.anchor;
+    let focus = &selection.focus;
+    let start_index = anchor.message_index.min(focus.message_index);
+    let end_index = anchor.message_index.max(focus.message_index);
+    if index < start_index || index > end_index {
+        return None;
+    }
+
+    let anchor_offset = anchor.offset.min(len - 1);
+    let focus_offset = focus.offset.min(len - 1);
+    let forward = anchor.message_index < focus.message_index
+        || (anchor.message_index == focus.message_index && anchor.offset <= focus.offset);
+
+    if anchor.message_index == focus.message_index {
+        return Some((
+            anchor_offset.min(focus_offset),
+            anchor_offset.max(focus_offset),
+        ));
+    }
+    if index != anchor.message_index && index != focus.message_index {
+        return Some((0, len - 1));
+    }
+    if forward {
+        if index == anchor.message_index {
+            Some((anchor_offset, len - 1))
+        } else {
+            Some((0, focus_offset))
+        }
+    } else if index == focus.message_index {
+        Some((focus_offset, len - 1))
+    } else {
+        Some((0, anchor_offset))
+    }
+}
+
+fn slice_graphemes(value: &str, lo: usize, hi: usize) -> String {
+    value
+        .graphemes(true)
+        .skip(lo)
+        .take(hi.saturating_sub(lo) + 1)
+        .collect()
 }
 
 fn apply_message_edit(app: &mut App, team: &str, channel: &str, ts: &str, text: Option<String>) {
