@@ -23,6 +23,7 @@ pub(super) fn subscription(app: &App) -> Subscription<Message> {
         .emoji_previews
         .values()
         .any(|preview| matches!(preview, super::FilePreview::Animated { .. }))
+        || has_pending_sends(app)
     {
         subs.push(iced::time::every(Duration::from_millis(50)).map(|_| Message::AnimationTick));
     }
@@ -55,6 +56,14 @@ pub(super) fn subscription(app: &App) -> Subscription<Message> {
     }
 
     Subscription::batch(subs)
+}
+
+fn has_pending_sends(app: &App) -> bool {
+    app.workspaces
+        .values()
+        .flat_map(|ws| ws.messages.values())
+        .any(|cm| !cm.pending.is_empty())
+        || app.threads.values().any(|cm| !cm.pending.is_empty())
 }
 
 fn palette_hotkey(

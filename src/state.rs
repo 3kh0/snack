@@ -143,18 +143,19 @@ impl ChannelMessages {
         text: Option<&str>,
         confirmed: SlackMessage,
     ) -> bool {
-        let temp_ts = self.messages.iter().find_map(|m| {
-            let ts = m.ts.as_deref()?;
-            if !self.pending.iter().any(|p| p == ts) {
-                return None;
-            }
-            if m.user.as_deref() == user && m.text.as_deref() == text {
-                Some(ts.to_owned())
-            } else {
-                None
-            }
-        });
-        if let Some(ts) = temp_ts {
+        let matches = self
+            .messages
+            .iter()
+            .filter_map(|m| {
+                let ts = m.ts.as_deref()?;
+                if !self.pending.iter().any(|p| p == ts) {
+                    return None;
+                }
+                (m.user.as_deref() == user && m.text.as_deref() == text).then(|| ts.to_owned())
+            })
+            .take(2)
+            .collect::<Vec<_>>();
+        if let [ts] = matches.as_slice() {
             self.remove(&ts);
             self.upsert(confirmed);
             true
@@ -1278,6 +1279,20 @@ mod tests {
         assert_eq!(cm.messages.len(), 1);
         assert_eq!(cm.messages[0].ts.as_deref(), Some("1783372400.111111"));
         assert!(!cm.is_pending("1783372400.111111"));
+    }
+
+    #[test]
+    fn matching_pending_confirm_skips_ambiguous_duplicates() {
+        let mut cm = ChannelMessages::default();
+        cm.upsert(msg("9999999999.000001", "hi"));
+        cm.upsert(msg("9999999999.000002", "hi"));
+        cm.pending.push("9999999999.000001".to_owned());
+        cm.pending.push("9999999999.000002".to_owned());
+
+        assert!(!cm.confirm_matching_pending(None, Some("hi"), msg("1783372400.111111", "hi")));
+        assert_eq!(cm.messages.len(), 2);
+        assert!(cm.is_pending("9999999999.000001"));
+        assert!(cm.is_pending("9999999999.000002"));
     }
 
     #[test]

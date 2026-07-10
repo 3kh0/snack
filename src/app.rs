@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use iced::Task;
 use iced::widget::image::Handle as ImageHandle;
+use iced::widget::text_editor::{self, Content};
 
 use crate::cache::Cache;
 use crate::config::{self, Session};
@@ -97,8 +98,8 @@ pub struct App {
     thread_open: bool,
     workspaces: BTreeMap<TeamId, Workspace>,
     threads: HashMap<ThreadKey, ChannelMessages>,
-    composer_text: String,
-    thread_composer_text: String,
+    composer: Content,
+    thread_composer: Content,
     editing: Option<(ChannelId, MessageTs)>,
     edit_text: String,
     hovered_message: Option<(bool, MessageTs)>,
@@ -131,11 +132,34 @@ pub struct App {
     sidebar_resize_prev_x: Option<f32>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComposerTarget {
+    Channel,
+    Thread,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormatMark {
+    Bold,
+    Italic,
+    Strike,
+    Code,
+    CodeBlock,
+    Quote,
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     WorkspaceSelected(TeamId),
     ChannelSelected(ChannelId),
-    ComposerChanged(String),
+    ComposerAction {
+        target: ComposerTarget,
+        action: text_editor::Action,
+    },
+    ComposerFormat {
+        target: ComposerTarget,
+        mark: FormatMark,
+    },
     SendPressed,
     MessageSent {
         team: TeamId,
@@ -169,7 +193,6 @@ pub enum Message {
         root_ts: MessageTs,
         result: Result<HistoryPage, SlackError>,
     },
-    ThreadComposerChanged(String),
     ThreadSendPressed,
     ThreadReplySent {
         team: TeamId,
@@ -343,8 +366,8 @@ impl App {
             thread_open: false,
             workspaces: BTreeMap::new(),
             threads: HashMap::new(),
-            composer_text: String::new(),
-            thread_composer_text: String::new(),
+            composer: Content::new(),
+            thread_composer: Content::new(),
             editing: None,
             edit_text: String::new(),
             hovered_message: None,

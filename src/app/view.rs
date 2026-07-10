@@ -141,7 +141,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
                     hovered_for(false),
                 ))
                 .height(Fill),
-                ui::composer::view(&app.composer_text, &label),
+                ui::composer::view(&app.composer, &label, crate::app::ComposerTarget::Channel,),
             ]
             .width(Fill)
             .height(Fill);
@@ -175,7 +175,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
                 channel,
                 root,
                 replies,
-                &app.thread_composer_text,
+                &app.thread_composer,
                 &app.file_previews,
                 &app.avatar_previews,
                 &app.emoji_previews,

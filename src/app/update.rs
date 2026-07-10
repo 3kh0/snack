@@ -22,9 +22,10 @@ use crate::ui;
 
 use super::palette::{self, PaletteEntry, PaletteState, PaletteTarget};
 use super::{
-    App, DesktopNotification, FilePreview, HistoryLoadKind, Message, PendingScrollTarget,
-    SearchHit, SearchState, ThreadKey,
+    App, ComposerTarget, DesktopNotification, FilePreview, HistoryLoadKind, Message,
+    PendingScrollTarget, SearchHit, SearchState, ThreadKey,
 };
+use iced::widget::text_editor::Content;
 
 const CACHE_SAVE_DEBOUNCE: Duration = Duration::from_millis(750);
 const LOAD_OLDER_SCROLL_TOP_PX: f32 = 48.0;
@@ -65,7 +66,7 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
             {
                 app.active_thread = None;
                 app.thread_open = false;
-                app.thread_composer_text.clear();
+                app.thread_composer = Content::new();
             }
             if let Some(team) = app.active_team.clone() {
                 let needs_load = app
@@ -122,7 +123,7 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::ThreadDismissed => {
             if !app.thread_open {
                 app.active_thread = None;
-                app.thread_composer_text.clear();
+                app.thread_composer = Content::new();
             }
             Task::none()
         }
@@ -170,11 +171,6 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
 
-        Message::ThreadComposerChanged(value) => {
-            app.thread_composer_text = value;
-            Task::none()
-        }
-
         Message::ThreadSendPressed => send_thread_pressed(app),
 
         Message::ThreadReplySent {
@@ -213,9 +209,28 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
 
-        Message::ComposerChanged(value) => {
-            app.composer_text = value;
-            maybe_send_typing(app);
+        Message::ComposerAction { target, action } => {
+            let is_edit = action.is_edit();
+            match target {
+                ComposerTarget::Channel => app.composer.perform(action),
+                ComposerTarget::Thread => app.thread_composer.perform(action),
+            }
+            if is_edit && target == ComposerTarget::Channel {
+                maybe_send_typing(app);
+            }
+            Task::none()
+        }
+
+        Message::ComposerFormat { target, mark } => {
+            match target {
+                ComposerTarget::Channel => {
+                    ui::composer::apply_format(&mut app.composer, mark);
+                    maybe_send_typing(app);
+                }
+                ComposerTarget::Thread => {
+                    ui::composer::apply_format(&mut app.thread_composer, mark);
+                }
+            }
             Task::none()
         }
 
@@ -1035,8 +1050,8 @@ fn select_workspace(app: &mut App, team: TeamId) -> Task<Message> {
     app.search_input.clear();
     app.editing = None;
     app.edit_text.clear();
-    app.composer_text.clear();
-    app.thread_composer_text.clear();
+    app.composer = Content::new();
+    app.thread_composer = Content::new();
 
     let Some(channel) = app.active_channel.clone() else {
         return Task::none();
@@ -1078,8 +1093,8 @@ fn sign_out(app: &mut App) -> Task<Message> {
     app.thread_open = false;
     app.workspaces.clear();
     app.threads.clear();
-    app.composer_text.clear();
-    app.thread_composer_text.clear();
+    app.composer = Content::new();
+    app.thread_composer = Content::new();
     app.editing = None;
     app.edit_text.clear();
     app.hovered_message = None;
@@ -1179,7 +1194,7 @@ fn is_auth_error(e: &SlackError) -> bool {
 }
 
 fn maybe_send_typing(app: &mut App) {
-    if app.composer_text.trim().is_empty() {
+    if app.composer.text().trim().is_empty() {
         return;
     }
     let (Some(team), Some(channel)) = (app.active_team.clone(), app.active_channel.clone()) else {
@@ -1257,7 +1272,7 @@ pub(super) fn is_permanent_mark_error(error: &SlackError) -> bool {
 }
 
 fn send_pressed(app: &mut App) -> Task<Message> {
-    let text = app.composer_text.trim().to_owned();
+    let text = app.composer.text().trim().to_owned();
     if text.is_empty() {
         return Task::none();
     }
@@ -1286,20 +1301,22 @@ fn send_pressed(app: &mut App) -> Task<Message> {
     let cm = ws.messages.entry(channel.clone()).or_default();
     cm.upsert(pending);
     cm.pending.push(ts);
-    app.composer_text.clear();
+    app.composer = Content::new();
     mark_workspace_dirty(app, &team);
+    app.pending_scroll_to = Some((channel.clone(), PendingScrollTarget::Latest));
+    let scroll = scroll_to_pending(app, &channel);
 
     let Some((transport, session)) = app.live() else {
-        return Task::none();
+        return scroll;
     };
     let Some(ws_session) = session.workspaces.get(&team) else {
-        return Task::none();
+        return scroll;
     };
     let transport = transport.clone();
     let client = app.client.clone();
     let ws_session = ws_session.clone();
     let send_channel = channel.clone();
-    Task::perform(
+    let send = Task::perform(
         async move {
             api::send_message(&transport, &client, &ws_session, send_channel, text, None).await
         },
@@ -1309,11 +1326,12 @@ fn send_pressed(app: &mut App) -> Task<Message> {
             client_msg_id: client_msg_id.clone(),
             result,
         },
-    )
+    );
+    Task::batch([scroll, send])
 }
 
 fn send_thread_pressed(app: &mut App) -> Task<Message> {
-    let text = app.thread_composer_text.trim().to_owned();
+    let text = app.thread_composer.text().trim().to_owned();
     if text.is_empty() {
         return Task::none();
     }
@@ -1348,7 +1366,7 @@ fn send_thread_pressed(app: &mut App) -> Task<Message> {
         .or_default();
     cm.upsert(pending);
     cm.pending.push(ts);
-    app.thread_composer_text.clear();
+    app.thread_composer = Content::new();
 
     let Some((transport, session)) = app.live() else {
         return Task::none();

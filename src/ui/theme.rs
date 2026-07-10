@@ -488,6 +488,32 @@ pub fn input(_theme: &Theme, status: text_input::Status) -> text_input::Style {
     }
 }
 
+pub fn editor(
+    _theme: &Theme,
+    status: iced::widget::text_editor::Status,
+) -> iced::widget::text_editor::Style {
+    use iced::widget::text_editor;
+    let border_color = match status {
+        text_editor::Status::Focused { .. } => accent(),
+        text_editor::Status::Hovered => Color { a: 0.35, ..BORDER },
+        _ => BORDER,
+    };
+    text_editor::Style {
+        background: Background::Color(BG_ELEV),
+        border: Border {
+            color: border_color,
+            width: 1.0,
+            radius: CONTROL_RADIUS.into(),
+        },
+        placeholder: TEXT_4,
+        value: TEXT_1,
+        selection: Color {
+            a: 0.30,
+            ..accent()
+        },
+    }
+}
+
 pub fn presence_online(_theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(ONLINE)),

@@ -431,8 +431,8 @@ fn known_user_with_avatar_skips_profile_hydration() {
 fn workspace_selection_switches_active_workspace_and_channel() {
     let mut app = test_app();
     add_second_workspace(&mut app);
-    app.composer_text = "draft".into();
-    app.thread_composer_text = "reply draft".into();
+    app.composer = iced::widget::text_editor::Content::with_text("draft");
+    app.thread_composer = iced::widget::text_editor::Content::with_text("reply draft");
     app.active_thread = Some(("C_GENERAL".into(), "1783372300.000100".into()));
 
     let _ = update(&mut app, Message::WorkspaceSelected("T_SECOND".into()));
@@ -440,8 +440,8 @@ fn workspace_selection_switches_active_workspace_and_channel() {
     assert_eq!(app.active_team.as_deref(), Some("T_SECOND"));
     assert_eq!(app.active_channel.as_deref(), Some("C_SECOND"));
     assert!(app.active_thread.is_none());
-    assert!(app.composer_text.is_empty());
-    assert!(app.thread_composer_text.is_empty());
+    assert!(app.composer.text().is_empty());
+    assert!(app.thread_composer.text().is_empty());
 }
 
 #[test]
@@ -524,10 +524,10 @@ fn optimistic_thread_reply_inserts_pending_without_transport() {
     let mut app = test_app();
     let root_ts = "1783372300.000100".to_owned();
     app.active_thread = Some(("C_GENERAL".into(), root_ts.clone()));
-    app.thread_composer_text = "thread answer".into();
+    app.thread_composer = iced::widget::text_editor::Content::with_text("thread answer");
     let _ = update(&mut app, Message::ThreadSendPressed);
 
-    assert!(app.thread_composer_text.is_empty());
+    assert!(app.thread_composer.text().is_empty());
     let team = app.active_team.clone().unwrap();
     let cm = &app.threads[&(team, "C_GENERAL".into(), root_ts)];
     let reply = cm.messages.last().unwrap();
@@ -576,7 +576,7 @@ fn empty_send_is_noop() {
     let before = app.active_workspace().unwrap().messages["C_GENERAL"]
         .messages
         .len();
-    app.composer_text = "   ".into();
+    app.composer = iced::widget::text_editor::Content::with_text("   ");
     let _ = update(&mut app, Message::SendPressed);
     let after = app.active_workspace().unwrap().messages["C_GENERAL"]
         .messages
@@ -588,10 +588,10 @@ fn empty_send_is_noop() {
 fn optimistic_send_inserts_pending_without_transport() {
     let mut app = test_app();
     app.active_channel = Some("C_GENERAL".into());
-    app.composer_text = "hello world".into();
+    app.composer = iced::widget::text_editor::Content::with_text("hello world");
     let _ = update(&mut app, Message::SendPressed);
 
-    assert!(app.composer_text.is_empty());
+    assert!(app.composer.text().is_empty());
     let cm = &app.active_workspace().unwrap().messages["C_GENERAL"];
     let last = cm.messages.last().unwrap();
     assert_eq!(last.text.as_deref(), Some("hello world"));
@@ -604,7 +604,7 @@ fn optimistic_send_inserts_pending_without_transport() {
 fn message_sent_clears_pending() {
     let mut app = test_app();
     app.active_channel = Some("C_GENERAL".into());
-    app.composer_text = "confirm me".into();
+    app.composer = iced::widget::text_editor::Content::with_text("confirm me");
     let _ = update(&mut app, Message::SendPressed);
 
     let cid = {

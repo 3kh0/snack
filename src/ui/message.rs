@@ -1,9 +1,10 @@
 use std::collections::HashMap;
+use std::f32::consts::TAU;
 use std::time::Duration;
 
 use iced::widget::image::Handle as ImageHandle;
-use iced::widget::{Column, Row, button, container, image, text, text_input};
-use iced::{Alignment, ContentFit, Element, Fill, Font, Length};
+use iced::widget::{Column, Row, button, container, image, svg, text, text_input};
+use iced::{Alignment, Color, ContentFit, Element, Fill, Font, Length, Point};
 
 use super::{blocks, selectable, theme};
 use crate::app::{FilePreview, Message};
@@ -15,6 +16,7 @@ pub fn row<'a>(
     channel_id: &str,
     msg: &SlackMessage,
     pending: bool,
+    compact: bool,
     in_thread: bool,
     hovered: bool,
     file_previews: &HashMap<String, FilePreview>,
@@ -30,14 +32,6 @@ pub fn row<'a>(
         .as_deref()
         .map(state::format_ts_hm)
         .unwrap_or_default();
-
-    let (avatar_key, avatar_url) = ws.message_avatar(msg);
-    let avatar = avatar(
-        avatar_key.as_deref(),
-        avatar_url.as_deref(),
-        avatar_previews,
-        author.chars().next(),
-    );
 
     let mut header = Row::new()
         .spacing(theme::SPACE_SM)
@@ -69,7 +63,7 @@ pub fn row<'a>(
         header = header.push(text("(edited)").size(theme::TEXT_SM).color(theme::MUTED));
     }
     if pending {
-        header = header.push(text("sending…").size(theme::TEXT_SM).color(theme::MUTED));
+        header = header.push(sending_clock(emoji_animation_elapsed));
     }
 
     let block_lines = blocks::render_lines(ws, msg);
@@ -134,6 +128,7 @@ pub fn row<'a>(
             .on_input(Message::EditComposerChanged)
             .on_submit(Message::EditSubmit)
             .style(theme::input)
+            .size(theme::TEXT_MD)
             .padding(theme::SPACE_SM)
             .width(Length::Fixed(360.0));
         let actions = Row::new()
@@ -155,6 +150,13 @@ pub fn row<'a>(
             .push(header)
             .push(input)
             .push(actions);
+        let (avatar_key, avatar_url) = ws.message_avatar(msg);
+        let avatar = avatar(
+            avatar_key.as_deref(),
+            avatar_url.as_deref(),
+            avatar_previews,
+            author.chars().next(),
+        );
         return container(
             Row::new()
                 .spacing(theme::SPACE_SM)
@@ -166,7 +168,10 @@ pub fn row<'a>(
         .into();
     }
 
-    let mut col = Column::new().spacing(theme::SPACE_XS).push(header);
+    let mut col = Column::new().spacing(theme::SPACE_XS);
+    if !compact {
+        col = col.push(header);
+    }
     let body_lines = body_lines(ws, msg, block_lines);
     if !body_lines.is_empty() {
         if body_lines
@@ -264,12 +269,32 @@ pub fn row<'a>(
         col = col.push(chips);
     }
 
+    let content: Element<'a, Message> = if compact && pending {
+        Row::new()
+            .spacing(theme::SPACE_XS)
+            .align_y(Alignment::Start)
+            .push(sending_clock(emoji_animation_elapsed))
+            .push(container(col).width(Fill))
+            .into()
+    } else {
+        container(col).width(Fill).into()
+    };
     let body = container(
         Row::new()
             .spacing(theme::SPACE_SM)
             .align_y(Alignment::Start)
-            .push(avatar)
-            .push(container(col).width(Fill)),
+            .push(if compact {
+                avatar_spacer()
+            } else {
+                let (avatar_key, avatar_url) = ws.message_avatar(msg);
+                avatar(
+                    avatar_key.as_deref(),
+                    avatar_url.as_deref(),
+                    avatar_previews,
+                    author.chars().next(),
+                )
+            })
+            .push(content),
     )
     .padding([theme::SPACE_XS, theme::SPACE_MD])
     .width(Fill);
@@ -289,6 +314,44 @@ pub fn row<'a>(
 
 fn is_app_message(msg: &SlackMessage) -> bool {
     msg.subtype.as_deref() == Some("bot_message")
+}
+
+fn avatar_spacer<'a>() -> Element<'a, Message> {
+    iced::widget::Space::new().width(Length::Fixed(32.0)).into()
+}
+
+fn sending_clock<'a>(elapsed: Duration) -> Element<'a, Message> {
+    let hour_end = clock_hand_end(elapsed, 2.6, 4.6);
+    let minute_end = clock_hand_end(elapsed, 1.3, 5.7);
+    let muted = svg_color(theme::MUTED);
+    let hand = svg_color(theme::TEXT_4);
+    let data = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 14" fill="none">
+<circle cx="7" cy="7" r="5.8" stroke="{muted}" stroke-width="1.25"/>
+<path d="M7 7 L{:.3} {:.3}" stroke="{hand}" stroke-width="1.8" stroke-linecap="round"/>
+<path d="M7 7 L{:.3} {:.3}" stroke="{hand}" stroke-width="2.4" stroke-linecap="round"/>
+<circle cx="7" cy="7" r="1.15" fill="{hand}"/>
+</svg>"##,
+        hour_end.x, hour_end.y, minute_end.x, minute_end.y
+    );
+    container(
+        svg(svg::Handle::from_memory(data.into_bytes()))
+            .width(Length::Fixed(14.0))
+            .height(Length::Fixed(14.0)),
+    )
+    .into()
+}
+
+fn clock_hand_end(elapsed: Duration, period_secs: f32, length: f32) -> Point {
+    let angle = elapsed.as_secs_f32() / period_secs * TAU - TAU / 4.0;
+    Point::new(7.0 + angle.cos() * length, 7.0 + angle.sin() * length)
+}
+
+fn svg_color(color: Color) -> String {
+    let red = (color.r.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let green = (color.g.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let blue = (color.b.clamp(0.0, 1.0) * 255.0).round() as u8;
+    format!("#{red:02x}{green:02x}{blue:02x}")
 }
 
 fn body_lines(

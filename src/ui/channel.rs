@@ -45,11 +45,13 @@ pub fn view<'a>(
                 .collect();
             visible.reverse();
             let mut last_date = None;
+            let mut previous_group_message = None;
             for m in visible {
                 if let Some(ts) = m.ts.as_deref() {
                     let date = state::date_key_for_ts(ts);
                     if date.is_some() && date != last_date {
                         col = col.push(date_separator(state::format_ts_date_label(ts)));
+                        previous_group_message = None;
                         last_date = date;
                     }
                 }
@@ -58,11 +60,15 @@ pub fn view<'a>(
                     .filter(|(ts, _)| Some(*ts) == m.ts.as_deref())
                     .map(|(_, value)| value);
                 let hovered = m.ts.as_deref().is_some() && m.ts.as_deref() == hovered_ts;
+                let compact = edit.is_none()
+                    && previous_group_message
+                        .is_some_and(|previous| same_message_group(previous, m));
                 let row = message::row(
                     ws,
                     channel_id,
                     m,
                     pending,
+                    compact,
                     false,
                     hovered,
                     file_previews,
@@ -82,6 +88,7 @@ pub fn view<'a>(
                     None => row,
                 };
                 col = col.push(row);
+                previous_group_message = Some(m);
             }
             scrollable(col)
                 .id(scrollable_id(channel_id))
@@ -121,6 +128,33 @@ pub fn view<'a>(
     .width(Fill)
     .height(Fill)
     .into()
+}
+
+fn same_message_group(
+    previous: &crate::slack::models::Message,
+    current: &crate::slack::models::Message,
+) -> bool {
+    let has_author =
+        previous.user.is_some() || previous.bot_id.is_some() || previous.username.is_some();
+    if !has_author {
+        return false;
+    }
+    let same_author = previous.user.as_deref() == current.user.as_deref()
+        && previous.bot_id.as_deref() == current.bot_id.as_deref()
+        && previous.username.as_deref() == current.username.as_deref();
+    if !same_author {
+        return false;
+    }
+    let (Some(previous_ts), Some(current_ts)) = (previous.ts.as_deref(), current.ts.as_deref())
+    else {
+        return false;
+    };
+    if state::date_key_for_ts(previous_ts) != state::date_key_for_ts(current_ts) {
+        return false;
+    }
+    let previous_secs = state::ts_key(previous_ts).0;
+    let current_secs = state::ts_key(current_ts).0;
+    current_secs.saturating_sub(previous_secs) <= 300
 }
 
 fn channel_header<'a>(
@@ -301,7 +335,17 @@ fn typing_line(names: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::typing_line;
+    use super::{same_message_group, typing_line};
+    use crate::slack::models::Message as SlackMessage;
+
+    fn msg(user: &str, ts: &str) -> SlackMessage {
+        SlackMessage {
+            user: Some(user.to_owned()),
+            ts: Some(ts.to_owned()),
+            text: Some("hi".to_owned()),
+            ..Default::default()
+        }
+    }
 
     #[test]
     fn typing_line_variants() {
@@ -315,5 +359,31 @@ mod tests {
             typing_line(&["a".into(), "b".into(), "c".into()]),
             "3 people are typing…"
         );
+    }
+
+    #[test]
+    fn same_message_group_requires_nearby_same_sender() {
+        assert!(same_message_group(
+            &msg("U1", "1783372400.000001"),
+            &msg("U1", "1783372450.000001")
+        ));
+        assert!(!same_message_group(
+            &msg("U1", "1783372400.000001"),
+            &msg("U2", "1783372450.000001")
+        ));
+        assert!(!same_message_group(
+            &msg("U1", "1783372400.000001"),
+            &msg("U1", "1783372801.000001")
+        ));
+        assert!(!same_message_group(
+            &SlackMessage {
+                ts: Some("1783372400.000001".to_owned()),
+                ..Default::default()
+            },
+            &SlackMessage {
+                ts: Some("1783372450.000001".to_owned()),
+                ..Default::default()
+            }
+        ));
     }
 }

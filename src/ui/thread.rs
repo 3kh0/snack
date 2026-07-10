@@ -1,12 +1,11 @@
-use iced::widget::{
-    Column, button, column, container, mouse_area, row, scrollable, text, text_input,
-};
+use iced::widget::text_editor::Content;
+use iced::widget::{Column, button, column, container, mouse_area, row, scrollable, text};
 use iced::{Element, Fill, Font, Length};
 use std::collections::HashMap;
 use std::time::Duration;
 
-use super::{message, theme};
-use crate::app::{FilePreview, Message};
+use super::{composer, message, theme};
+use crate::app::{ComposerTarget, FilePreview, Message};
 use crate::slack::models::Message as SlackMessage;
 use crate::state::{ChannelMessages, Workspace};
 
@@ -15,7 +14,7 @@ pub fn view<'a>(
     channel_id: &str,
     root: Option<&SlackMessage>,
     replies: Option<&ChannelMessages>,
-    value: &str,
+    content: &'a Content,
     file_previews: &HashMap<String, FilePreview>,
     avatar_previews: &HashMap<String, FilePreview>,
     emoji_previews: &HashMap<String, FilePreview>,
@@ -58,6 +57,7 @@ pub fn view<'a>(
                     channel_id,
                     msg,
                     pending,
+                    false,
                     true,
                     hovered,
                     file_previews,
@@ -92,6 +92,7 @@ pub fn view<'a>(
                     channel_id,
                     root,
                     false,
+                    false,
                     true,
                     hovered,
                     file_previews,
@@ -125,18 +126,13 @@ pub fn view<'a>(
         }
     };
 
-    let input = text_input("Reply in thread", value)
-        .on_input(Message::ThreadComposerChanged)
-        .on_submit(Message::ThreadSendPressed)
-        .style(theme::input)
-        .padding(theme::SPACE_SM)
-        .width(Fill);
+    let input = composer::thread_view(content, ComposerTarget::Thread);
 
     container(column![
         container(header).padding(theme::SPACE_MD),
         theme::divider(),
         container(list).height(Fill),
-        container(input).padding(theme::SPACE_MD),
+        input,
     ])
     .width(Length::Fixed(theme::THREAD_WIDTH))
     .height(Fill)
