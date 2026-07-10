@@ -321,7 +321,7 @@ fn material_add_icon<'a>() -> Element<'a, Message> {
 }
 
 fn material_send_icon<'a>() -> Element<'a, Message> {
-    const SEND_ROUNDED: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path fill="#AEB8D0" d="M120-160v-240l320-80-320-80v-240l760 320-760 320Zm80-107 474-213-474-213v71l240 62-240 62v71Zm0 0v-426 426Z"/></svg>"##;
+    const SEND_ROUNDED: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M0 0h24v24H0z" fill="none"/><path fill="#AEB8D0" d="M4.4 19.425q-.5.2-.95-.088T3 18.5V14l8-2l-8-2V5.5q0-.55.45-.837t.95-.088l15.4 6.5q.625.275.625.925t-.625.925z"/></svg>"##;
     svg(SvgHandle::from_memory(SEND_ROUNDED))
         .width(Length::Fixed(18.0))
         .height(Length::Fixed(18.0))
