@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <!--
+    snack monogram — three bars reading as S
+    top left · middle right · bottom left
+    Canvas is full 1024; system applies the squircle mask.
+    Keep content inside ~18% margin for icon grid safety.
+  -->
+  <g fill="#F2F4F8">
+    <!-- top bar (left-aligned) -->
+    <rect x="196" y="300" width="520" height="108" rx="54"/>
+    <!-- middle bar (right-shifted) -->
+    <rect x="308" y="458" width="520" height="108" rx="54"/>
+    <!-- bottom bar (left-aligned) -->
+    <rect x="196" y="616" width="520" height="108" rx="54"/>
+  </g>
+</svg>

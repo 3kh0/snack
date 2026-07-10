@@ -1,6 +1,7 @@
 # Rust / Cargo
 /target/
 /captures/
+/assets/icons/preview/
 
 # Backup files created by rustfmt
 **/*.rs.bk

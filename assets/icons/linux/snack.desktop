@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Snack
+Comment=A stupid fast and lightweight Slack client
+Exec=snack
+Icon=snack
+Terminal=false
+Categories=Network;InstantMessaging;Chat;
+StartupWMClass=snack

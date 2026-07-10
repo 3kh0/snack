@@ -176,7 +176,7 @@ pub fn config_dir() -> Result<PathBuf, AppError> {
 
     #[cfg(not(test))]
     {
-        let dirs = directories::ProjectDirs::from("com", "hackclub", "snack").ok_or_else(|| {
+        let dirs = directories::ProjectDirs::from("com", "echonet", "snack").ok_or_else(|| {
             AppError::Io(std::io::Error::other("no home directory for config path"))
         })?;
         Ok(dirs.config_dir().to_path_buf())
@@ -191,7 +191,7 @@ pub fn data_dir() -> Result<PathBuf, AppError> {
 
     #[cfg(not(test))]
     {
-        let dirs = directories::ProjectDirs::from("com", "hackclub", "snack").ok_or_else(|| {
+        let dirs = directories::ProjectDirs::from("com", "echonet", "snack").ok_or_else(|| {
             AppError::Io(std::io::Error::other("no home directory for data path"))
         })?;
         Ok(dirs.data_local_dir().to_path_buf())
@@ -212,7 +212,7 @@ fn token_account(team_id: &str) -> String {
 
 #[cfg(not(test))]
 fn entry(account: &str) -> Result<keyring::Entry, AppError> {
-    Ok(keyring::Entry::new("com.client.snack", account)?)
+    Ok(keyring::Entry::new("com.echonet.snack", account)?)
 }
 
 #[cfg(all(not(test), debug_assertions))]

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="snack">
+  <!-- Flat master mark for Linux/desktop and marketing. Rounded plate + S bars. -->
+  <defs>
+    <clipPath id="squircle">
+      <rect x="0" y="0" width="1024" height="1024" rx="228" ry="228"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#squircle)">
+    <rect width="1024" height="1024" fill="#161920"/>
+    <g fill="#F2F4F8">
+      <rect x="196" y="300" width="520" height="108" rx="54"/>
+      <rect x="308" y="458" width="520" height="108" rx="54"/>
+      <rect x="196" y="616" width="520" height="108" rx="54"/>
+    </g>
+  </g>
+</svg>
