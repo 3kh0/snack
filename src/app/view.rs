@@ -140,14 +140,16 @@ fn main_view(app: &App) -> Element<'_, Message> {
                     editing_for(channel_id),
                     hovered_for(false),
                     app.text_selection.as_ref(),
+                    &app.pending_file_messages,
                 ))
                 .height(Fill),
-                ui::composer::view(
+                container(ui::composer::view(
                     &app.composer,
                     &app.composer_attachments,
                     &label,
                     crate::app::ComposerTarget::Channel,
-                ),
+                ))
+                .height(iced::Length::Shrink),
             ]
             .width(Fill)
             .height(Fill);
@@ -191,6 +193,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
                 editing_for(channel),
                 hovered_for(true),
                 app.text_selection.as_ref(),
+                &app.pending_file_messages,
             ))
             .padding(iced::Padding::ZERO.left(gap));
             ui::motion::collapse_x(panel.into(), progress, ui::theme::THREAD_WIDTH + gap)

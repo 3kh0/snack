@@ -11,7 +11,7 @@ use super::*;
 use crate::slack::Error as SlackError;
 use crate::slack::events::RtEvent;
 use crate::slack::models::{
-    Channel, HistoryPage, Message as SlackMessage, SearchItem, SearchMessagesPage,
+    Channel, File, HistoryPage, Message as SlackMessage, SearchItem, SearchMessagesPage,
     SearchPagination, SentMessage, User, UserProfile,
 };
 use crate::slack::realtime::Connection;
@@ -662,6 +662,80 @@ fn realtime_message_upserts_into_channel() {
     let _ = update(&mut app, Message::Realtime(team.clone(), 1, ev));
     let after = app.workspaces[&team].messages["C_GENERAL"].messages.len();
     assert_eq!(after, before + 1);
+}
+
+#[test]
+fn realtime_file_replaces_pending_upload_and_keeps_local_preview() {
+    let mut app = test_app();
+    let team = app.active_team.clone().unwrap();
+    let channel = "C_GENERAL".to_owned();
+    let pending_ts = "9999999998.000001".to_owned();
+    let client_msg_id = "pending-file-1".to_owned();
+    let pending = SlackMessage {
+        user: Some(SELF_USER.into()),
+        ts: Some(pending_ts.clone()),
+        client_msg_id: Some(client_msg_id.clone()),
+        channel: Some(channel.clone()),
+        text: Some("video".into()),
+        ..Default::default()
+    };
+    let messages = app
+        .workspaces
+        .get_mut(&team)
+        .unwrap()
+        .messages
+        .get_mut(&channel)
+        .unwrap();
+    messages.upsert(pending);
+    messages.pending.push(pending_ts.clone());
+    let before = messages.messages.len();
+    app.pending_file_messages.push(PendingFileMessage {
+        team: team.clone(),
+        channel: channel.clone(),
+        thread_ts: None,
+        message_ts: pending_ts.clone(),
+        client_msg_id,
+        text: "video".into(),
+        attachments: vec![ComposerAttachment {
+            id: 1,
+            path: PathBuf::from("/tmp/video.mp4"),
+            name: "video.mp4".into(),
+            bytes: 10,
+            uploading: true,
+            upload_started: Some(Instant::now()),
+            upload_cancel: None,
+            upload_progress: None,
+            preview_path: Some(PathBuf::from("/tmp/video-preview.jpg")),
+        }],
+    });
+
+    let event = RtEvent::Message(SlackMessage {
+        user: Some(SELF_USER.into()),
+        ts: Some("9999999999.000001".into()),
+        channel: Some(channel.clone()),
+        text: Some("video".into()),
+        files: vec![File {
+            id: Some("F_VIDEO".into()),
+            name: Some("video.mp4".into()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    let _ = update(&mut app, Message::Realtime(team.clone(), 1, event));
+
+    let messages = &app.workspaces[&team].messages[&channel];
+    assert_eq!(messages.messages.len(), before);
+    assert!(
+        !messages
+            .messages
+            .iter()
+            .any(|message| { message.ts.as_deref() == Some(pending_ts.as_str()) })
+    );
+    assert!(app.pending_file_messages.is_empty());
+    assert!(matches!(
+        app.file_previews.get("F_VIDEO"),
+        Some(FilePreview::Loaded(_))
+    ));
 }
 
 #[test]

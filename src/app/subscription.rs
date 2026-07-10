@@ -43,6 +43,11 @@ pub(super) fn subscription(app: &App) -> Subscription<Message> {
             .thread_composer_attachments
             .iter()
             .any(|attachment| attachment.uploading)
+        || app
+            .pending_file_messages
+            .iter()
+            .flat_map(|pending| &pending.attachments)
+            .any(|attachment| attachment.uploading)
     {
         subs.push(iced::time::every(Duration::from_millis(50)).map(|_| Message::AnimationTick));
     }

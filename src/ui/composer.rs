@@ -7,6 +7,7 @@ use iced::widget::svg::Handle as SvgHandle;
 use iced::widget::text_editor::{Action, Binding, Content, Edit, KeyPress, Motion, Status};
 use iced::widget::{button, column, container, image, row, stack, svg, text, text_editor};
 use iced::{Alignment, ContentFit, Element, Fill, Length};
+use std::sync::atomic::Ordering;
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::theme;
@@ -49,16 +50,17 @@ fn editor_owned<'a>(
     target: ComposerTarget,
     send: Message,
 ) -> Element<'a, Message> {
+    let binding_send = send.clone();
     let input = text_editor(content)
         .placeholder(placeholder)
         .on_action(move |action| Message::ComposerAction { target, action })
-        .key_binding(move |press| key_binding(press, target, send.clone()))
+        .key_binding(move |press| key_binding(press, target, binding_send.clone()))
         .size(theme::TEXT_MD)
-        .padding(theme::SPACE_SM)
+        .padding([theme::SPACE_XS, theme::SPACE_SM])
         .height(Length::Fixed(32.0))
         .style(theme::composer_editor);
 
-    composer_shell(input.into(), attachments, target).into()
+    composer_shell(input.into(), attachments, target, send).into()
 }
 
 fn editor<'a>(
@@ -68,22 +70,24 @@ fn editor<'a>(
     target: ComposerTarget,
     send: Message,
 ) -> Element<'a, Message> {
+    let binding_send = send.clone();
     let input = text_editor(content)
         .placeholder(placeholder)
         .on_action(move |action| Message::ComposerAction { target, action })
-        .key_binding(move |press| key_binding(press, target, send.clone()))
+        .key_binding(move |press| key_binding(press, target, binding_send.clone()))
         .size(theme::TEXT_MD)
-        .padding(theme::SPACE_SM)
+        .padding([theme::SPACE_XS, theme::SPACE_SM])
         .height(Length::Fixed(32.0))
         .style(theme::composer_editor);
 
-    composer_shell(input.into(), attachments, target).into()
+    composer_shell(input.into(), attachments, target, send).into()
 }
 
 fn composer_shell<'a>(
     input: Element<'a, Message>,
     attachments: &'a [ComposerAttachment],
     target: ComposerTarget,
+    send: Message,
 ) -> iced::widget::Container<'a, Message> {
     let mut body = column![];
     if !attachments.is_empty() {
@@ -105,6 +109,18 @@ fn composer_shell<'a>(
                 .width(Length::Fixed(32.0))
                 .height(Length::Fixed(32.0)),
                 input,
+                button(
+                    container(material_send_icon())
+                        .width(Length::Fixed(32.0))
+                        .height(Length::Fixed(32.0))
+                        .center_x(Fill)
+                        .center_y(Fill),
+                )
+                .on_press(send)
+                .style(theme::action_button)
+                .padding(0.0)
+                .width(Length::Fixed(32.0))
+                .height(Length::Fixed(32.0)),
             ]
             .spacing(theme::SPACE_XS)
             .align_y(Alignment::Center),
@@ -115,6 +131,7 @@ fn composer_shell<'a>(
     );
     container(body.spacing(theme::SPACE_SM))
         .width(Fill)
+        .height(Length::Shrink)
         .padding(theme::SPACE_MD)
 }
 
@@ -163,30 +180,117 @@ fn attachment_strip<'a>(
     strip.into()
 }
 
-fn attachment_preview<'a>(attachment: &'a ComposerAttachment) -> Element<'a, Message> {
-    let preview: Element<'a, Message> = if is_previewable_image(&attachment.path) {
-        image(ImageHandle::from_path(&attachment.path))
-            .width(Length::Fixed(64.0))
-            .height(Length::Fixed(64.0))
-            .content_fit(ContentFit::Cover)
-            .into()
-    } else {
-        let label = if is_video(&attachment.path) {
-            "VIDEO"
+pub fn pending_attachment_strip<'a>(attachments: &'a [ComposerAttachment]) -> Element<'a, Message> {
+    let mut strip = row![].spacing(theme::SPACE_SM);
+    for attachment in attachments {
+        let preview_source = attachment.preview_path.as_ref().unwrap_or(&attachment.path);
+        let media: Element<'a, Message> =
+            if attachment.preview_path.is_some() || is_previewable_image(&attachment.path) {
+                image(ImageHandle::from_path(preview_source))
+                    .width(Length::Fixed(220.0))
+                    .height(Length::Fixed(140.0))
+                    .content_fit(ContentFit::Contain)
+                    .into()
+            } else {
+                container(
+                    text(if is_video(&attachment.path) {
+                        "VIDEO"
+                    } else {
+                        "FILE"
+                    })
+                    .size(theme::TEXT_SM)
+                    .color(theme::TEXT_3),
+                )
+                .width(Length::Fixed(220.0))
+                .height(Length::Fixed(96.0))
+                .center_x(Fill)
+                .center_y(Fill)
+                .into()
+            };
+        let media_height =
+            if attachment.preview_path.is_some() || is_previewable_image(&attachment.path) {
+                140.0
+            } else {
+                96.0
+            };
+        let progress = attachment
+            .upload_progress
+            .as_ref()
+            .map(|progress| {
+                progress.load(Ordering::Relaxed) as f32 / attachment.bytes.max(1) as f32
+            })
+            .unwrap_or(0.0);
+        let elapsed = attachment
+            .upload_started
+            .map(|started| started.elapsed().as_millis() as f32)
+            .unwrap_or(0.0);
+        let media: Element<'a, Message> = if attachment.uploading {
+            let overlay = container(upload_ring(elapsed, progress))
+                .width(Length::Fixed(220.0))
+                .height(Length::Fixed(media_height))
+                .center_x(Fill)
+                .center_y(Fill);
+            stack![media, overlay].into()
         } else {
-            "FILE"
+            media
         };
-        container(text(label).size(theme::TEXT_SM).color(theme::TEXT_3))
-            .width(Length::Fixed(64.0))
-            .height(Length::Fixed(64.0))
-            .center_x(Fill)
-            .center_y(Fill)
-            .style(theme::file_attachment)
-            .into()
-    };
-    let preview = match attachment.upload_started {
-        Some(started) => stack![preview, upload_ring(started.elapsed().as_millis() as f32)].into(),
-        None => preview,
+        let content = column![
+            media,
+            text(truncate_filename(&attachment.name))
+                .size(theme::TEXT_SM)
+                .color(theme::TEXT_1),
+            text(format_bytes(attachment.bytes))
+                .size(theme::TEXT_SM)
+                .color(theme::TEXT_4),
+        ]
+        .spacing(3.0);
+        strip = strip.push(
+            container(content)
+                .width(Length::Fixed(236.0))
+                .padding(theme::SPACE_SM)
+                .clip(true)
+                .style(theme::file_attachment),
+        );
+    }
+    strip.into()
+}
+
+fn attachment_preview<'a>(attachment: &'a ComposerAttachment) -> Element<'a, Message> {
+    let preview_source = attachment.preview_path.as_ref().unwrap_or(&attachment.path);
+    let preview: Element<'a, Message> =
+        if attachment.preview_path.is_some() || is_previewable_image(&attachment.path) {
+            image(ImageHandle::from_path(preview_source))
+                .width(Length::Fixed(64.0))
+                .height(Length::Fixed(64.0))
+                .content_fit(ContentFit::Cover)
+                .into()
+        } else {
+            let label = if is_video(&attachment.path) {
+                "VIDEO"
+            } else {
+                "FILE"
+            };
+            container(text(label).size(theme::TEXT_SM).color(theme::TEXT_3))
+                .width(Length::Fixed(64.0))
+                .height(Length::Fixed(64.0))
+                .center_x(Fill)
+                .center_y(Fill)
+                .style(theme::file_attachment)
+                .into()
+        };
+    let preview = match (
+        attachment.upload_started,
+        attachment.upload_progress.as_ref(),
+    ) {
+        (Some(started), Some(progress)) => stack![
+            preview,
+            upload_ring(
+                started.elapsed().as_millis() as f32,
+                progress.load(Ordering::Relaxed) as f32 / attachment.bytes.max(1) as f32,
+            )
+        ]
+        .into(),
+        _ => preview,
     };
     container(preview)
         .width(Length::Fixed(64.0))
@@ -195,10 +299,12 @@ fn attachment_preview<'a>(attachment: &'a ComposerAttachment) -> Element<'a, Mes
         .into()
 }
 
-fn upload_ring<'a>(elapsed_ms: f32) -> Element<'a, Message> {
+fn upload_ring<'a>(elapsed_ms: f32, progress: f32) -> Element<'a, Message> {
     let rotation = (elapsed_ms % 1_200.0) / 1_200.0 * 360.0;
+    let arc = (progress.clamp(0.01, 0.99) * 132.0).max(2.0);
+    let gap = 132.0 - arc;
     let markup = format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><circle cx="32" cy="32" r="24" fill="#101218" fill-opacity=".66"/><circle cx="32" cy="32" r="21" fill="none" stroke="#F2F4F8" stroke-width="4" stroke-linecap="round" stroke-dasharray="33 99" transform="rotate({rotation} 32 32)"/></svg>"##
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><circle cx="32" cy="32" r="24" fill="#101218" fill-opacity=".66"/><circle cx="32" cy="32" r="21" fill="none" stroke="#F2F4F8" stroke-width="4" stroke-linecap="round" stroke-dasharray="{arc} {gap}" transform="rotate({rotation} 32 32)"/></svg>"##
     );
     svg(SvgHandle::from_memory(markup.into_bytes()))
         .width(Length::Fixed(64.0))
@@ -209,6 +315,14 @@ fn upload_ring<'a>(elapsed_ms: f32) -> Element<'a, Message> {
 fn material_add_icon<'a>() -> Element<'a, Message> {
     const ADD_ROUNDED: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path fill="#AEB8D0" d="M440-440H200q-17 0-28.5-11.5T160-480q0-17 11.5-28.5T200-520h240v-240q0-17 11.5-28.5T480-800q17 0 28.5 11.5T520-760v240h240q17 0 28.5 11.5T800-480q0 17-11.5 28.5T760-440H520v240q0 17-11.5 28.5T480-160q-17 0-28.5-11.5T440-200v-240Z"/></svg>"##;
     svg(SvgHandle::from_memory(ADD_ROUNDED))
+        .width(Length::Fixed(18.0))
+        .height(Length::Fixed(18.0))
+        .into()
+}
+
+fn material_send_icon<'a>() -> Element<'a, Message> {
+    const SEND_ROUNDED: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path fill="#AEB8D0" d="M120-160v-240l320-80-320-80v-240l760 320-760 320Zm80-107 474-213-474-213v71l240 62-240 62v71Zm0 0v-426 426Z"/></svg>"##;
+    svg(SvgHandle::from_memory(SEND_ROUNDED))
         .width(Length::Fixed(18.0))
         .height(Length::Fixed(18.0))
         .into()

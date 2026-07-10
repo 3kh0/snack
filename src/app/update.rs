@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use iced::Task;
@@ -25,8 +25,8 @@ use crate::ui;
 use super::palette::{self, PaletteEntry, PaletteState, PaletteTarget};
 use super::{
     App, ComposerAttachment, ComposerTarget, DesktopNotification, FilePreview, HistoryLoadKind,
-    Message, PendingScrollTarget, SearchHit, SearchState, TextSelection, TextSelectionPoint,
-    TextSelectionSurface, ThreadKey,
+    Message, PendingFileMessage, PendingScrollTarget, SearchHit, SearchState, TextSelection,
+    TextSelectionPoint, TextSelectionSurface, ThreadKey,
 };
 use iced::widget::text_editor::Content;
 
@@ -255,17 +255,46 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
         ),
 
         Message::AttachmentsPicked { target, paths } => {
+            let video_paths = paths
+                .iter()
+                .filter(|path| is_video(path))
+                .cloned()
+                .collect::<Vec<_>>();
             add_attachments(app, target, paths);
-            Task::none()
+            video_preview_tasks(video_paths)
         }
 
         Message::FilesDropped(paths) => {
+            let video_paths = paths
+                .iter()
+                .filter(|path| is_video(path))
+                .cloned()
+                .collect::<Vec<_>>();
             let target = if app.active_thread.is_some() {
                 ComposerTarget::Thread
             } else {
                 ComposerTarget::Channel
             };
             add_attachments(app, target, paths);
+            video_preview_tasks(video_paths)
+        }
+
+        Message::VideoPreviewReady { source, result } => {
+            if let Ok(preview_path) = result {
+                for attachment in app
+                    .composer_attachments
+                    .iter_mut()
+                    .chain(app.thread_composer_attachments.iter_mut())
+                    .chain(
+                        app.pending_file_messages
+                            .iter_mut()
+                            .flat_map(|pending| pending.attachments.iter_mut()),
+                    )
+                    .filter(|attachment| attachment.path == source)
+                {
+                    attachment.preview_path = Some(preview_path.clone());
+                }
+            }
             Task::none()
         }
 
@@ -317,15 +346,58 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
 
-        Message::AttachmentsSent { target, result } => {
+        Message::AttachmentsSent {
+            target,
+            team,
+            channel,
+            thread_ts,
+            message_ts,
+            client_msg_id,
+            result,
+        } => {
+            let pending_index = app
+                .pending_file_messages
+                .iter()
+                .position(|pending| pending.client_msg_id == client_msg_id);
             match result {
-                Ok(()) => attachments_mut(app, target).clear(),
+                Ok(()) => {
+                    if let Some(index) = pending_index {
+                        for attachment in &mut app.pending_file_messages[index].attachments {
+                            attachment.uploading = false;
+                            attachment.upload_started = None;
+                            if let Some(progress) = &attachment.upload_progress {
+                                progress.store(attachment.bytes, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                    mark_workspace_dirty(app, &team);
+                }
                 Err(error) => {
-                    for attachment in attachments_mut(app, target) {
+                    let pending =
+                        pending_index.map(|index| app.pending_file_messages.remove(index));
+                    let messages = match thread_ts.as_ref() {
+                        Some(root_ts) => {
+                            app.threads
+                                .get_mut(&(team.clone(), channel.clone(), root_ts.clone()))
+                        }
+                        None => app
+                            .workspaces
+                            .get_mut(&team)
+                            .and_then(|ws| ws.messages.get_mut(&channel)),
+                    };
+                    if let Some(messages) = messages {
+                        messages.remove(&message_ts);
+                    }
+                    let mut attachments = pending
+                        .map(|message| message.attachments)
+                        .unwrap_or_default();
+                    for attachment in &mut attachments {
                         attachment.uploading = false;
                         attachment.upload_started = None;
                         attachment.upload_cancel = None;
+                        attachment.upload_progress = None;
                     }
+                    attachments_mut(app, target).extend(attachments);
                     if !matches!(error, SlackError::UploadCanceled) {
                         app.toast(format!("file upload failed: {error}"));
                     }
@@ -1359,7 +1431,66 @@ fn add_attachments(app: &mut App, target: ComposerTarget, paths: Vec<PathBuf>) {
             uploading: false,
             upload_started: None,
             upload_cancel: None,
+            upload_progress: None,
+            preview_path: None,
         });
+    }
+}
+
+fn is_video(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some(extension) if matches!(
+            extension.to_ascii_lowercase().as_str(),
+            "mp4" | "mov" | "m4v" | "webm"
+        )
+    )
+}
+
+fn is_local_image(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some(extension) if matches!(
+            extension.to_ascii_lowercase().as_str(),
+            "png" | "jpg" | "jpeg" | "gif" | "webp"
+        )
+    )
+}
+
+fn video_preview_tasks(paths: Vec<PathBuf>) -> Task<Message> {
+    Task::batch(paths.into_iter().map(|source| {
+        Task::perform(video_thumbnail(source.clone()), move |result| {
+            Message::VideoPreviewReady {
+                source: source.clone(),
+                result,
+            }
+        })
+    }))
+}
+
+async fn video_thumbnail(source: PathBuf) -> Result<PathBuf, String> {
+    let output =
+        std::env::temp_dir().join(format!("snack-video-preview-{}.jpg", uuid::Uuid::new_v4()));
+    let status = tokio::process::Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-ss",
+            "0.1",
+            "-i",
+            source.to_string_lossy().as_ref(),
+            "-frames:v",
+            "1",
+            "-vf",
+            "scale=128:-1",
+            output.to_string_lossy().as_ref(),
+        ])
+        .status()
+        .await
+        .map_err(|error| format!("start ffmpeg: {error}"))?;
+    if status.success() {
+        Ok(output)
+    } else {
+        Err("ffmpeg could not extract a video preview".to_owned())
     }
 }
 
@@ -1610,24 +1741,88 @@ fn send_attachments(
     let workspace = workspace.clone();
     let client = app.client.clone();
     let upload_cancel = Arc::new(AtomicBool::new(false));
-    let attachments = attachments_mut(app, target);
-    if attachments.iter().any(|attachment| attachment.uploading) {
+    if attachments_mut(app, target)
+        .iter()
+        .any(|attachment| attachment.uploading)
+    {
         return Task::none();
     }
+    let mut attachments = std::mem::take(attachments_mut(app, target));
     let files = attachments
         .iter_mut()
         .map(|attachment| {
             attachment.uploading = true;
             attachment.upload_started = Some(Instant::now());
             attachment.upload_cancel = Some(upload_cancel.clone());
-            attachment.path.clone()
+            let progress = Arc::new(AtomicU64::new(0));
+            attachment.upload_progress = Some(progress.clone());
+            (attachment.path.clone(), progress)
         })
         .collect::<Vec<_>>();
+    let seq = next_seq(app);
+    let client_msg_id = uuid::Uuid::new_v4().to_string();
+    let message_ts = format!("{}.{:06}", chrono::Utc::now().timestamp(), seq);
+    let Some(ws) = app.workspaces.get(&team) else {
+        attachments_mut(app, target).extend(attachments);
+        return Task::none();
+    };
+    let pending_message = SlackMessage {
+        user: Some(ws.self_user_id.clone()),
+        kind: Some("message".to_owned()),
+        ts: Some(message_ts.clone()),
+        client_msg_id: Some(client_msg_id.clone()),
+        text: Some(text.clone()),
+        channel: Some(channel.clone()),
+        thread_ts: thread_ts.clone(),
+        ..Default::default()
+    };
+    match thread_ts.as_ref() {
+        Some(root_ts) => {
+            let messages = app
+                .threads
+                .entry((team.clone(), channel.clone(), root_ts.clone()))
+                .or_default();
+            messages.upsert(pending_message);
+            messages.pending.push(message_ts.clone());
+        }
+        None => {
+            let messages = app
+                .workspaces
+                .get_mut(&team)
+                .expect("workspace checked above")
+                .messages
+                .entry(channel.clone())
+                .or_default();
+            messages.upsert(pending_message);
+            messages.pending.push(message_ts.clone());
+        }
+    }
+    app.pending_file_messages.push(PendingFileMessage {
+        team: team.clone(),
+        channel: channel.clone(),
+        thread_ts: thread_ts.clone(),
+        message_ts: message_ts.clone(),
+        client_msg_id: client_msg_id.clone(),
+        text: text.clone(),
+        attachments,
+    });
     match target {
         ComposerTarget::Channel => app.composer = Content::new(),
         ComposerTarget::Thread => app.thread_composer = Content::new(),
     }
-    Task::perform(
+    mark_workspace_dirty(app, &team);
+    let scroll = if target == ComposerTarget::Channel {
+        app.pending_scroll_to = Some((channel.clone(), PendingScrollTarget::Latest));
+        scroll_to_pending(app, &channel)
+    } else {
+        Task::none()
+    };
+    let sent_team = team.clone();
+    let sent_channel = channel.clone();
+    let sent_thread_ts = thread_ts.clone();
+    let sent_message_ts = message_ts.clone();
+    let sent_client_msg_id = client_msg_id.clone();
+    let upload = Task::perform(
         async move {
             api::upload_files(
                 &transport,
@@ -1641,8 +1836,17 @@ fn send_attachments(
             )
             .await
         },
-        move |result| Message::AttachmentsSent { target, result },
-    )
+        move |result| Message::AttachmentsSent {
+            target,
+            team: sent_team.clone(),
+            channel: sent_channel.clone(),
+            thread_ts: sent_thread_ts.clone(),
+            message_ts: sent_message_ts.clone(),
+            client_msg_id: sent_client_msg_id.clone(),
+            result,
+        },
+    );
+    Task::batch([scroll, upload])
 }
 
 fn toggle_reaction(
@@ -3625,6 +3829,37 @@ fn apply_realtime(
             let Some(channel) = msg.channel.clone() else {
                 return None;
             };
+            let pending_file_message = (!msg.files.is_empty()
+                && msg.user.as_deref() == Some(ws.self_user_id.as_str()))
+            .then(|| {
+                app.pending_file_messages.iter().position(|pending| {
+                    pending.team == team
+                        && pending.channel == channel
+                        && pending.thread_ts == msg.thread_ts
+                        && msg.text.as_deref().unwrap_or_default() == pending.text
+                })
+            })
+            .flatten()
+            .map(|index| app.pending_file_messages.remove(index));
+            if let Some(pending) = pending_file_message.as_ref() {
+                for (file, attachment) in msg.files.iter().zip(&pending.attachments) {
+                    let preview_path = attachment
+                        .preview_path
+                        .as_ref()
+                        .or_else(|| is_local_image(&attachment.path).then_some(&attachment.path));
+                    if let (Some(key), Some(path)) =
+                        (crate::state::file_preview_key(file), preview_path)
+                    {
+                        app.file_previews.insert(
+                            key,
+                            FilePreview::Loaded(ImageHandle::from_path(path.clone())),
+                        );
+                    }
+                }
+            }
+            let pending_message_ts = pending_file_message
+                .as_ref()
+                .map(|pending| pending.message_ts.as_str());
             let notification =
                 notification_for_message(ws, &channel, &msg, active_channel.as_deref());
             if let Some(user) = msg.user.as_deref() {
@@ -3633,6 +3868,9 @@ fn apply_realtime(
             if let Some(root_ts) = thread_root_for_reply(&msg) {
                 let key = (team.to_owned(), channel.clone(), root_ts);
                 if let Some(cm) = app.threads.get_mut(&key) {
+                    if let Some(pending_ts) = pending_message_ts {
+                        cm.remove(pending_ts);
+                    }
                     upsert_realtime_message(cm, msg.clone());
                 }
                 if msg.subtype.as_deref() != Some("thread_broadcast") {
@@ -3640,6 +3878,9 @@ fn apply_realtime(
                 }
             }
             let cm = ws.messages.entry(channel).or_default();
+            if let Some(pending_ts) = pending_message_ts {
+                cm.remove(pending_ts);
+            }
             upsert_realtime_message(cm, msg);
             notification
         }

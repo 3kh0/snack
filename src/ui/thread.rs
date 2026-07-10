@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use super::{composer, message, theme};
 use crate::app::{
-    ComposerAttachment, ComposerTarget, FilePreview, Message, TextSelection, TextSelectionSurface,
+    ComposerAttachment, ComposerTarget, FilePreview, Message, PendingFileMessage, TextSelection,
+    TextSelectionSurface,
 };
 use crate::slack::models::Message as SlackMessage;
 use crate::state::{ChannelMessages, Workspace};
@@ -26,6 +27,7 @@ pub fn view<'a>(
     editing: Option<(&str, &str)>,
     hovered_ts: Option<&str>,
     text_selection: Option<&TextSelection>,
+    pending_file_messages: &'a [PendingFileMessage],
 ) -> Element<'a, Message> {
     let header = row![
         text("Thread")
@@ -77,6 +79,16 @@ pub fn view<'a>(
                     surface.clone(),
                     message_index,
                     text_selection,
+                    pending_file_messages
+                        .iter()
+                        .find(|pending| {
+                            pending.team == ws.team_id
+                                && pending.channel == channel_id
+                                && pending.thread_ts.as_deref() == Some(root_ts)
+                                && msg.client_msg_id.as_deref()
+                                    == Some(pending.client_msg_id.as_str())
+                        })
+                        .map(|pending| pending.attachments.as_slice()),
                 );
                 let row: Element<'a, Message> = match msg.ts.clone() {
                     Some(ts) => mouse_area(row)
@@ -118,6 +130,7 @@ pub fn view<'a>(
                     },
                     0,
                     text_selection,
+                    None,
                 );
                 let root_row: Element<'a, Message> = match root.ts.clone() {
                     Some(ts) => mouse_area(root_row)

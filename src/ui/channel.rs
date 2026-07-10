@@ -4,7 +4,7 @@ use iced::widget::{
 use iced::{Alignment, ContentFit, Element, Fill, Length, font};
 
 use super::{message, theme};
-use crate::app::{FilePreview, Message, TextSelection, TextSelectionSurface};
+use crate::app::{FilePreview, Message, PendingFileMessage, TextSelection, TextSelectionSurface};
 use crate::slack::models::{Channel, UserId};
 use crate::state::{self, Presence, Workspace};
 use std::collections::HashMap;
@@ -31,6 +31,7 @@ pub fn view<'a>(
     editing: Option<(&str, &str)>,
     hovered_ts: Option<&str>,
     text_selection: Option<&TextSelection>,
+    pending_file_messages: &'a [PendingFileMessage],
 ) -> Element<'a, Message> {
     let header = channel_header(ws, channel_id, avatar_previews);
 
@@ -83,6 +84,16 @@ pub fn view<'a>(
                     surface.clone(),
                     message_index,
                     text_selection,
+                    pending_file_messages
+                        .iter()
+                        .find(|pending| {
+                            pending.team == ws.team_id
+                                && pending.channel == channel_id
+                                && pending.thread_ts.is_none()
+                                && m.client_msg_id.as_deref()
+                                    == Some(pending.client_msg_id.as_str())
+                        })
+                        .map(|pending| pending.attachments.as_slice()),
                 );
                 let row: Element<'a, Message> = match m.ts.clone() {
                     Some(ts) => mouse_area(row)

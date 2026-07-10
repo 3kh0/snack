@@ -7,8 +7,8 @@ use iced::widget::{Column, Row, button, container, image, svg, text, text_input}
 use iced::{Alignment, Color, ContentFit, Element, Fill, Font, Length, Point};
 use unicode_segmentation::UnicodeSegmentation;
 
-use super::{blocks, selectable, theme};
-use crate::app::{FilePreview, Message, TextSelection, TextSelectionSurface};
+use super::{blocks, composer, selectable, theme};
+use crate::app::{ComposerAttachment, FilePreview, Message, TextSelection, TextSelectionSurface};
 use crate::slack::models::Message as SlackMessage;
 use crate::state::{self, Workspace};
 
@@ -28,6 +28,7 @@ pub fn row<'a>(
     selection_surface: TextSelectionSurface,
     message_index: usize,
     text_selection: Option<&TextSelection>,
+    pending_attachments: Option<&'a [ComposerAttachment]>,
 ) -> Element<'a, Message> {
     let author = ws.message_author_name(msg);
 
@@ -242,7 +243,10 @@ pub fn row<'a>(
         col = col.push(attachment_row(att, file_previews));
     }
 
-    // Inside the thread panel there is no reply-to-reply, so hide the link.
+    if let Some(attachments) = pending_attachments {
+        col = col.push(composer::pending_attachment_strip(attachments));
+    }
+
     if let (Some(ts), Some(count)) = (thread_ts.filter(|_| !in_thread), msg.reply_count) {
         if count > 0 {
             col = col.push(thread_summary(

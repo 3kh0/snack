@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::config::WorkspaceSession;
 
@@ -491,11 +491,11 @@ pub async fn upload_files(
     channel: ChannelId,
     thread_ts: Option<MessageTs>,
     initial_comment: String,
-    paths: Vec<PathBuf>,
+    files_to_upload: Vec<(PathBuf, Arc<AtomicU64>)>,
     canceled: Arc<AtomicBool>,
 ) -> Result<(), Error> {
-    let mut files = Vec::with_capacity(paths.len());
-    for path in paths {
+    let mut files = Vec::with_capacity(files_to_upload.len());
+    for (path, progress) in files_to_upload {
         if canceled.load(Ordering::Relaxed) {
             return Err(Error::UploadCanceled);
         }
@@ -518,7 +518,9 @@ pub async fn upload_files(
             ))
             .await?;
         let ticket: UploadUrl = decode(value, "files.getUploadURLExternal")?;
-        transport.upload_bytes(&ticket.upload_url, bytes).await?;
+        transport
+            .upload_bytes(&ticket.upload_url, bytes, progress)
+            .await?;
         if canceled.load(Ordering::Relaxed) {
             return Err(Error::UploadCanceled);
         }

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::time::{Duration, Instant};
 
 use iced::Task;
@@ -122,6 +122,19 @@ pub struct ComposerAttachment {
     pub uploading: bool,
     pub upload_started: Option<Instant>,
     pub upload_cancel: Option<Arc<AtomicBool>>,
+    pub upload_progress: Option<Arc<AtomicU64>>,
+    pub preview_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingFileMessage {
+    pub team: TeamId,
+    pub channel: ChannelId,
+    pub thread_ts: Option<MessageTs>,
+    pub message_ts: MessageTs,
+    pub client_msg_id: String,
+    pub text: String,
+    pub attachments: Vec<ComposerAttachment>,
 }
 
 pub struct App {
@@ -140,6 +153,7 @@ pub struct App {
     thread_composer: Content,
     composer_attachments: Vec<ComposerAttachment>,
     thread_composer_attachments: Vec<ComposerAttachment>,
+    pending_file_messages: Vec<PendingFileMessage>,
     attachment_seq: u64,
     editing: Option<(ChannelId, MessageTs)>,
     edit_text: String,
@@ -208,6 +222,10 @@ pub enum Message {
         paths: Vec<PathBuf>,
     },
     FilesDropped(Vec<PathBuf>),
+    VideoPreviewReady {
+        source: PathBuf,
+        result: Result<PathBuf, String>,
+    },
     AttachmentRemoved {
         target: ComposerTarget,
         id: u64,
@@ -223,6 +241,11 @@ pub enum Message {
     },
     AttachmentsSent {
         target: ComposerTarget,
+        team: TeamId,
+        channel: ChannelId,
+        thread_ts: Option<MessageTs>,
+        message_ts: MessageTs,
+        client_msg_id: String,
         result: Result<(), SlackError>,
     },
     SendPressed,
@@ -439,6 +462,7 @@ impl App {
             thread_composer: Content::new(),
             composer_attachments: Vec::new(),
             thread_composer_attachments: Vec::new(),
+            pending_file_messages: Vec::new(),
             attachment_seq: 0,
             editing: None,
             edit_text: String::new(),

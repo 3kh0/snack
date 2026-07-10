@@ -1,3 +1,5 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -57,12 +59,27 @@ impl Transport {
         }
     }
 
-    pub async fn upload_bytes(&self, url: &str, bytes: Vec<u8>) -> Result<(), Error> {
+    pub async fn upload_bytes(
+        &self,
+        url: &str,
+        bytes: Vec<u8>,
+        progress: Arc<AtomicU64>,
+    ) -> Result<(), Error> {
+        let length = bytes.len();
+        let chunks = bytes
+            .chunks(64 * 1024)
+            .map(|chunk| chunk.to_vec())
+            .collect::<Vec<_>>();
+        let stream = futures::stream::iter(chunks.into_iter().map(move |chunk| {
+            progress.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+            Ok::<_, std::convert::Infallible>(chunk)
+        }));
         let response = self
             .http
             .post(url)
             .header("Content-Type", "application/octet-stream")
-            .body(bytes)
+            .header("Content-Length", length)
+            .body(wreq::Body::wrap_stream(stream))
             .send()
             .await
             .map_err(|error| Error::Transport(format!("upload: {error}")))?;
