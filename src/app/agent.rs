@@ -269,9 +269,7 @@ pub fn handle(app: &mut App, id: u64, command: AgentCommand) -> iced::Task<Messa
             );
             task
         }
-        AgentCommand::Type { text } => {
-            handle(app, id, AgentCommand::SetQuery { query: text })
-        }
+        AgentCommand::Type { text } => handle(app, id, AgentCommand::SetQuery { query: text }),
         AgentCommand::Move { delta } => {
             if app.palette.is_none() {
                 complete(id, AgentResponse::err(id, "palette is not open"));
