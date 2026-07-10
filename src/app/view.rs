@@ -142,7 +142,12 @@ fn main_view(app: &App) -> Element<'_, Message> {
                     app.text_selection.as_ref(),
                 ))
                 .height(Fill),
-                ui::composer::view(&app.composer, &label, crate::app::ComposerTarget::Channel,),
+                ui::composer::view(
+                    &app.composer,
+                    &app.composer_attachments,
+                    &label,
+                    crate::app::ComposerTarget::Channel,
+                ),
             ]
             .width(Fill)
             .height(Fill);
@@ -178,6 +183,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
                 root,
                 replies,
                 &app.thread_composer,
+                &app.thread_composer_attachments,
                 &app.file_previews,
                 &app.avatar_previews,
                 &app.emoji_previews,

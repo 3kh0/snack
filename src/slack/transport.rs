@@ -57,6 +57,25 @@ impl Transport {
         }
     }
 
+    pub async fn upload_bytes(&self, url: &str, bytes: Vec<u8>) -> Result<(), Error> {
+        let response = self
+            .http
+            .post(url)
+            .header("Content-Type", "application/octet-stream")
+            .body(bytes)
+            .send()
+            .await
+            .map_err(|error| Error::Transport(format!("upload: {error}")))?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(Error::HttpStatus {
+                status: response.status().as_u16(),
+                retry_after_secs: retry_after_secs(response.headers()),
+            })
+        }
+    }
+
     async fn execute_once(&self, req: &PreparedRequest) -> Result<Value, Error> {
         let req_url = req.url.clone();
         let mut builder = match req.method {

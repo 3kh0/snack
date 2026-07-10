@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::config::WorkspaceSession;
 
 use super::Error;
@@ -472,6 +474,66 @@ pub async fn send_message(
         ))
         .await?;
     decode(value, "chat.postMessage")
+}
+
+#[derive(serde::Deserialize)]
+struct UploadUrl {
+    upload_url: String,
+    file_id: String,
+}
+
+pub async fn upload_files(
+    transport: &Transport,
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    channel: ChannelId,
+    thread_ts: Option<MessageTs>,
+    initial_comment: String,
+    paths: Vec<PathBuf>,
+) -> Result<(), Error> {
+    let mut files = Vec::with_capacity(paths.len());
+    for path in paths {
+        let filename = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| Error::Transport("attachment has no valid filename".to_owned()))?
+            .to_owned();
+        let bytes = tokio::fs::read(&path)
+            .await
+            .map_err(|error| Error::Transport(format!("read {}: {error}", path.display())))?;
+        let value = transport
+            .execute(client.rest_form(
+                workspace,
+                "files.getUploadURLExternal",
+                vec![
+                    ("filename", filename.clone()),
+                    ("length", bytes.len().to_string()),
+                ],
+            ))
+            .await?;
+        let ticket: UploadUrl = decode(value, "files.getUploadURLExternal")?;
+        transport.upload_bytes(&ticket.upload_url, bytes).await?;
+        files.push(serde_json::json!({ "id": ticket.file_id, "title": filename }));
+    }
+
+    let mut fields = vec![
+        (
+            "files",
+            serde_json::to_string(&files)
+                .map_err(|error| Error::Transport(format!("encode upload files: {error}")))?,
+        ),
+        ("channel_id", channel),
+    ];
+    if !initial_comment.is_empty() {
+        fields.push(("initial_comment", initial_comment));
+    }
+    if let Some(thread_ts) = thread_ts {
+        fields.push(("thread_ts", thread_ts));
+    }
+    transport
+        .execute(client.rest_form(workspace, "files.completeUploadExternal", fields))
+        .await?;
+    Ok(())
 }
 
 pub async fn fetch_users_search(

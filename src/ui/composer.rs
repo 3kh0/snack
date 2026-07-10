@@ -3,24 +3,36 @@ use std::sync::Arc;
 use iced::keyboard::key::Named;
 use iced::keyboard::{Key, Modifiers};
 use iced::widget::text_editor::{Action, Binding, Content, Edit, KeyPress, Motion, Status};
-use iced::widget::{container, text_editor};
-use iced::{Element, Fill, Length};
+use iced::widget::{button, column, container, row, text, text_editor};
+use iced::{Alignment, Element, Fill, Length};
 
 use super::theme;
-use crate::app::{ComposerTarget, FormatMark, Message};
+use crate::app::{ComposerAttachment, ComposerTarget, FormatMark, Message};
 
 pub fn view<'a>(
     content: &'a Content,
+    attachments: &'a [ComposerAttachment],
     placeholder_label: &str,
     target: ComposerTarget,
 ) -> Element<'a, Message> {
     let placeholder = format!("Message {placeholder_label}");
-    editor_owned(content, placeholder, target, Message::SendPressed)
+    editor_owned(
+        content,
+        attachments,
+        placeholder,
+        target,
+        Message::SendPressed,
+    )
 }
 
-pub fn thread_view<'a>(content: &'a Content, target: ComposerTarget) -> Element<'a, Message> {
+pub fn thread_view<'a>(
+    content: &'a Content,
+    attachments: &'a [ComposerAttachment],
+    target: ComposerTarget,
+) -> Element<'a, Message> {
     editor(
         content,
+        attachments,
         "Reply in thread",
         target,
         Message::ThreadSendPressed,
@@ -29,6 +41,7 @@ pub fn thread_view<'a>(content: &'a Content, target: ComposerTarget) -> Element<
 
 fn editor_owned<'a>(
     content: &'a Content,
+    attachments: &'a [ComposerAttachment],
     placeholder: String,
     target: ComposerTarget,
     send: Message,
@@ -42,11 +55,12 @@ fn editor_owned<'a>(
         .height(Length::Shrink)
         .style(theme::editor);
 
-    container(input).width(Fill).padding(theme::SPACE_MD).into()
+    composer_shell(input.into(), attachments, target).into()
 }
 
 fn editor<'a>(
     content: &'a Content,
+    attachments: &'a [ComposerAttachment],
     placeholder: &'a str,
     target: ComposerTarget,
     send: Message,
@@ -60,7 +74,90 @@ fn editor<'a>(
         .height(Length::Shrink)
         .style(theme::editor);
 
-    container(input).width(Fill).padding(theme::SPACE_MD).into()
+    composer_shell(input.into(), attachments, target).into()
+}
+
+fn composer_shell<'a>(
+    input: Element<'a, Message>,
+    attachments: &'a [ComposerAttachment],
+    target: ComposerTarget,
+) -> iced::widget::Container<'a, Message> {
+    let mut body = column![];
+    if !attachments.is_empty() {
+        body = body.push(attachment_strip(attachments, target));
+    }
+    body = body.push(input).push(
+        row![
+            button(text("+").size(20.0))
+                .on_press(Message::AttachmentPickerOpened(target))
+                .style(theme::action_button)
+                .padding([2.0, 8.0]),
+            text(
+                if attachments.iter().any(|attachment| attachment.uploading) {
+                    "Uploading attachments…"
+                } else {
+                    "Attach files"
+                }
+            )
+            .size(theme::TEXT_SM)
+            .color(theme::TEXT_4),
+        ]
+        .spacing(theme::SPACE_SM)
+        .align_y(Alignment::Center),
+    );
+    container(body.spacing(theme::SPACE_SM))
+        .width(Fill)
+        .padding(theme::SPACE_MD)
+}
+
+fn attachment_strip<'a>(
+    attachments: &'a [ComposerAttachment],
+    target: ComposerTarget,
+) -> Element<'a, Message> {
+    let mut strip = row![].spacing(theme::SPACE_SM);
+    for attachment in attachments {
+        let detail = if attachment.uploading {
+            "Uploading…".to_owned()
+        } else {
+            format_bytes(attachment.bytes)
+        };
+        strip = strip.push(
+            container(
+                row![
+                    column![
+                        text(&attachment.name)
+                            .size(theme::TEXT_SM)
+                            .color(theme::TEXT_1),
+                        text(detail).size(theme::TEXT_SM).color(theme::TEXT_4),
+                    ]
+                    .spacing(2.0)
+                    .width(Length::Fixed(150.0)),
+                    button(text("×").size(theme::TEXT_LG))
+                        .on_press_maybe((!attachment.uploading).then_some(
+                            Message::AttachmentRemoved {
+                                target,
+                                id: attachment.id,
+                            }
+                        ))
+                        .style(theme::action_button)
+                        .padding([0.0, 5.0]),
+                ]
+                .align_y(Alignment::Center)
+                .spacing(theme::SPACE_XS),
+            )
+            .padding([theme::SPACE_XS, theme::SPACE_SM])
+            .style(theme::file_attachment),
+        );
+    }
+    strip.into()
+}
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes < 1024 * 1024 {
+        format!("{} KB", (bytes + 1023) / 1024)
+    } else {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    }
 }
 
 fn key_binding(press: KeyPress, target: ComposerTarget, send: Message) -> Option<Binding<Message>> {
@@ -77,6 +174,12 @@ fn key_binding(press: KeyPress, target: ComposerTarget, send: Message) -> Option
 
     if let Some(mark) = format_mark_for(*modifiers, key, *physical_key) {
         return Some(Binding::Custom(Message::ComposerFormat { target, mark }));
+    }
+
+    if modifiers.command()
+        && matches!(key, Key::Character(c) if c.as_str().eq_ignore_ascii_case("v"))
+    {
+        return Some(Binding::Custom(Message::PasteAttachmentsRequested(target)));
     }
 
     // Slack: Enter sends, Shift+Enter inserts a newline.

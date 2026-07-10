@@ -16,6 +16,7 @@ pub(super) fn subscription(app: &App) -> Subscription<Message> {
     }
 
     subs.push(iced::event::listen_with(palette_hotkey));
+    subs.push(iced::event::listen_with(file_drop));
     if app.text_selection.is_some() {
         subs.push(iced::event::listen_with(selection_copy_hotkey));
     }
@@ -34,6 +35,14 @@ pub(super) fn subscription(app: &App) -> Subscription<Message> {
         .values()
         .any(|preview| matches!(preview, super::FilePreview::Animated { .. }))
         || has_pending_sends(app)
+        || app
+            .composer_attachments
+            .iter()
+            .any(|attachment| attachment.uploading)
+        || app
+            .thread_composer_attachments
+            .iter()
+            .any(|attachment| attachment.uploading)
     {
         subs.push(iced::time::every(Duration::from_millis(50)).map(|_| Message::AnimationTick));
     }
@@ -66,6 +75,19 @@ pub(super) fn subscription(app: &App) -> Subscription<Message> {
     }
 
     Subscription::batch(subs)
+}
+
+fn file_drop(
+    event: iced::Event,
+    _status: iced::event::Status,
+    _id: iced::window::Id,
+) -> Option<Message> {
+    match event {
+        iced::Event::Window(iced::window::Event::FileDropped(path)) => {
+            Some(Message::FilesDropped(vec![path]))
+        }
+        _ => None,
+    }
 }
 
 fn selection_copy_hotkey(

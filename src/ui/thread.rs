@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use super::{composer, message, theme};
-use crate::app::{ComposerTarget, FilePreview, Message, TextSelection, TextSelectionSurface};
+use crate::app::{
+    ComposerAttachment, ComposerTarget, FilePreview, Message, TextSelection, TextSelectionSurface,
+};
 use crate::slack::models::Message as SlackMessage;
 use crate::state::{ChannelMessages, Workspace};
 
@@ -16,6 +18,7 @@ pub fn view<'a>(
     root: Option<&SlackMessage>,
     replies: Option<&ChannelMessages>,
     content: &'a Content,
+    attachments: &'a [ComposerAttachment],
     file_previews: &HashMap<String, FilePreview>,
     avatar_previews: &HashMap<String, FilePreview>,
     emoji_previews: &HashMap<String, FilePreview>,
@@ -141,7 +144,7 @@ pub fn view<'a>(
         }
     };
 
-    let input = composer::thread_view(content, ComposerTarget::Thread);
+    let input = composer::thread_view(content, attachments, ComposerTarget::Thread);
 
     container(column![
         container(header).padding(theme::SPACE_MD),

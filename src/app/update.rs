@@ -23,8 +23,8 @@ use crate::ui;
 
 use super::palette::{self, PaletteEntry, PaletteState, PaletteTarget};
 use super::{
-    App, ComposerTarget, DesktopNotification, FilePreview, HistoryLoadKind, Message,
-    PendingScrollTarget, SearchHit, SearchState, TextSelection, TextSelectionPoint,
+    App, ComposerAttachment, ComposerTarget, DesktopNotification, FilePreview, HistoryLoadKind,
+    Message, PendingScrollTarget, SearchHit, SearchState, TextSelection, TextSelectionPoint,
     TextSelectionSurface, ThreadKey,
 };
 use iced::widget::text_editor::Content;
@@ -234,6 +234,88 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                 }
                 ComposerTarget::Thread => {
                     ui::composer::apply_format(&mut app.thread_composer, mark);
+                }
+            }
+            Task::none()
+        }
+
+        Message::AttachmentPickerOpened(target) => Task::perform(
+            async move {
+                rfd::AsyncFileDialog::new()
+                    .set_title("Attach files")
+                    .pick_files()
+                    .await
+                    .into_iter()
+                    .flatten()
+                    .map(|file| file.path().to_owned())
+                    .collect()
+            },
+            move |paths| Message::AttachmentsPicked { target, paths },
+        ),
+
+        Message::AttachmentsPicked { target, paths } => {
+            add_attachments(app, target, paths);
+            Task::none()
+        }
+
+        Message::FilesDropped(paths) => {
+            let target = if app.active_thread.is_some() {
+                ComposerTarget::Thread
+            } else {
+                ComposerTarget::Channel
+            };
+            add_attachments(app, target, paths);
+            Task::none()
+        }
+
+        Message::AttachmentRemoved { target, id } => {
+            attachments_mut(app, target).retain(|attachment| attachment.id != id);
+            Task::none()
+        }
+
+        Message::PasteAttachmentsRequested(target) => {
+            iced::clipboard::read_files().map(move |result| Message::ClipboardFilesRead {
+                target,
+                result: result
+                    .map(|files| files.iter().cloned().collect())
+                    .map_err(|error| format!("{error:?}")),
+            })
+        }
+
+        Message::ClipboardFilesRead { target, result } => match result {
+            Ok(paths) if !paths.is_empty() => {
+                add_attachments(app, target, paths);
+                Task::none()
+            }
+            _ => iced::clipboard::read_text().map(move |result| Message::ClipboardTextRead {
+                target,
+                result: result
+                    .map(|text| text.as_ref().clone())
+                    .map_err(|error| format!("{error:?}")),
+            }),
+        },
+
+        Message::ClipboardTextRead { target, result } => {
+            if let Ok(text) = result {
+                let content = match target {
+                    ComposerTarget::Channel => &mut app.composer,
+                    ComposerTarget::Thread => &mut app.thread_composer,
+                };
+                content.perform(iced::widget::text_editor::Action::Edit(
+                    iced::widget::text_editor::Edit::Paste(Arc::new(text)),
+                ));
+            }
+            Task::none()
+        }
+
+        Message::AttachmentsSent { target, result } => {
+            match result {
+                Ok(()) => attachments_mut(app, target).clear(),
+                Err(error) => {
+                    for attachment in attachments_mut(app, target) {
+                        attachment.uploading = false;
+                    }
+                    app.toast(format!("file upload failed: {error}"));
                 }
             }
             Task::none()
@@ -1231,6 +1313,41 @@ fn next_seq(app: &mut App) -> u64 {
     app.send_seq
 }
 
+fn attachments_mut(app: &mut App, target: ComposerTarget) -> &mut Vec<ComposerAttachment> {
+    match target {
+        ComposerTarget::Channel => &mut app.composer_attachments,
+        ComposerTarget::Thread => &mut app.thread_composer_attachments,
+    }
+}
+
+fn add_attachments(app: &mut App, target: ComposerTarget, paths: Vec<PathBuf>) {
+    for path in paths {
+        if !path.is_file()
+            || attachments_mut(app, target)
+                .iter()
+                .any(|attachment| attachment.path == path)
+        {
+            continue;
+        }
+        let Ok(metadata) = std::fs::metadata(&path) else {
+            continue;
+        };
+        app.attachment_seq += 1;
+        let id = app.attachment_seq;
+        attachments_mut(app, target).push(ComposerAttachment {
+            id,
+            name: path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("attachment")
+                .to_owned(),
+            path,
+            bytes: metadata.len(),
+            uploading: false,
+        });
+    }
+}
+
 fn is_auth_error(e: &SlackError) -> bool {
     matches!(e, SlackError::Api(code) if code == "invalid_auth" || code == "not_authed" || code == "token_revoked")
 }
@@ -1315,12 +1432,16 @@ pub(super) fn is_permanent_mark_error(error: &SlackError) -> bool {
 
 fn send_pressed(app: &mut App) -> Task<Message> {
     let text = app.composer.text().trim().to_owned();
-    if text.is_empty() {
+    if text.is_empty() && app.composer_attachments.is_empty() {
         return Task::none();
     }
     let (Some(team), Some(channel)) = (app.active_team.clone(), app.active_channel.clone()) else {
         return Task::none();
     };
+
+    if !app.composer_attachments.is_empty() {
+        return send_attachments(app, ComposerTarget::Channel, team, channel, None, text);
+    }
 
     let seq = next_seq(app);
     let client_msg_id = uuid::Uuid::new_v4().to_string();
@@ -1374,7 +1495,7 @@ fn send_pressed(app: &mut App) -> Task<Message> {
 
 fn send_thread_pressed(app: &mut App) -> Task<Message> {
     let text = app.thread_composer.text().trim().to_owned();
-    if text.is_empty() {
+    if text.is_empty() && app.thread_composer_attachments.is_empty() {
         return Task::none();
     }
     let Some(team) = app.active_team.clone() else {
@@ -1383,6 +1504,17 @@ fn send_thread_pressed(app: &mut App) -> Task<Message> {
     let Some((channel, root_ts)) = app.active_thread.clone() else {
         return Task::none();
     };
+
+    if !app.thread_composer_attachments.is_empty() {
+        return send_attachments(
+            app,
+            ComposerTarget::Thread,
+            team,
+            channel,
+            Some(root_ts),
+            text,
+        );
+    }
 
     let seq = next_seq(app);
     let client_msg_id = uuid::Uuid::new_v4().to_string();
@@ -1440,6 +1572,51 @@ fn send_thread_pressed(app: &mut App) -> Task<Message> {
             client_msg_id: client_msg_id.clone(),
             result,
         },
+    )
+}
+
+fn send_attachments(
+    app: &mut App,
+    target: ComposerTarget,
+    team: TeamId,
+    channel: ChannelId,
+    thread_ts: Option<MessageTs>,
+    text: String,
+) -> Task<Message> {
+    let Some((transport, session)) = app.live() else {
+        app.toast("file upload unavailable while offline");
+        return Task::none();
+    };
+    let Some(workspace) = session.workspaces.get(&team) else {
+        app.toast("file upload unavailable for this workspace");
+        return Task::none();
+    };
+    let transport = transport.clone();
+    let workspace = workspace.clone();
+    let client = app.client.clone();
+    let attachments = attachments_mut(app, target);
+    if attachments.iter().any(|attachment| attachment.uploading) {
+        return Task::none();
+    }
+    let files = attachments
+        .iter_mut()
+        .map(|attachment| {
+            attachment.uploading = true;
+            attachment.path.clone()
+        })
+        .collect::<Vec<_>>();
+    match target {
+        ComposerTarget::Channel => app.composer = Content::new(),
+        ComposerTarget::Thread => app.thread_composer = Content::new(),
+    }
+    Task::perform(
+        async move {
+            api::upload_files(
+                &transport, &client, &workspace, channel, thread_ts, text, files,
+            )
+            .await
+        },
+        move |result| Message::AttachmentsSent { target, result },
     )
 }
 

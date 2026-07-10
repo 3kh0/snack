@@ -112,6 +112,15 @@ pub struct SearchState {
     pub loading: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct ComposerAttachment {
+    pub id: u64,
+    pub path: PathBuf,
+    pub name: String,
+    pub bytes: u64,
+    pub uploading: bool,
+}
+
 pub struct App {
     screen: Screen,
     session: Option<Session>,
@@ -126,6 +135,9 @@ pub struct App {
     threads: HashMap<ThreadKey, ChannelMessages>,
     composer: Content,
     thread_composer: Content,
+    composer_attachments: Vec<ComposerAttachment>,
+    thread_composer_attachments: Vec<ComposerAttachment>,
+    attachment_seq: u64,
     editing: Option<(ChannelId, MessageTs)>,
     edit_text: String,
     hovered_message: Option<(bool, MessageTs)>,
@@ -186,6 +198,29 @@ pub enum Message {
     ComposerFormat {
         target: ComposerTarget,
         mark: FormatMark,
+    },
+    AttachmentPickerOpened(ComposerTarget),
+    AttachmentsPicked {
+        target: ComposerTarget,
+        paths: Vec<PathBuf>,
+    },
+    FilesDropped(Vec<PathBuf>),
+    AttachmentRemoved {
+        target: ComposerTarget,
+        id: u64,
+    },
+    PasteAttachmentsRequested(ComposerTarget),
+    ClipboardFilesRead {
+        target: ComposerTarget,
+        result: Result<Vec<PathBuf>, String>,
+    },
+    ClipboardTextRead {
+        target: ComposerTarget,
+        result: Result<String, String>,
+    },
+    AttachmentsSent {
+        target: ComposerTarget,
+        result: Result<(), SlackError>,
     },
     SendPressed,
     MessageSent {
@@ -399,6 +434,9 @@ impl App {
             threads: HashMap::new(),
             composer: Content::new(),
             thread_composer: Content::new(),
+            composer_attachments: Vec::new(),
+            thread_composer_attachments: Vec::new(),
+            attachment_seq: 0,
             editing: None,
             edit_text: String::new(),
             hovered_message: None,
@@ -759,7 +797,19 @@ pub fn run() -> iced::Result {
         .subscription(subscription)
         .theme(theme)
         .title("Snack")
+        .window(window_settings())
         .run()
+}
+
+fn window_settings() -> iced::window::Settings {
+    iced::window::Settings {
+        icon: app_icon(),
+        ..iced::window::Settings::default()
+    }
+}
+
+fn app_icon() -> Option<iced::window::Icon> {
+    iced::window::icon::from_file_data(include_bytes!("../assets/icons/icon-256.png"), None).ok()
 }
 
 fn theme(_app: &App) -> iced::Theme {
