@@ -124,6 +124,73 @@ Add focused tests when changing:
 Prefer small regression tests that encode the bug or behavior contract. Avoid
 large fixture churn unless the task specifically requires it.
 
+## Agent UI Verification
+
+Agents should **not** wait on a human to `cargo run`, click around, and paste
+screenshots for ordinary UI work. Prefer the tools below.
+
+### Offline fixture captures (no Slack session)
+
+```sh
+scripts/agent-ui-check.sh
+```
+
+- Runs `ui_visual` tests with `iced_test::Simulator` (no window, no network).
+- Seeds offline fixture state (`src/app/tests.rs` helpers: `test_app`, `login_app`, …).
+- Writes PNGs under `tmp/agent-ui/` (override with `SNACK_UI_CAPTURE_DIR`).
+- Uses `ICED_TEST_BACKEND=tiny-skia` by default.
+
+After it finishes, **read the PNGs** and verify layout yourself.
+
+Use for chrome/layout work that does not need real Slack data. Still run
+`cargo fmt --check` and `cargo test --locked` for logic.
+
+Rules:
+
+- Fixtures only — do not put tokens in tests.
+- When you add a new screen or modal, add a `ui_visual_*` capture in
+  `src/app/ui_visual.rs`.
+- Optional pixel regression: `SNACK_UI_SNAPSHOT=1 cargo test --locked ui_visual_optional`.
+
+### Live control plane (real session + drive the UI)
+
+For features that need real data (quick switcher ranking, search, warm cache,
+realtime), run the app with the agent socket enabled and drive it via
+`scripts/agentctl.sh`.
+
+```sh
+# terminal 1 — uses your normal Snack session/Keychain
+SNACK_AGENT=1 cargo run
+
+# terminal 2 / agent
+scripts/agentctl.sh wait signed_in=true
+scripts/agentctl.sh open-palette
+scripts/agentctl.sh set-query dev
+scripts/agentctl.sh wait 'entries>=1'
+scripts/agentctl.sh state
+scripts/agentctl.sh screenshot tmp/agent-ui/live-palette.png
+scripts/agentctl.sh submit
+```
+
+Details:
+
+- Socket: `SNACK_AGENT_SOCK` or `$TMPDIR/snack-agent.sock` (path also written to
+  `$TMPDIR/snack-agent.sock.path`).
+- Protocol: newline-delimited JSON on a Unix socket; see `src/app/agent.rs`.
+- Commands inject normal app `Message`s (palette, channel select, search, …).
+- `state` returns a JSON snapshot (screen, channels, palette entries, toasts, …).
+- `screenshot` captures the live window to a PNG for multimodal inspection.
+- Destructive actions (`send`) are blocked unless
+  `SNACK_AGENT_ALLOW_DESTRUCTIVE=1` or `agentctl allow-destructive true`.
+
+Rules:
+
+- Live mode uses the real Slack session. Never print tokens, cookies, or secrets.
+- Prefer `state` assertions; use screenshots when layout matters.
+- Do not send messages or delete content unless the task explicitly requires it
+  and destructive mode is enabled.
+- Prefer offline `agent-ui-check.sh` when live data is not needed.
+
 ## Working Style
 
 - Start from the concrete file, error, route, or behavior the user named.

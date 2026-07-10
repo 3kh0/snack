@@ -17,9 +17,9 @@ use crate::slack::models::{
 use crate::slack::realtime::Connection;
 use crate::state::{ChannelMessages, Presence, RealtimeStatus};
 
-const SELF_USER: &str = "U_SELF";
+pub(super) const SELF_USER: &str = "U_SELF";
 
-fn msg(user: &str, ts: &str, text: &str) -> SlackMessage {
+pub(super) fn msg(user: &str, ts: &str, text: &str) -> SlackMessage {
     SlackMessage {
         user: Some(user.into()),
         ts: Some(ts.into()),
@@ -28,14 +28,28 @@ fn msg(user: &str, ts: &str, text: &str) -> SlackMessage {
     }
 }
 
-fn loaded_channel(user: &str, ts: &str, text: &str) -> ChannelMessages {
+pub(super) fn loaded_channel(user: &str, ts: &str, text: &str) -> ChannelMessages {
     let mut cm = ChannelMessages::default();
     cm.upsert(msg(user, ts, text));
     cm.loaded = true;
     cm
 }
 
-fn test_workspace() -> Workspace {
+fn test_user(id: &str, display_name: &str) -> User {
+    User {
+        id: id.into(),
+        name: Some(display_name.to_ascii_lowercase()),
+        real_name: Some(display_name.into()),
+        profile: Some(UserProfile {
+            display_name: Some(display_name.into()),
+            real_name: Some(display_name.into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+pub(super) fn test_workspace() -> Workspace {
     let mut channels = BTreeMap::new();
     for (id, name) in [("C_GENERAL", "general"), ("C_DEV", "dev")] {
         channels.insert(
@@ -49,15 +63,43 @@ fn test_workspace() -> Workspace {
         );
     }
 
-    let messages = HashMap::from([
-        (
-            "C_GENERAL".into(),
-            loaded_channel("U_ALICE", "1783372300.000100", "morning"),
-        ),
-        (
-            "C_DEV".into(),
-            loaded_channel("U_BOB", "1783370000.000100", "question"),
-        ),
+    let mut general = ChannelMessages::default();
+    general.upsert(msg(
+        "U_ALICE",
+        "1783372300.000100",
+        "morning — shipping the agent UI harness today",
+    ));
+    general.upsert(msg(
+        "U_BOB",
+        "1783372310.000200",
+        "sounds good. can we keep the layout dense?",
+    ));
+    general.upsert(msg(
+        SELF_USER,
+        "1783372320.000300",
+        "yep — quiet chrome, no marketing fluff",
+    ));
+    general.loaded = true;
+
+    let mut dev = ChannelMessages::default();
+    dev.upsert(msg(
+        "U_BOB",
+        "1783370000.000100",
+        "question: how do agents capture screenshots?",
+    ));
+    dev.upsert(msg(
+        "U_ALICE",
+        "1783370010.000200",
+        "headless iced_test + fixture state",
+    ));
+    dev.loaded = true;
+
+    let messages = HashMap::from([("C_GENERAL".into(), general), ("C_DEV".into(), dev)]);
+
+    let users = HashMap::from([
+        (SELF_USER.into(), test_user(SELF_USER, "You")),
+        ("U_ALICE".into(), test_user("U_ALICE", "Alice")),
+        ("U_BOB".into(), test_user("U_BOB", "Bob")),
     ]);
 
     Workspace {
@@ -74,7 +116,7 @@ fn test_workspace() -> Workspace {
         frecency: BTreeMap::new(),
         hide_read_channels_unless_starred: false,
         priority_sidebar_section: false,
-        users: HashMap::new(),
+        users,
         custom_emoji: HashMap::new(),
         messages,
         typing: HashMap::new(),
@@ -84,14 +126,116 @@ fn test_workspace() -> Workspace {
     }
 }
 
-fn test_app() -> App {
+pub(super) fn test_app() -> App {
     let mut app = App::empty();
+    app.settings = config::Settings::default();
+    ui::theme::apply(&app.settings);
     let ws = test_workspace();
     let team = ws.team_id.clone();
-    app.active_channel = ws.channels.keys().next().cloned();
     app.workspaces.insert(team.clone(), ws);
     app.active_team = Some(team);
+    app.active_channel = Some("C_GENERAL".into());
     app.screen = Screen::Main;
+    app
+}
+
+pub(super) fn multi_paragraph_emoji_app() -> App {
+    let mut app = test_app();
+    let team = app.active_team.clone().unwrap();
+    let ws = app.workspaces.get_mut(&team).unwrap();
+    ws.custom_emoji.insert(
+        "cryin".into(),
+        crate::slack::models::Emoji {
+            name: "cryin".into(),
+            value: "https://emoji.slack-edge.com/T_TEST/cryin/abc.png".into(),
+            ..Default::default()
+        },
+    );
+    ws.users
+        .insert("U_SJ".into(), test_user("U_SJ", "Sjpark01"));
+
+    let msg = SlackMessage {
+        user: Some("U_SJ".into()),
+        ts: Some("1783610969.018589".into()),
+        text: Some(
+            "<https://stardance.hackclub.com/projects/4909|stardance.hackclub.com/projects/4909> shipped a while back, but forgor to post here\nA Hackpad, arranged like a piano! It can act as a midi keyboard with the right key bindings :slightly_smiling_face:\nI honestly spent way too much time on this, and would have spent more, but I got burnt out and just wanted to move on :cryin: ambition gets me again\ntechnically it's up for funding review, but it's basically the same a ship, right?".into(),
+        ),
+        blocks: vec![json!({
+            "type": "rich_text",
+            "elements": [{
+                "type": "rich_text_section",
+                "elements": [
+                    {
+                        "type": "link",
+                        "url": "https://stardance.hackclub.com/projects/4909",
+                        "text": "stardance.hackclub.com/projects/4909"
+                    },
+                    {
+                        "type": "text",
+                        "text": " shipped a while back, but forgor to post here\nA Hackpad, arranged like a piano! It can act as a midi keyboard with the right key bindings "
+                    },
+                    {"type": "emoji", "name": "slightly_smiling_face", "unicode": "1f642"},
+                    {
+                        "type": "text",
+                        "text": "\nI honestly spent way too much time on this, and would have spent more, but I got burnt out and just wanted to move on "
+                    },
+                    {"type": "emoji", "name": "cryin"},
+                    {
+                        "type": "text",
+                        "text": " ambition gets me again\ntechnically it's up for funding review, but it's basically the same a ship, right?"
+                    }
+                ]
+            }]
+        })],
+        attachments: vec![crate::slack::models::Attachment {
+            title: Some("Hack Piano by @sjpark01 | Stardance".into()),
+            text: Some(
+                "Hackpad but the keys are arranged like a piano.\nI guess this makes it a MIDI keyboard of sorts".into(),
+            ),
+            service_name: Some("Stardance - Hack Club".into()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let mut general = ChannelMessages::default();
+    general.upsert(msg);
+    general.loaded = true;
+    ws.messages.insert("C_GENERAL".into(), general);
+    app
+}
+
+pub(super) fn login_app() -> App {
+    let mut app = App::empty();
+    app.settings = config::Settings::default();
+    ui::theme::apply(&app.settings);
+    app.screen = Screen::Login;
+    app
+}
+
+pub(super) fn settings_app() -> App {
+    let mut app = test_app();
+    app.show_settings = true;
+    app.settings_open = true;
+    app
+}
+
+pub(super) fn search_app() -> App {
+    let mut app = test_app();
+    let team = app.active_team.clone().unwrap();
+    app.search = Some(SearchState {
+        query: "standup".into(),
+        team,
+        page: 1,
+        page_count: 2,
+        total: 3,
+        hits: vec![SearchHit {
+            channel: "C_GENERAL".into(),
+            channel_label: "#general".into(),
+            message: msg("U_ALICE", "1783372300.000100", "morning standup notes"),
+        }],
+        loading: false,
+    });
     app
 }
 
@@ -164,7 +308,7 @@ fn notification_created_for_inactive_channel_mention() {
     let notification = notification_for_message(ws, "C_DEV", &message, Some("C_GENERAL"))
         .expect("mention should notify");
 
-    assert_eq!(notification.title, "U_ALICE in #dev");
+    assert_eq!(notification.title, "Alice in #dev");
     assert_eq!(notification.body, "hi <@U_SELF>");
 }
 
@@ -211,7 +355,7 @@ fn notification_detects_block_user_mentions() {
     let notification = notification_for_message(ws, "C_DEV", &message, Some("C_GENERAL"))
         .expect("block mention should notify");
 
-    assert_eq!(notification.body, "cc @U_SELF");
+    assert_eq!(notification.body, "cc @You");
 }
 
 #[test]
@@ -797,7 +941,10 @@ fn edit_pressed_populates_editor_with_current_text() {
             ts: "1783372300.000100".into(),
         },
     );
-    assert_eq!(app.edit_text, "morning");
+    assert_eq!(
+        app.edit_text,
+        "morning — shipping the agent UI harness today"
+    );
     assert_eq!(
         app.editing.as_ref(),
         Some(&("C_GENERAL".into(), "1783372300.000100".into()))

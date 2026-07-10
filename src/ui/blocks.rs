@@ -151,19 +151,21 @@ fn block_lines(ws: &Workspace, block: &Value) -> Vec<RenderLine> {
 
 fn rich_element_lines(ws: &Workspace, element: &Value) -> Vec<RenderLine> {
     match value_type(element) {
-        Some("rich_text_section") => vec![RenderLine::from_segments(
-            rich_inline_segments(ws, element),
-            false,
-        )],
+        Some("rich_text_section") => split_segments_on_newlines(&rich_inline_segments(ws, element))
+            .into_iter()
+            .map(|segments| RenderLine::from_segments(segments, false))
+            .collect(),
         Some("rich_text_list") => element
             .get("elements")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
-            .map(|item| {
+            .flat_map(|item| {
                 let mut segments = vec![RenderSegment::plain("- ")];
                 segments.extend(rich_inline_segments(ws, item));
-                RenderLine::from_segments(segments, false)
+                split_segments_on_newlines(&segments)
+                    .into_iter()
+                    .map(|segments| RenderLine::from_segments(segments, false))
             })
             .collect(),
         Some("rich_text_preformatted") => rich_inline_segments(ws, element)
@@ -180,7 +182,10 @@ fn rich_element_lines(ws: &Workspace, element: &Value) -> Vec<RenderLine> {
         Some("rich_text_quote") => {
             let mut segments = vec![RenderSegment::plain("> ")];
             segments.extend(rich_inline_segments(ws, element));
-            vec![RenderLine::from_segments(segments, false)]
+            split_segments_on_newlines(&segments)
+                .into_iter()
+                .map(|segments| RenderLine::from_segments(segments, false))
+                .collect()
         }
         _ => Vec::new(),
     }

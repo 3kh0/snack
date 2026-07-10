@@ -79,6 +79,10 @@ pub(super) fn subscription(app: &App) -> Subscription<Message> {
         }
     }
 
+    if super::agent::enabled() {
+        subs.push(super::agent::subscription());
+    }
+
     Subscription::batch(subs)
 }
 

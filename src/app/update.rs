@@ -1147,6 +1147,11 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
 
+        Message::AgentRequest { id, command } => super::agent::handle(app, id, command),
+        Message::AgentScreenshotCaptured { id, path, result } => {
+            super::agent::handle_screenshot(id, path, result)
+        }
+
         Message::SettingsAccentSelected(accent) => {
             app.settings.accent = accent;
             apply_settings(app);

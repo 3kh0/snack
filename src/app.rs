@@ -21,10 +21,13 @@ use crate::slack::{Error as SlackError, SlackClient, Transport};
 use crate::state::{ChannelMessages, Screen, Toast, Workspace};
 use crate::ui;
 
+mod agent;
 mod palette;
 mod subscription;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod ui_visual;
 mod update;
 mod view;
 
@@ -440,6 +443,15 @@ pub enum Message {
     SidebarResizeEnded,
     AnimationTick,
     Tick,
+    AgentRequest {
+        id: u64,
+        command: agent::AgentCommand,
+    },
+    AgentScreenshotCaptured {
+        id: u64,
+        path: PathBuf,
+        result: Result<iced::window::Screenshot, String>,
+    },
 }
 
 impl App {

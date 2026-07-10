@@ -616,26 +616,20 @@ fn emoji_body<'a>(
 ) -> Element<'a, Message> {
     let mut col = Column::new().spacing(theme::SPACE_XS);
     for line in lines {
-        let mut row = Row::new().spacing(2).align_y(Alignment::Center).width(Fill);
-        for segment in line_segments(line) {
-            let mono = line.mono || segment.style.code;
-            for token in state::emoji_text_tokens(&segment.text) {
-                match token {
-                    state::EmojiTextToken::Text(value) if !value.is_empty() => {
-                        for run in text_runs(&value) {
-                            row = row.push(text_run(
-                                run,
-                                mono,
-                                &segment.style,
-                                segment.channel.as_deref(),
-                            ));
+        for soft_line in soft_wrap_lines(line) {
+            let mut row = Row::new().spacing(0).align_y(Alignment::End).width(Fill);
+            for (text_value, mono, style, channel) in &soft_line.parts {
+                match text_value {
+                    SoftPart::Text(value) if !value.is_empty() => {
+                        for run in text_runs(value) {
+                            row = row.push(text_run(run, *mono, style, channel.as_deref()));
                         }
                     }
-                    state::EmojiTextToken::Text(_) => {}
-                    state::EmojiTextToken::Emoji(name) => {
+                    SoftPart::Text(_) => {}
+                    SoftPart::Emoji(name) => {
                         row = row.push(emoji_inline(
                             ws,
-                            &name,
+                            name,
                             emoji_previews,
                             elapsed,
                             theme::TEXT_MD,
@@ -643,10 +637,59 @@ fn emoji_body<'a>(
                     }
                 }
             }
+            col = col.push(row.wrap().vertical_spacing(2));
         }
-        col = col.push(row.wrap().vertical_spacing(2));
     }
     col.into()
+}
+
+enum SoftPart {
+    Text(String),
+    Emoji(String),
+}
+
+struct SoftLine {
+    parts: Vec<(SoftPart, bool, blocks::SegmentStyle, Option<String>)>,
+}
+
+fn soft_wrap_lines(line: &blocks::RenderLine) -> Vec<SoftLine> {
+    let mut rows = vec![SoftLine { parts: Vec::new() }];
+    for segment in line_segments(line) {
+        let mono = line.mono || segment.style.code;
+        for token in state::emoji_text_tokens(&segment.text) {
+            match token {
+                state::EmojiTextToken::Text(value) => {
+                    let mut parts = value.split('\n').peekable();
+                    while let Some(part) = parts.next() {
+                        if !part.is_empty() {
+                            rows.last_mut().unwrap().parts.push((
+                                SoftPart::Text(part.to_owned()),
+                                mono,
+                                segment.style.clone(),
+                                segment.channel.clone(),
+                            ));
+                        }
+                        if parts.peek().is_some() {
+                            rows.push(SoftLine { parts: Vec::new() });
+                        }
+                    }
+                }
+                state::EmojiTextToken::Emoji(name) => {
+                    rows.last_mut().unwrap().parts.push((
+                        SoftPart::Emoji(name),
+                        mono,
+                        segment.style.clone(),
+                        segment.channel.clone(),
+                    ));
+                }
+            }
+        }
+    }
+    rows.retain(|row| !row.parts.is_empty());
+    if rows.is_empty() {
+        rows.push(SoftLine { parts: Vec::new() });
+    }
+    rows
 }
 
 fn segment_fg(style: &blocks::SegmentStyle) -> Option<iced::Color> {
