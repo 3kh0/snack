@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use iced::Task;
@@ -269,6 +270,14 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
         }
 
         Message::AttachmentRemoved { target, id } => {
+            for attachment in attachments_mut(app, target)
+                .iter()
+                .filter(|attachment| attachment.uploading)
+            {
+                if let Some(cancel) = &attachment.upload_cancel {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+            }
             attachments_mut(app, target).retain(|attachment| attachment.id != id);
             Task::none()
         }
@@ -314,8 +323,12 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                 Err(error) => {
                     for attachment in attachments_mut(app, target) {
                         attachment.uploading = false;
+                        attachment.upload_started = None;
+                        attachment.upload_cancel = None;
                     }
-                    app.toast(format!("file upload failed: {error}"));
+                    if !matches!(error, SlackError::UploadCanceled) {
+                        app.toast(format!("file upload failed: {error}"));
+                    }
                 }
             }
             Task::none()
@@ -1344,6 +1357,8 @@ fn add_attachments(app: &mut App, target: ComposerTarget, paths: Vec<PathBuf>) {
             path,
             bytes: metadata.len(),
             uploading: false,
+            upload_started: None,
+            upload_cancel: None,
         });
     }
 }
@@ -1594,6 +1609,7 @@ fn send_attachments(
     let transport = transport.clone();
     let workspace = workspace.clone();
     let client = app.client.clone();
+    let upload_cancel = Arc::new(AtomicBool::new(false));
     let attachments = attachments_mut(app, target);
     if attachments.iter().any(|attachment| attachment.uploading) {
         return Task::none();
@@ -1602,6 +1618,8 @@ fn send_attachments(
         .iter_mut()
         .map(|attachment| {
             attachment.uploading = true;
+            attachment.upload_started = Some(Instant::now());
+            attachment.upload_cancel = Some(upload_cancel.clone());
             attachment.path.clone()
         })
         .collect::<Vec<_>>();
@@ -1612,7 +1630,14 @@ fn send_attachments(
     Task::perform(
         async move {
             api::upload_files(
-                &transport, &client, &workspace, channel, thread_ts, text, files,
+                &transport,
+                &client,
+                &workspace,
+                channel,
+                thread_ts,
+                text,
+                files,
+                upload_cancel,
             )
             .await
         },

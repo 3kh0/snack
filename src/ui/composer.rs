@@ -2,9 +2,12 @@ use std::sync::Arc;
 
 use iced::keyboard::key::Named;
 use iced::keyboard::{Key, Modifiers};
+use iced::widget::image::Handle as ImageHandle;
+use iced::widget::svg::Handle as SvgHandle;
 use iced::widget::text_editor::{Action, Binding, Content, Edit, KeyPress, Motion, Status};
-use iced::widget::{button, column, container, row, text, text_editor};
-use iced::{Alignment, Element, Fill, Length};
+use iced::widget::{button, column, container, image, row, stack, svg, text, text_editor};
+use iced::{Alignment, ContentFit, Element, Fill, Length};
+use unicode_segmentation::UnicodeSegmentation;
 
 use super::theme;
 use crate::app::{ComposerAttachment, ComposerTarget, FormatMark, Message};
@@ -52,8 +55,8 @@ fn editor_owned<'a>(
         .key_binding(move |press| key_binding(press, target, send.clone()))
         .size(theme::TEXT_MD)
         .padding(theme::SPACE_SM)
-        .height(Length::Shrink)
-        .style(theme::editor);
+        .height(Length::Fixed(32.0))
+        .style(theme::composer_editor);
 
     composer_shell(input.into(), attachments, target).into()
 }
@@ -71,8 +74,8 @@ fn editor<'a>(
         .key_binding(move |press| key_binding(press, target, send.clone()))
         .size(theme::TEXT_MD)
         .padding(theme::SPACE_SM)
-        .height(Length::Shrink)
-        .style(theme::editor);
+        .height(Length::Fixed(32.0))
+        .style(theme::composer_editor);
 
     composer_shell(input.into(), attachments, target).into()
 }
@@ -86,24 +89,29 @@ fn composer_shell<'a>(
     if !attachments.is_empty() {
         body = body.push(attachment_strip(attachments, target));
     }
-    body = body.push(input).push(
-        row![
-            button(text("+").size(20.0))
+    body = body.push(
+        container(
+            row![
+                button(
+                    container(material_add_icon())
+                        .width(Length::Fixed(32.0))
+                        .height(Length::Fixed(32.0))
+                        .center_x(Fill)
+                        .center_y(Fill),
+                )
                 .on_press(Message::AttachmentPickerOpened(target))
                 .style(theme::action_button)
-                .padding([2.0, 8.0]),
-            text(
-                if attachments.iter().any(|attachment| attachment.uploading) {
-                    "Uploading attachments…"
-                } else {
-                    "Attach files"
-                }
-            )
-            .size(theme::TEXT_SM)
-            .color(theme::TEXT_4),
-        ]
-        .spacing(theme::SPACE_SM)
-        .align_y(Alignment::Center),
+                .padding(0.0)
+                .width(Length::Fixed(32.0))
+                .height(Length::Fixed(32.0)),
+                input,
+            ]
+            .spacing(theme::SPACE_XS)
+            .align_y(Alignment::Center),
+        )
+        .style(theme::file_attachment)
+        .padding(theme::SPACE_XS)
+        .height(Length::Fixed(40.0)),
     );
     container(body.spacing(theme::SPACE_SM))
         .width(Fill)
@@ -121,35 +129,120 @@ fn attachment_strip<'a>(
         } else {
             format_bytes(attachment.bytes)
         };
+        let preview = attachment_preview(attachment);
         strip = strip.push(
             container(
                 row![
+                    preview,
                     column![
-                        text(&attachment.name)
+                        text(truncate_filename(&attachment.name))
                             .size(theme::TEXT_SM)
                             .color(theme::TEXT_1),
                         text(detail).size(theme::TEXT_SM).color(theme::TEXT_4),
                     ]
                     .spacing(2.0)
-                    .width(Length::Fixed(150.0)),
+                    .width(Length::Fixed(128.0)),
                     button(text("×").size(theme::TEXT_LG))
-                        .on_press_maybe((!attachment.uploading).then_some(
-                            Message::AttachmentRemoved {
-                                target,
-                                id: attachment.id,
-                            }
-                        ))
+                        .on_press(Message::AttachmentRemoved {
+                            target,
+                            id: attachment.id,
+                        })
                         .style(theme::action_button)
                         .padding([0.0, 5.0]),
                 ]
                 .align_y(Alignment::Center)
                 .spacing(theme::SPACE_XS),
             )
+            .width(Length::Fixed(236.0))
+            .height(Length::Fixed(76.0))
             .padding([theme::SPACE_XS, theme::SPACE_SM])
+            .clip(true)
             .style(theme::file_attachment),
         );
     }
     strip.into()
+}
+
+fn attachment_preview<'a>(attachment: &'a ComposerAttachment) -> Element<'a, Message> {
+    let preview: Element<'a, Message> = if is_previewable_image(&attachment.path) {
+        image(ImageHandle::from_path(&attachment.path))
+            .width(Length::Fixed(64.0))
+            .height(Length::Fixed(64.0))
+            .content_fit(ContentFit::Cover)
+            .into()
+    } else {
+        let label = if is_video(&attachment.path) {
+            "VIDEO"
+        } else {
+            "FILE"
+        };
+        container(text(label).size(theme::TEXT_SM).color(theme::TEXT_3))
+            .width(Length::Fixed(64.0))
+            .height(Length::Fixed(64.0))
+            .center_x(Fill)
+            .center_y(Fill)
+            .style(theme::file_attachment)
+            .into()
+    };
+    let preview = match attachment.upload_started {
+        Some(started) => stack![preview, upload_ring(started.elapsed().as_millis() as f32)].into(),
+        None => preview,
+    };
+    container(preview)
+        .width(Length::Fixed(64.0))
+        .height(Length::Fixed(64.0))
+        .clip(true)
+        .into()
+}
+
+fn upload_ring<'a>(elapsed_ms: f32) -> Element<'a, Message> {
+    let rotation = (elapsed_ms % 1_200.0) / 1_200.0 * 360.0;
+    let markup = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><circle cx="32" cy="32" r="24" fill="#101218" fill-opacity=".66"/><circle cx="32" cy="32" r="21" fill="none" stroke="#F2F4F8" stroke-width="4" stroke-linecap="round" stroke-dasharray="33 99" transform="rotate({rotation} 32 32)"/></svg>"##
+    );
+    svg(SvgHandle::from_memory(markup.into_bytes()))
+        .width(Length::Fixed(64.0))
+        .height(Length::Fixed(64.0))
+        .into()
+}
+
+fn material_add_icon<'a>() -> Element<'a, Message> {
+    const ADD_ROUNDED: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path fill="#AEB8D0" d="M440-440H200q-17 0-28.5-11.5T160-480q0-17 11.5-28.5T200-520h240v-240q0-17 11.5-28.5T480-800q17 0 28.5 11.5T520-760v240h240q17 0 28.5 11.5T800-480q0 17-11.5 28.5T760-440H520v240q0 17-11.5 28.5T480-160q-17 0-28.5-11.5T440-200v-240Z"/></svg>"##;
+    svg(SvgHandle::from_memory(ADD_ROUNDED))
+        .width(Length::Fixed(18.0))
+        .height(Length::Fixed(18.0))
+        .into()
+}
+
+fn truncate_filename(name: &str) -> String {
+    const MAX_GRAPHEMES: usize = 22;
+    let mut graphemes = name.graphemes(true);
+    let head = graphemes.by_ref().take(MAX_GRAPHEMES).collect::<String>();
+    if graphemes.next().is_some() {
+        format!("{head}...")
+    } else {
+        head
+    }
+}
+
+fn is_previewable_image(path: &std::path::Path) -> bool {
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some(extension) if matches!(
+            extension.to_ascii_lowercase().as_str(),
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp"
+        )
+    )
+}
+
+fn is_video(path: &std::path::Path) -> bool {
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some(extension) if matches!(
+            extension.to_ascii_lowercase().as_str(),
+            "mp4" | "mov" | "m4v" | "webm"
+        )
+    )
 }
 
 fn format_bytes(bytes: u64) -> String {

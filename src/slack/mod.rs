@@ -12,6 +12,8 @@ pub use transport::Transport;
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum Error {
+    #[error("file upload canceled")]
+    UploadCanceled,
     #[error("missing workspace session for team {0}")]
     MissingWorkspace(models::TeamId),
     #[error("Slack API returned error: {0}")]

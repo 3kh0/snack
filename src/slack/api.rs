@@ -1,4 +1,6 @@
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::config::WorkspaceSession;
 
@@ -490,9 +492,13 @@ pub async fn upload_files(
     thread_ts: Option<MessageTs>,
     initial_comment: String,
     paths: Vec<PathBuf>,
+    canceled: Arc<AtomicBool>,
 ) -> Result<(), Error> {
     let mut files = Vec::with_capacity(paths.len());
     for path in paths {
+        if canceled.load(Ordering::Relaxed) {
+            return Err(Error::UploadCanceled);
+        }
         let filename = path
             .file_name()
             .and_then(|name| name.to_str())
@@ -513,6 +519,9 @@ pub async fn upload_files(
             .await?;
         let ticket: UploadUrl = decode(value, "files.getUploadURLExternal")?;
         transport.upload_bytes(&ticket.upload_url, bytes).await?;
+        if canceled.load(Ordering::Relaxed) {
+            return Err(Error::UploadCanceled);
+        }
         files.push(serde_json::json!({ "id": ticket.file_id, "title": filename }));
     }
 
@@ -529,6 +538,9 @@ pub async fn upload_files(
     }
     if let Some(thread_ts) = thread_ts {
         fields.push(("thread_ts", thread_ts));
+    }
+    if canceled.load(Ordering::Relaxed) {
+        return Err(Error::UploadCanceled);
     }
     transport
         .execute(client.rest_form(workspace, "files.completeUploadExternal", fields))

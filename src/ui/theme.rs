@@ -514,6 +514,22 @@ pub fn editor(
     }
 }
 
+pub fn composer_editor(
+    _theme: &Theme,
+    _status: iced::widget::text_editor::Status,
+) -> iced::widget::text_editor::Style {
+    iced::widget::text_editor::Style {
+        background: Background::Color(Color::TRANSPARENT),
+        border: Border::default(),
+        placeholder: TEXT_4,
+        value: TEXT_1,
+        selection: Color {
+            a: 0.30,
+            ..accent()
+        },
+    }
+}
+
 pub fn presence_online(_theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(ONLINE)),

@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use iced::Task;
@@ -119,6 +120,8 @@ pub struct ComposerAttachment {
     pub name: String,
     pub bytes: u64,
     pub uploading: bool,
+    pub upload_started: Option<Instant>,
+    pub upload_cancel: Option<Arc<AtomicBool>>,
 }
 
 pub struct App {
