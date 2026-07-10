@@ -3,11 +3,11 @@ use std::f32::consts::TAU;
 use std::time::Duration;
 
 use iced::widget::image::Handle as ImageHandle;
-use iced::widget::{Column, Row, button, container, image, svg, text, text_input};
+use iced::widget::{Column, Row, button, container, image, stack, svg, text, text_input};
 use iced::{Alignment, Color, ContentFit, Element, Fill, Font, Length, Point};
 use unicode_segmentation::UnicodeSegmentation;
 
-use super::{blocks, composer, selectable, theme};
+use super::{blocks, composer, icons, selectable, theme};
 use crate::app::{ComposerAttachment, FilePreview, Message, TextSelection, TextSelectionSurface};
 use crate::slack::models::Message as SlackMessage;
 use crate::state::{self, Workspace};
@@ -236,7 +236,7 @@ pub fn row<'a>(
     }
 
     for file in &msg.files {
-        col = col.push(file_row(file, file_previews));
+        col = col.push(file_row(file, file_previews, hovered));
     }
 
     for att in &msg.attachments {
@@ -948,27 +948,42 @@ fn avatar_with_size<'a>(
 fn file_row<'a>(
     file: &crate::slack::models::File,
     file_previews: &HashMap<String, FilePreview>,
+    hovered: bool,
 ) -> Element<'a, Message> {
-    let title = state::file_title(file);
-    let summary = state::file_summary(file);
+    let title = file
+        .name
+        .as_deref()
+        .and_then(|name| non_empty(Some(name)))
+        .map(str::to_owned)
+        .unwrap_or_else(|| state::file_title(file));
+    let (preview_width, preview_height) = file_preview_dimensions(file);
+    let download = file
+        .url_private
+        .clone()
+        .map(|url| Message::FileDownloadPressed {
+            url,
+            filename: state::file_download_name(file),
+        });
     let mut content = Column::new()
         .spacing(theme::SPACE_XS)
-        .push(text(title).size(theme::TEXT_MD).font(Font {
-            weight: iced::font::Weight::Bold,
-            ..Font::default()
-        }))
-        .push(text(summary).size(theme::TEXT_SM).color(theme::MUTED));
+        .push(text(title).size(theme::TEXT_SM).color(theme::TEXT_3));
 
     if let Some(preview) = state::file_preview_key(file).and_then(|key| file_previews.get(&key)) {
         match preview {
             FilePreview::Loaded(handle) => {
-                content = content.push(
-                    image::Image::new(handle.clone())
-                        .width(Length::Fixed(220.0))
-                        .height(Length::Fixed(140.0))
-                        .content_fit(ContentFit::Contain)
-                        .border_radius(6.0),
-                );
+                let preview = image::Image::new(handle.clone())
+                    .width(Length::Fixed(preview_width))
+                    .height(Length::Fixed(preview_height))
+                    .content_fit(ContentFit::Contain)
+                    .border_radius(6.0)
+                    .into();
+                content = content.push(file_preview(
+                    preview,
+                    download.clone(),
+                    hovered,
+                    preview_width,
+                    preview_height,
+                ));
             }
             FilePreview::Loading => {
                 content = content.push(
@@ -986,32 +1001,87 @@ fn file_row<'a>(
             }
             FilePreview::Animated { frames, .. } => {
                 if let Some(handle) = frames.first() {
-                    content = content.push(
-                        image::Image::new(handle.clone())
-                            .width(Length::Fixed(220.0))
-                            .height(Length::Fixed(140.0))
-                            .content_fit(ContentFit::Contain)
-                            .border_radius(6.0),
-                    );
+                    let preview = image::Image::new(handle.clone())
+                        .width(Length::Fixed(preview_width))
+                        .height(Length::Fixed(preview_height))
+                        .content_fit(ContentFit::Contain)
+                        .border_radius(6.0)
+                        .into();
+                    content = content.push(file_preview(
+                        preview,
+                        download.clone(),
+                        hovered,
+                        preview_width,
+                        preview_height,
+                    ));
                 }
             }
         }
     }
 
-    if let Some(url) = file.url_private.clone() {
-        content = content.push(
-            button(text("Download").size(theme::TEXT_SM))
-                .padding([2, 0])
-                .style(theme::link_button)
-                .on_press(Message::FileDownloadPressed {
-                    url,
-                    filename: state::file_download_name(file),
-                }),
-        );
-    }
+    content.into()
+}
 
-    container(content)
-        .padding(theme::SPACE_SM)
-        .style(theme::file_attachment)
-        .into()
+fn file_preview<'a>(
+    preview: Element<'a, Message>,
+    download: Option<Message>,
+    hovered: bool,
+    width: f32,
+    height: f32,
+) -> Element<'a, Message> {
+    let Some(download) = download.filter(|_| hovered) else {
+        return preview;
+    };
+
+    let icon = svg(icons::download())
+        .width(Length::Fixed(18.0))
+        .height(Length::Fixed(18.0))
+        .style(theme::sidebar_icon(theme::TEXT_1));
+    let action = container(
+        button(icon)
+            .padding(7.0)
+            .style(theme::action_button)
+            .on_press(download),
+    )
+    .width(Length::Fixed(width))
+    .height(Length::Fixed(height))
+    .padding(8.0)
+    .align_right(Length::Fill)
+    .align_bottom(Length::Fill);
+
+    stack![preview, action].into()
+}
+
+fn file_preview_dimensions(file: &crate::slack::models::File) -> (f32, f32) {
+    const MAX: f32 = 320.0;
+    const FALLBACK: (f32, f32) = (260.0, 160.0);
+    let dimension = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|key| file.extra.get(*key)?.as_f64())
+            .filter(|value| *value > 0.0)
+    };
+    let Some(width) = dimension(&["original_w", "thumb_360_w"]) else {
+        return FALLBACK;
+    };
+    let Some(height) = dimension(&["original_h", "thumb_360_h"]) else {
+        return FALLBACK;
+    };
+    let scale = (MAX / width.max(height) as f32).min(1.0);
+    (width as f32 * scale, height as f32 * scale)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::file_preview_dimensions;
+    use crate::slack::models::File;
+
+    #[test]
+    fn square_file_preview_uses_square_viewer() {
+        let mut file = File::default();
+        file.extra.insert("original_w".into(), json!(1024));
+        file.extra.insert("original_h".into(), json!(1024));
+        assert_eq!(file_preview_dimensions(&file), (320.0, 320.0));
+    }
 }
