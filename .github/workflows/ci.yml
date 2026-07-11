@@ -3,7 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
-  pull_request:
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -32,17 +34,58 @@ jobs:
         run: brew install cmake
 
       - name: Test
-        run: cargo test
+        run: cargo test --locked
 
   build:
-    runs-on: macos-latest
+    name: Build (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86-64
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - name: Linux ARM64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - name: macOS x86-64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+          - name: macOS ARM64
+            os: macos-15
+            target: aarch64-apple-darwin
+          - name: Windows x86-64
+            os: windows-2025
+            target: x86_64-pc-windows-msvc
+          - name: Windows ARM64
+            os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            cmake \
+            libdbus-1-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            pkg-config
 
-      - name: Install cmake
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.target }}
+
+      - name: Install CMake on macOS
+        if: runner.os == 'macOS'
         run: brew install cmake
 
       - name: Build
-        run: cargo build
+        run: cargo build --locked --target ${{ matrix.target }}
