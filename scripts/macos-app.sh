@@ -43,42 +43,7 @@ if [[ -f "$ICONS/macos/Assets.car" ]]; then
   cp "$ICONS/macos/Assets.car" "$RES/Assets.car"
 fi
 
-cat > "$CONTENTS/Info.plist" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleDevelopmentRegion</key>
-  <string>en</string>
-  <key>CFBundleDisplayName</key>
-  <string>Snack</string>
-  <key>CFBundleExecutable</key>
-  <string>snack</string>
-  <key>CFBundleIdentifier</key>
-  <string>com.echonet.snack</string>
-  <key>CFBundleInfoDictionaryVersion</key>
-  <string>6.0</string>
-  <key>CFBundleName</key>
-  <string>Snack</string>
-  <key>CFBundlePackageType</key>
-  <string>APPL</string>
-  <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
-  <key>CFBundleVersion</key>
-  <string>0.1.0</string>
-  <key>CFBundleIconFile</key>
-  <string>snack</string>
-  <key>CFBundleIconName</key>
-  <string>snack</string>
-  <key>LSMinimumSystemVersion</key>
-  <string>13.0</string>
-  <key>NSHighResolutionCapable</key>
-  <true/>
-  <key>NSSupportsAutomaticGraphicsSwitching</key>
-  <true/>
-</dict>
-</plist>
-EOF
+cp "$ROOT/assets/macos/Info.plist" "$CONTENTS/Info.plist"
 
 if command -v codesign >/dev/null 2>&1; then
   codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true

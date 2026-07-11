@@ -3693,47 +3693,71 @@ async fn show_desktop_notification(notification: DesktopNotification) -> Result<
 
 #[cfg(target_os = "macos")]
 fn show_desktop_notification_blocking(notification: &DesktopNotification) -> Result<(), String> {
-    let script = format!(
-        "display notification {} with title {}",
-        applescript_string(&notification.body),
-        applescript_string(&notification.title),
-    );
-    command_status(
-        std::process::Command::new("osascript")
-            .arg("-e")
-            .arg(script),
-    )
+    let authorized = mac_usernotifications::blocking::request_auth()
+        .map_err(|error| format!("could not request notification permission: {error}"))?;
+    if !authorized {
+        return Err("notification permission was denied".to_owned());
+    }
+
+    mac_usernotifications::Notification::new()
+        .title(&notification.title)
+        .message(&notification.body)
+        .default_sound()
+        .send_blocking()
+        .map(|_| ())
+        .map_err(|error| format!("could not deliver notification: {error}"))
 }
 
 #[cfg(target_os = "linux")]
 fn show_desktop_notification_blocking(notification: &DesktopNotification) -> Result<(), String> {
-    command_status(
-        std::process::Command::new("notify-send")
-            .arg(&notification.title)
-            .arg(&notification.body),
-    )
+    let icon = linux_notification_icon()?;
+    notify_rust::Notification::new()
+        .appname("Snack")
+        .summary(&notification.title)
+        .body(&notification.body)
+        .icon("snack")
+        .image_path(&icon.to_string_lossy())
+        .hint(notify_rust::Hint::Category("im.received".to_owned()))
+        .show()
+        .map(|_| ())
+        .map_err(|error| format!("could not deliver notification: {error}"))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_notification_icon() -> Result<std::path::PathBuf, String> {
+    const APP_ICON: &[u8] = include_bytes!("../../assets/icons/icon-256.png");
+    static ICON_PATH: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+    if let Some(icon) = ICON_PATH.get() {
+        return Ok(icon.clone());
+    }
+
+    let project_dirs = directories::ProjectDirs::from("com", "echonet", "Snack")
+        .ok_or_else(|| "Linux did not provide an application data directory".to_owned())?;
+    let icon = project_dirs.data_local_dir().join("snack-notification.png");
+    if let Some(parent) = icon.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("could not create notification icon directory: {error}"))?;
+    }
+    if !std::fs::read(&icon).is_ok_and(|bytes| bytes == APP_ICON) {
+        std::fs::write(&icon, APP_ICON)
+            .map_err(|error| format!("could not write notification icon: {error}"))?;
+    }
+    let _ = ICON_PATH.set(icon.clone());
+    Ok(icon)
 }
 
 #[cfg(target_os = "windows")]
-fn show_desktop_notification_blocking(_notification: &DesktopNotification) -> Result<(), String> {
-    Err("desktop notifications are not implemented on windows".to_owned())
-}
-
-#[cfg(target_os = "macos")]
-fn applescript_string(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
-}
-
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-fn command_status(command: &mut std::process::Command) -> Result<(), String> {
-    let status = command
-        .status()
-        .map_err(|e| format!("notification command failed: {e}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("notification command exited with {status}"))
-    }
+fn show_desktop_notification_blocking(notification: &DesktopNotification) -> Result<(), String> {
+    crate::windows::ensure_notification_identity()?;
+    notify_rust::Notification::new()
+        .app_id(crate::windows::APP_ID)
+        .summary(&notification.title)
+        .body(&notification.body)
+        .sound_name("IM")
+        .show()
+        .map(|_| ())
+        .map_err(|error| format!("could not deliver notification: {error}"))
 }
 
 pub(super) fn notification_for_message(
