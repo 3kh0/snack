@@ -31,10 +31,13 @@ pub fn list_panel<'a>(
     .style(theme::activity_count_pill);
 
     let header = row![
-        text("Activity").size(theme::TEXT_LG).color(theme::TEXT_1).font(iced::Font {
-            weight: font::Weight::Bold,
-            ..iced::Font::default()
-        }),
+        text("Activity")
+            .size(theme::TEXT_LG)
+            .color(theme::TEXT_1)
+            .font(iced::Font {
+                weight: font::Weight::Bold,
+                ..iced::Font::default()
+            }),
         count_chip,
     ]
     .spacing(theme::SPACE_SM)
@@ -157,7 +160,9 @@ fn activity_row<'a>(
         ));
     }
 
-    let avatar_user = item.author().or_else(|| msg.and_then(|m| m.user.as_deref()));
+    let avatar_user = item
+        .author()
+        .or_else(|| msg.and_then(|m| m.user.as_deref()));
     let avatar: Element<Message> = if avatar_user == Some(ws.self_user_id.as_str()) {
         let glyph = container(
             svg(icons::reply())
@@ -171,7 +176,11 @@ fn activity_row<'a>(
         .center_y(Length::Fixed(AVATAR));
         let tip = format!(
             "Replied: {}",
-            if preview.is_empty() { "…" } else { preview.as_str() }
+            if preview.is_empty() {
+                "…"
+            } else {
+                preview.as_str()
+            }
         );
         tooltip(
             glyph,
@@ -187,20 +196,18 @@ fn activity_row<'a>(
             avatar_user,
             avatar_user.and_then(|u| ws.avatar_url(u)).as_deref(),
             avatars,
-            avatar_user.map(|u| ws.display_name(u)).and_then(|n| n.chars().next()),
+            avatar_user
+                .map(|u| ws.display_name(u))
+                .and_then(|n| n.chars().next()),
             AVATAR,
             theme::CONTROL_RADIUS,
         )
     };
 
-    let inner = row![
-        bar,
-        avatar,
-        col,
-    ]
-    .spacing(theme::SPACE_SM)
-    .align_y(Alignment::Center)
-    .padding(Padding::ZERO.right(theme::SPACE_SM));
+    let inner = row![bar, avatar, col,]
+        .spacing(theme::SPACE_SM)
+        .align_y(Alignment::Center)
+        .padding(Padding::ZERO.right(theme::SPACE_SM));
 
     button(inner)
         .width(Fill)
@@ -216,12 +223,7 @@ fn target_element<'a>(ws: &'a Workspace, item: &'a ActivityItem) -> Option<Eleme
     }
     let id = item.channel()?;
     if is_dm_channel(ws, item) {
-        return Some(
-            text("DM")
-                .size(theme::TEXT_SM)
-                .color(theme::TEXT_2)
-                .into(),
-        );
+        return Some(text("DM").size(theme::TEXT_SM).color(theme::TEXT_2).into());
     }
     let channel = ws.channels.get(id);
     let name = channel
@@ -253,7 +255,11 @@ fn is_dm_channel(ws: &Workspace, item: &ActivityItem) -> bool {
 }
 
 fn count_badge<'a>(count: u32) -> Element<'a, Message> {
-    let label = if count > 99 { "99+".to_owned() } else { count.to_string() };
+    let label = if count > 99 {
+        "99+".to_owned()
+    } else {
+        count.to_string()
+    };
     container(text(label).size(theme::TEXT_SM).color(theme::BG_BASE))
         .padding([0.0, theme::SPACE_XS + 1.0])
         .style(theme::activity_count_badge)
@@ -339,21 +345,33 @@ fn time_label(item: &ActivityItem) -> String {
         "now".to_owned()
     } else if elapsed < 3600 {
         let m = elapsed / 60;
-        if m == 1 { "1 min".to_owned() } else { format!("{m} mins") }
+        if m == 1 {
+            "1 min".to_owned()
+        } else {
+            format!("{m} mins")
+        }
     } else if elapsed < 86_400 {
         let h = elapsed / 3600;
-        if h == 1 { "1 hour".to_owned() } else { format!("{h} hours") }
+        if h == 1 {
+            "1 hour".to_owned()
+        } else {
+            format!("{h} hours")
+        }
     } else {
         state::format_ts_hm(&item.feed_ts)
     }
 }
 
 fn placeholder<'a>(label: &str) -> Element<'a, Message> {
-    container(text(label.to_owned()).size(theme::TEXT_MD).color(theme::TEXT_4))
-        .center_x(Fill)
-        .height(Fill)
-        .padding(theme::SPACE_LG)
-        .into()
+    container(
+        text(label.to_owned())
+            .size(theme::TEXT_MD)
+            .color(theme::TEXT_4),
+    )
+    .center_x(Fill)
+    .height(Fill)
+    .padding(theme::SPACE_LG)
+    .into()
 }
 
 pub fn unread_count(activity: &ActivityState) -> usize {

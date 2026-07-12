@@ -85,20 +85,20 @@ fn main_view(app: &App) -> Element<'_, Message> {
             &app.emoji_previews,
             app.emoji_animation_started.elapsed(),
         );
-        let right: Element<'_, Message> = match (app.active_team.as_ref(), app.active_thread.as_ref())
-        {
-            (Some(team), Some((channel, root_ts))) => {
-                thread_static_panel(app, ws, team, channel, root_ts)
-            }
-            _ if app.active_channel.is_some() => {
-                channel_main_panel(app, ws, "Select a notification to view the details.")
-            }
-            _ => container(center_text("Select a notification to view the details."))
-                .width(Fill)
-                .height(Fill)
-                .style(ui::theme::panel)
-                .into(),
-        };
+        let right: Element<'_, Message> =
+            match (app.active_team.as_ref(), app.active_thread.as_ref()) {
+                (Some(team), Some((channel, root_ts))) => {
+                    thread_static_panel(app, ws, team, channel, root_ts)
+                }
+                _ if app.active_channel.is_some() => {
+                    channel_main_panel(app, ws, "Select a notification to view the details.")
+                }
+                _ => container(center_text("Select a notification to view the details."))
+                    .width(Fill)
+                    .height(Fill)
+                    .style(ui::theme::panel)
+                    .into(),
+            };
         let body = row![rail, list, right]
             .spacing(ui::theme::gap())
             .width(Fill)

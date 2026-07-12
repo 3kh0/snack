@@ -498,7 +498,10 @@ pub fn handle(app: &mut App, id: u64, command: AgentCommand) -> iced::Task<Messa
         }
         AgentCommand::ActivitySelect { index } => {
             let Some(key) = app.activity.items.get(index).map(|i| i.key.clone()) else {
-                complete(id, AgentResponse::err(id, format!("no activity item at {index}")));
+                complete(
+                    id,
+                    AgentResponse::err(id, format!("no activity item at {index}")),
+                );
                 return iced::Task::none();
             };
             let task = update(app, Message::ActivitySelected(key.clone()));

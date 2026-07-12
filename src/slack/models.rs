@@ -711,7 +711,10 @@ impl ActivityItem {
         if let Some(dm) = self.dm_message() {
             return dm.channel.as_deref();
         }
-        self.item.message.as_ref().and_then(|m| m.channel.as_deref())
+        self.item
+            .message
+            .as_ref()
+            .and_then(|m| m.channel.as_deref())
     }
 
     pub fn ts(&self) -> Option<&str> {
@@ -728,7 +731,10 @@ impl ActivityItem {
         if let Some(entry) = self.thread_entry() {
             return entry.thread_ts.as_deref();
         }
-        self.item.message.as_ref().and_then(|m| m.thread_ts.as_deref())
+        self.item
+            .message
+            .as_ref()
+            .and_then(|m| m.thread_ts.as_deref())
     }
 
     pub fn author(&self) -> Option<&str> {

@@ -699,11 +699,7 @@ pub fn rail_nav_button(selected: bool) -> impl Fn(&Theme, button::Status) -> but
         };
         button::Style {
             background,
-            text_color: if selected || hovered {
-                TEXT_1
-            } else {
-                TEXT_4
-            },
+            text_color: if selected || hovered { TEXT_1 } else { TEXT_4 },
             border: Border::default().rounded(CONTROL_RADIUS),
             ..button::Style::default()
         }

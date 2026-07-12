@@ -1162,10 +1162,15 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
 
         Message::ActivitySelected(key) => {
             app.activity.selected = Some(key.clone());
-            let target = app.activity.items.iter().find(|i| i.key == key).and_then(|a| {
-                let channel = a.channel()?.to_owned();
-                Some((channel, a.thread_ts().map(str::to_owned)))
-            });
+            let target = app
+                .activity
+                .items
+                .iter()
+                .find(|i| i.key == key)
+                .and_then(|a| {
+                    let channel = a.channel()?.to_owned();
+                    Some((channel, a.thread_ts().map(str::to_owned)))
+                });
             let Some((channel, thread_ts)) = target else {
                 return Task::none();
             };
