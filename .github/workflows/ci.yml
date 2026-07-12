@@ -83,6 +83,12 @@ jobs:
         with:
           shared-key: ${{ matrix.target }}
 
+      - name: Configure CMake for Windows ARM64
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          "CMAKE_TOOLCHAIN_FILE=$env:GITHUB_WORKSPACE\.github\cmake\windows-arm64.cmake" >> $env:GITHUB_ENV
+
       - name: Install CMake on macOS
         if: runner.os == 'macOS'
         run: brew install cmake
