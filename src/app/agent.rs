@@ -1,17 +1,24 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(unix)]
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
+#[cfg(unix)]
 use std::time::Duration;
 
 use iced::Subscription;
+#[cfg(unix)]
 use iced::futures::SinkExt;
+#[cfg(unix)]
 use iced::futures::channel::mpsc as iced_mpsc;
 use iced::window;
 use iced::window::Screenshot;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+#[cfg(unix)]
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+#[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::oneshot;
 
@@ -22,14 +29,21 @@ use crate::state::Screen;
 
 static REPLIES: OnceLock<Mutex<HashMap<u64, oneshot::Sender<AgentResponse>>>> = OnceLock::new();
 static ALLOW_DESTRUCTIVE: AtomicBool = AtomicBool::new(false);
+#[cfg(unix)]
 static NEXT_FALLBACK_ID: AtomicU64 = AtomicU64::new(1);
 
 fn replies() -> &'static Mutex<HashMap<u64, oneshot::Sender<AgentResponse>>> {
     REPLIES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+#[cfg(unix)]
 pub fn enabled() -> bool {
     std::env::var_os("SNACK_AGENT").is_some()
+}
+
+#[cfg(not(unix))]
+pub fn enabled() -> bool {
+    false
 }
 
 pub fn socket_path() -> PathBuf {
@@ -48,10 +62,17 @@ pub fn set_allow_destructive(enabled: bool) {
     ALLOW_DESTRUCTIVE.store(enabled, Ordering::Relaxed);
 }
 
+#[cfg(unix)]
 pub fn subscription() -> Subscription<Message> {
     Subscription::run(agent_stream)
 }
 
+#[cfg(not(unix))]
+pub fn subscription() -> Subscription<Message> {
+    Subscription::none()
+}
+
+#[cfg(unix)]
 fn agent_stream() -> impl futures::Stream<Item = Message> {
     iced::stream::channel(64, |output| async move {
         if let Err(e) = serve(output).await {
@@ -60,6 +81,7 @@ fn agent_stream() -> impl futures::Stream<Item = Message> {
     })
 }
 
+#[cfg(unix)]
 async fn serve(output: iced_mpsc::Sender<Message>) -> Result<(), String> {
     let path = socket_path();
     if path.exists() {
@@ -90,6 +112,7 @@ async fn serve(output: iced_mpsc::Sender<Message>) -> Result<(), String> {
     }
 }
 
+#[cfg(unix)]
 async fn handle_client(
     stream: UnixStream,
     mut output: iced_mpsc::Sender<Message>,
@@ -128,6 +151,7 @@ async fn handle_client(
     Ok(())
 }
 
+#[cfg(unix)]
 async fn dispatch_request(
     req: AgentRequest,
     output: &mut iced_mpsc::Sender<Message>,
