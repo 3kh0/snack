@@ -12,7 +12,7 @@ env:
 
 jobs:
   fmt:
-    runs-on: macos-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -23,15 +23,61 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
 
-  test:
-    runs-on: macos-latest
+  clippy:
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            cmake \
+            libdbus-1-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: clippy-linux
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets
+
+  deny:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  test:
+    runs-on: ubuntu-24.04
+    env:
+      ICED_TEST_BACKEND: tiny-skia
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            cmake \
+            libdbus-1-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            pkg-config
+
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Install cmake
-        run: brew install cmake
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test-linux
 
       - name: Test
         run: cargo test --locked
