@@ -13,8 +13,9 @@ use crate::config::{self, Session};
 use crate::slack::api::{self, HistoryArgs};
 use crate::slack::events::RtEvent;
 use crate::slack::models::{
-    BootData, Channel, ChannelId, CountsPage, Emoji, HistoryPage, Message as SlackMessage,
-    MessageTs, SearchMessagesPage, SentMessage, SidebarDmsPage, TeamId, User, UserId,
+    ActivityFeedPage, BootData, Channel, ChannelId, CountsPage, Emoji, HistoryPage,
+    Message as SlackMessage, MessageTs, MessagesListPage, SearchMessagesPage, SentMessage,
+    SidebarDmsPage, TeamId, User, UserId,
 };
 use crate::slack::realtime::Connection;
 use crate::slack::{Error as SlackError, SlackClient, Transport};
@@ -98,6 +99,34 @@ struct DesktopNotification {
     body: String,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ActivityState {
+    pub items: Vec<crate::slack::models::ActivityItem>,
+    pub hydrated: HashMap<(ChannelId, MessageTs), SlackMessage>,
+    pub loading: bool,
+    pub loaded: bool,
+    pub selected: Option<String>,
+}
+
+impl ActivityState {
+    pub fn upsert(&mut self, item: crate::slack::models::ActivityItem) {
+        let identity = item.identity();
+        if let Some(existing) = self.items.iter_mut().find(|i| i.identity() == identity) {
+            if crate::state::cmp_ts(Some(&item.feed_ts), Some(&existing.feed_ts)).is_lt() {
+                return;
+            }
+            if self.selected.as_deref() == Some(existing.key.as_str()) {
+                self.selected = Some(item.key.clone());
+            }
+            *existing = item;
+        } else {
+            self.items.push(item);
+        }
+        self.items
+            .sort_by(|a, b| crate::state::cmp_ts(Some(&b.feed_ts), Some(&a.feed_ts)));
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SearchHit {
     pub channel: ChannelId,
@@ -150,6 +179,8 @@ pub struct App {
     active_channel: Option<ChannelId>,
     active_thread: Option<ActiveThreadKey>,
     thread_open: bool,
+    main_view: crate::state::MainView,
+    activity: ActivityState,
     workspaces: BTreeMap<TeamId, Workspace>,
     threads: HashMap<ThreadKey, ChannelMessages>,
     composer: Content,
@@ -418,6 +449,10 @@ pub enum Message {
     Realtime(TeamId, u64, RtEvent),
     RtConnected(TeamId, u64, Connection),
     RtDisconnected(TeamId, u64),
+    MainViewSelected(crate::state::MainView),
+    ActivityLoaded(TeamId, Result<ActivityFeedPage, SlackError>),
+    ActivityMessagesLoaded(TeamId, Result<MessagesListPage, SlackError>),
+    ActivitySelected(String),
     SignInPressed,
     RetryAuth,
     AccountMenuToggled,
@@ -468,6 +503,8 @@ impl App {
             active_channel: None,
             active_thread: None,
             thread_open: false,
+            main_view: crate::state::MainView::Home,
+            activity: ActivityState::default(),
             workspaces: BTreeMap::new(),
             threads: HashMap::new(),
             composer: Content::new(),

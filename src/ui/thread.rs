@@ -28,6 +28,7 @@ pub fn view<'a>(
     hovered_ts: Option<&str>,
     text_selection: Option<&TextSelection>,
     pending_file_messages: &'a [PendingFileMessage],
+    width: Length,
 ) -> Element<'a, Message> {
     let header = row![
         text("Thread")
@@ -165,7 +166,7 @@ pub fn view<'a>(
         container(list).height(Fill),
         input,
     ])
-    .width(Length::Fixed(theme::THREAD_WIDTH))
+    .width(width)
     .height(Fill)
     .style(theme::panel)
     .into()

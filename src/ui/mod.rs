@@ -1,3 +1,4 @@
+pub mod activity;
 pub mod blocks;
 pub mod channel;
 pub mod composer;

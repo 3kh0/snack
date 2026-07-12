@@ -1,27 +1,41 @@
 use std::collections::HashMap;
 
-use iced::widget::{Space, button, column, container, image, row, text};
+use iced::widget::{Space, button, column, container, image, row, svg, text};
 use iced::{Alignment, ContentFit, Element, Fill, Length, font};
 
-use super::theme;
+use super::{icons, theme};
 use crate::app::{FilePreview, Message};
 use crate::slack::models::UserId;
-use crate::state::{Presence, Workspace};
+use crate::state::{MainView, Presence, Workspace};
 
 pub const RAIL_WIDTH: f32 = 40.0;
 
 pub const ICON_SIZE: f32 = 28.0;
+const NAV_ICON_SIZE: f32 = 18.0;
 const AVATAR_RADIUS: f32 = 8.0;
 const RAIL_PADDING: f32 = 6.0;
 const MENU_WIDTH: f32 = 220.0;
 
 type AvatarPreviews = HashMap<UserId, FilePreview>;
 
-pub fn view<'a>(ws: &'a Workspace, avatars: &'a AvatarPreviews) -> Element<'a, Message> {
-    let placeholder = container(Space::new())
-        .width(Length::Fixed(ICON_SIZE))
-        .height(Length::Fixed(ICON_SIZE))
-        .style(theme::rail_icon_placeholder);
+pub fn view<'a>(
+    ws: &'a Workspace,
+    avatars: &'a AvatarPreviews,
+    view: MainView,
+    activity_unread: usize,
+) -> Element<'a, Message> {
+    let home = nav_button(
+        icons::home(),
+        view == MainView::Home,
+        0,
+        Message::MainViewSelected(MainView::Home),
+    );
+    let notifications = nav_button(
+        icons::bell(),
+        view == MainView::Activity,
+        activity_unread,
+        Message::MainViewSelected(MainView::Activity),
+    );
 
     let account = button(account_avatar(ws, avatars))
         .width(Length::Fixed(ICON_SIZE))
@@ -30,7 +44,7 @@ pub fn view<'a>(ws: &'a Workspace, avatars: &'a AvatarPreviews) -> Element<'a, M
         .style(theme::rail_button)
         .on_press(Message::AccountMenuToggled);
 
-    let body = column![placeholder, Space::new().height(Fill), account]
+    let body = column![home, notifications, Space::new().height(Fill), account]
         .spacing(theme::SPACE_SM)
         .align_x(Alignment::Center)
         .padding(RAIL_PADDING)
@@ -42,6 +56,62 @@ pub fn view<'a>(ws: &'a Workspace, avatars: &'a AvatarPreviews) -> Element<'a, M
         .height(Length::Fill)
         .style(theme::panel)
         .into()
+}
+
+fn nav_button<'a>(
+    icon: svg::Handle,
+    selected: bool,
+    badge: usize,
+    message: Message,
+) -> Element<'a, Message> {
+    let glyph = svg(icon)
+        .width(Length::Fixed(NAV_ICON_SIZE))
+        .height(Length::Fixed(NAV_ICON_SIZE))
+        .style(theme::sidebar_icon(theme::rail_nav_icon(selected)));
+
+    let content: Element<'a, Message> = if badge > 0 {
+        iced::widget::stack![
+            container(glyph)
+                .width(Length::Fixed(ICON_SIZE))
+                .height(Length::Fixed(ICON_SIZE))
+                .center_x(Length::Fixed(ICON_SIZE))
+                .center_y(Length::Fixed(ICON_SIZE)),
+            container(
+                container(
+                    text(badge_label(badge))
+                        .size(theme::TEXT_SM - 2.0)
+                        .color(theme::TEXT_1)
+                )
+                .padding([0.0, 3.0])
+                .style(theme::ping_badge)
+            )
+            .align_right(Fill),
+        ]
+        .into()
+    } else {
+        container(glyph)
+            .width(Length::Fixed(ICON_SIZE))
+            .height(Length::Fixed(ICON_SIZE))
+            .center_x(Length::Fixed(ICON_SIZE))
+            .center_y(Length::Fixed(ICON_SIZE))
+            .into()
+    };
+
+    button(content)
+        .width(Length::Fixed(ICON_SIZE))
+        .height(Length::Fixed(ICON_SIZE))
+        .padding(0)
+        .style(theme::rail_nav_button(selected))
+        .on_press(message)
+        .into()
+}
+
+fn badge_label(count: usize) -> String {
+    if count > 9 {
+        "9+".to_owned()
+    } else {
+        count.to_string()
+    }
 }
 
 pub fn account_menu<'a>(ws: &'a Workspace, avatars: &'a AvatarPreviews) -> Element<'a, Message> {

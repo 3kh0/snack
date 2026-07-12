@@ -36,6 +36,13 @@ pub enum Screen {
     Main,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MainView {
+    #[default]
+    Home,
+    Activity,
+}
+
 #[derive(Debug, Clone, Default)]
 pub enum RealtimeStatus {
     #[default]

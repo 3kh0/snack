@@ -70,7 +70,42 @@ fn main_view(app: &App) -> Element<'_, Message> {
         return center_text("No workspace");
     };
 
-    let rail = ui::rail::view(ws, &app.avatar_previews);
+    let rail = ui::rail::view(
+        ws,
+        &app.avatar_previews,
+        app.main_view,
+        ui::activity::unread_count(&app.activity),
+    );
+
+    if app.main_view == crate::state::MainView::Activity {
+        let list = ui::activity::list_panel(
+            ws,
+            &app.activity,
+            &app.avatar_previews,
+            &app.emoji_previews,
+            app.emoji_animation_started.elapsed(),
+        );
+        let right: Element<'_, Message> = match (app.active_team.as_ref(), app.active_thread.as_ref())
+        {
+            (Some(team), Some((channel, root_ts))) => {
+                thread_static_panel(app, ws, team, channel, root_ts)
+            }
+            _ if app.active_channel.is_some() => {
+                channel_main_panel(app, ws, "Select a notification to view the details.")
+            }
+            _ => container(center_text("Select a notification to view the details."))
+                .width(Fill)
+                .height(Fill)
+                .style(ui::theme::panel)
+                .into(),
+        };
+        let body = row![rail, list, right]
+            .spacing(ui::theme::gap())
+            .width(Fill)
+            .height(Fill);
+        return with_modal(app, with_account_menu(app, shell(body.into())));
+    }
+
     let sidebar_panel = ui::sidebar::view(
         &app.workspaces,
         app.active_team.as_deref(),
@@ -122,49 +157,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
     };
     let emoji_animation_elapsed = app.emoji_animation_started.elapsed();
 
-    let main: Element<'_, Message> = match app.active_channel.as_deref() {
-        Some(channel_id) => {
-            let label = ws
-                .channels
-                .get(channel_id)
-                .map(|c| crate::state::channel_display_name(ws, c))
-                .unwrap_or_else(|| channel_id.to_owned());
-            let body = column![
-                container(ui::channel::view(
-                    ws,
-                    channel_id,
-                    &app.file_previews,
-                    &app.avatar_previews,
-                    &app.emoji_previews,
-                    emoji_animation_elapsed,
-                    editing_for(channel_id),
-                    hovered_for(false),
-                    app.text_selection.as_ref(),
-                    &app.pending_file_messages,
-                ))
-                .height(Fill),
-                container(ui::composer::view(
-                    &app.composer,
-                    &app.composer_attachments,
-                    &label,
-                    crate::app::ComposerTarget::Channel,
-                ))
-                .height(iced::Length::Shrink),
-            ]
-            .width(Fill)
-            .height(Fill);
-            container(body)
-                .width(Fill)
-                .height(Fill)
-                .style(ui::theme::panel)
-                .into()
-        }
-        None => container(center_text("Select a channel"))
-            .width(Fill)
-            .height(Fill)
-            .style(ui::theme::panel)
-            .into(),
-    };
+    let main: Element<'_, Message> = channel_main_panel(app, ws, "Select a channel");
 
     if let (Some(team), Some((channel, root_ts))) =
         (app.active_team.as_ref(), app.active_thread.as_ref())
@@ -194,6 +187,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
                 hovered_for(true),
                 app.text_selection.as_ref(),
                 &app.pending_file_messages,
+                iced::Length::Fixed(ui::theme::THREAD_WIDTH),
             ))
             .padding(iced::Padding::ZERO.left(gap));
             ui::motion::collapse_x(panel.into(), progress, ui::theme::THREAD_WIDTH + gap)
@@ -219,6 +213,109 @@ fn main_view(app: &App) -> Element<'_, Message> {
             .height(Fill);
         with_modal(app, with_account_menu(app, shell(body.into())))
     }
+}
+
+fn channel_main_panel<'a>(
+    app: &'a App,
+    ws: &'a crate::state::Workspace,
+    empty_label: &'a str,
+) -> Element<'a, Message> {
+    let emoji_animation_elapsed = app.emoji_animation_started.elapsed();
+    match app.active_channel.as_deref() {
+        Some(channel_id) => {
+            let editing = app
+                .editing
+                .as_ref()
+                .filter(|(channel, _)| channel == channel_id)
+                .map(|(_, ts)| (ts.as_str(), app.edit_text.as_str()));
+            let hovered = app
+                .hovered_message
+                .as_ref()
+                .filter(|(thread, _)| !thread)
+                .map(|(_, ts)| ts.as_str());
+            let label = ws
+                .channels
+                .get(channel_id)
+                .map(|c| crate::state::channel_display_name(ws, c))
+                .unwrap_or_else(|| channel_id.to_owned());
+            let body = column![
+                container(ui::channel::view(
+                    ws,
+                    channel_id,
+                    &app.file_previews,
+                    &app.avatar_previews,
+                    &app.emoji_previews,
+                    emoji_animation_elapsed,
+                    editing,
+                    hovered,
+                    app.text_selection.as_ref(),
+                    &app.pending_file_messages,
+                ))
+                .height(Fill),
+                container(ui::composer::view(
+                    &app.composer,
+                    &app.composer_attachments,
+                    &label,
+                    crate::app::ComposerTarget::Channel,
+                ))
+                .height(iced::Length::Shrink),
+            ]
+            .width(Fill)
+            .height(Fill);
+            container(body)
+                .width(Fill)
+                .height(Fill)
+                .style(ui::theme::panel)
+                .into()
+        }
+        None => container(center_text(empty_label))
+            .width(Fill)
+            .height(Fill)
+            .style(ui::theme::panel)
+            .into(),
+    }
+}
+
+fn thread_static_panel<'a>(
+    app: &'a App,
+    ws: &'a crate::state::Workspace,
+    team: &'a str,
+    channel: &'a str,
+    root_ts: &'a str,
+) -> Element<'a, Message> {
+    let emoji_animation_elapsed = app.emoji_animation_started.elapsed();
+    let replies = app
+        .threads
+        .get(&(team.to_owned(), channel.to_owned(), root_ts.to_owned()));
+    let root = ui::thread::root_message(ws, channel, root_ts);
+    let editing = app
+        .editing
+        .as_ref()
+        .filter(|(c, _)| c == channel)
+        .map(|(_, ts)| (ts.as_str(), app.edit_text.as_str()));
+    let hovered = app
+        .hovered_message
+        .as_ref()
+        .filter(|(thread, _)| *thread)
+        .map(|(_, ts)| ts.as_str());
+    ui::thread::view(
+        ws,
+        channel,
+        root_ts,
+        root,
+        replies,
+        &app.thread_composer,
+        &app.thread_composer_attachments,
+        &app.file_previews,
+        &app.avatar_previews,
+        &app.emoji_previews,
+        emoji_animation_elapsed,
+        editing,
+        hovered,
+        app.text_selection.as_ref(),
+        &app.pending_file_messages,
+        Fill,
+    )
 }
 
 fn resize_handle<'a>() -> Element<'a, Message> {

@@ -53,6 +53,8 @@ Commands:
   search <query>
   clear-search
   open-settings
+  main-view <home|activity>       Switch far-rail surface
+  activity-select <index>         Open activity item in right panel
   close-settings
   screenshot [path]
   toast <text>
@@ -153,6 +155,14 @@ case "$cmd" in
     else
       JSON=$(printf '{"id":%s,"cmd":"screenshot"}' "$REQ_ID")
     fi
+    ;;
+  main-view)
+    [[ $# -ge 1 ]] || { echo "usage: agentctl.sh main-view <home|activity>" >&2; exit 2; }
+    JSON=$(python3 -c 'import json,sys; print(json.dumps({"id": int(sys.argv[1]), "cmd":"main-view", "view": sys.argv[2]}))' "$REQ_ID" "$1")
+    ;;
+  activity-select)
+    [[ $# -ge 1 ]] || { echo "usage: agentctl.sh activity-select <index>" >&2; exit 2; }
+    JSON=$(python3 -c 'import json,sys; print(json.dumps({"id": int(sys.argv[1]), "cmd":"activity-select", "index": int(sys.argv[2])}))' "$REQ_ID" "$1")
     ;;
   toast)
     [[ $# -ge 1 ]] || { echo "usage: agentctl.sh toast <text>" >&2; exit 2; }

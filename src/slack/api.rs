@@ -7,9 +7,9 @@ use crate::config::WorkspaceSession;
 use super::Error;
 use super::client::{PreparedRequest, SlackClient};
 use super::models::{
-    BootData, Channel, ChannelId, CountsPage, EdgeResults, Emoji, HistoryPage, MessageTs,
-    OpenedConversation, SearchInlinePage, SearchMessagesPage, SentMessage, SidebarDmsPage, User,
-    UserId,
+    ActivityFeedPage, BootData, Channel, ChannelId, CountsPage, EdgeResults, Emoji, HistoryPage,
+    MessageTs, MessagesListPage, OpenedConversation, SearchInlinePage, SearchMessagesPage,
+    SentMessage, SidebarDmsPage, User, UserId,
 };
 use super::transport::Transport;
 pub fn user_boot(client: &SlackClient, workspace: &WorkspaceSession) -> PreparedRequest {
@@ -93,6 +93,56 @@ pub fn conversations_info(
 
 pub fn client_counts(client: &SlackClient, workspace: &WorkspaceSession) -> PreparedRequest {
     client.rest_form(workspace, "client.counts", Vec::new())
+}
+
+const ACTIVITY_TYPES: &str = "at_user,at_user_group,at_channel,at_everyone,keyword,\
+list_record_assigned,list_user_mentioned,list_todo_notification,list_approval_request,\
+list_approval_reviewed,unjoined_channel_mention,thread_v2,message_reaction,bot_dm_bundle,dm,\
+internal_channel_invite,external_channel_invite,external_dm_invite,channel,saved_reminder,\
+list_record_edited";
+
+pub fn messages_list(
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    message_ids: &[(ChannelId, Vec<MessageTs>)],
+) -> PreparedRequest {
+    let ids: Vec<_> = message_ids
+        .iter()
+        .map(|(channel, timestamps)| {
+            serde_json::json!({ "channel": channel, "timestamps": timestamps })
+        })
+        .collect();
+    let payload = serde_json::to_string(&ids).unwrap_or_else(|_| "[]".to_owned());
+    client.rest_form(
+        workspace,
+        "messages.list",
+        vec![
+            ("message_ids", payload),
+            ("org_wide_aware", "true".to_owned()),
+            ("cached_latest_updates", "{}".to_owned()),
+        ],
+    )
+}
+
+pub fn activity_feed(
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    limit: u32,
+) -> PreparedRequest {
+    client.rest_form(
+        workspace,
+        "activity.feed",
+        vec![
+            ("limit", limit.to_string()),
+            ("types", ACTIVITY_TYPES.to_owned()),
+            ("mode", "chrono_v1".to_owned()),
+            ("archive_only", "false".to_owned()),
+            ("unread_only", "false".to_owned()),
+            ("priority_only", "false".to_owned()),
+            ("only_salesforce_channels", "false".to_owned()),
+            ("exclude_automations", "false".to_owned()),
+        ],
+    )
 }
 
 pub fn sidebar_dms(client: &SlackClient, workspace: &WorkspaceSession) -> PreparedRequest {
@@ -366,6 +416,30 @@ pub async fn fetch_sidebar_dms(
 ) -> Result<SidebarDmsPage, Error> {
     let value = transport.execute(sidebar_dms(client, workspace)).await?;
     decode(value, "sidebar.dms")
+}
+
+pub async fn fetch_activity_feed(
+    transport: &Transport,
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    limit: u32,
+) -> Result<ActivityFeedPage, Error> {
+    let value = transport
+        .execute(activity_feed(client, workspace, limit))
+        .await?;
+    decode(value, "activity.feed")
+}
+
+pub async fn fetch_messages_list(
+    transport: &Transport,
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    message_ids: Vec<(ChannelId, Vec<MessageTs>)>,
+) -> Result<MessagesListPage, Error> {
+    let value = transport
+        .execute(messages_list(client, workspace, &message_ids))
+        .await?;
+    decode(value, "messages.list")
 }
 
 pub async fn set_presence(

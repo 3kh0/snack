@@ -221,6 +221,11 @@ pub fn parse_event(text: &str) -> Option<RtEvent> {
         }),
         "reaction_added" => parse_reaction_event(value, true),
         "reaction_removed" => parse_reaction_event(value, false),
+        "activity" => {
+            let entry = value.get("entry")?.clone();
+            let item: super::models::ActivityItem = serde_json::from_value(entry).ok()?;
+            Some(RtEvent::ActivityUpdated(item))
+        }
         _ => {
             let raw: RawEvent = serde_json::from_value(value).ok()?;
             Some(RtEvent::Unknown(raw))
@@ -353,6 +358,20 @@ mod tests {
             parse_event(removed),
             Some(RtEvent::ReactionRemoved { reaction, .. }) if reaction == "eyes"
         ));
+    }
+
+    #[test]
+    fn parses_activity_updated_entry() {
+        let frame = r#"{"type":"activity","subtype":"activity_updated","key":"dm-D1","entry":{"is_unread":true,"feed_ts":"1783834090.99","key":"dm-D1","item":{"type":"dm","bundle_info":{"payload":{"dm_entry":{"latest_message":{"ts":"1783834090.38","channel":"D1"}}}}}}}"#;
+        match parse_event(frame) {
+            Some(RtEvent::ActivityUpdated(item)) => {
+                assert_eq!(item.key, "dm-D1");
+                assert!(item.is_unread);
+                assert_eq!(item.channel(), Some("D1"));
+                assert_eq!(item.ts(), Some("1783834090.38"));
+            }
+            other => panic!("expected ActivityUpdated, got {other:?}"),
+        }
     }
 
     #[test]

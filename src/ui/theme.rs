@@ -620,6 +620,100 @@ pub fn rail_button(_theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
+pub fn activity_count_pill(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(Color { a: 0.92, ..TEXT_1 })),
+        text_color: Some(BG_BASE),
+        border: Border::default().rounded(999.0),
+        ..container::Style::default()
+    }
+}
+
+pub fn activity_count_badge(_theme: &Theme) -> container::Style {
+    activity_count_pill(_theme)
+}
+
+pub fn activity_channel_chip(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(Color { a: 0.06, ..TEXT_1 })),
+        text_color: Some(TEXT_2),
+        border: Border::default().rounded(4.0),
+        ..container::Style::default()
+    }
+}
+
+pub fn tooltip_bubble(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(BG_ELEV_HI)),
+        text_color: Some(TEXT_1),
+        border: Border::default().rounded(CONTROL_RADIUS - 2.0),
+        ..container::Style::default()
+    }
+}
+
+pub fn activity_unread_bar(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(accent_bright())),
+        border: Border::default().rounded(2.0),
+        ..container::Style::default()
+    }
+}
+
+pub fn activity_read_bar(_theme: &Theme) -> container::Style {
+    container::Style::default()
+}
+
+pub fn activity_row(
+    active: bool,
+    unread: bool,
+) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        let background = if active {
+            Some(Background::Color(ACTIVE))
+        } else if hovered {
+            Some(Background::Color(HOVER))
+        } else if unread {
+            Some(Background::Color(Color { a: 0.05, ..TEXT_1 }))
+        } else {
+            None
+        };
+        button::Style {
+            background,
+            text_color: TEXT_1,
+            border: Border::default().rounded(CONTROL_RADIUS),
+            ..button::Style::default()
+        }
+    }
+}
+
+pub fn rail_nav_button(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let hovered = matches!(status, button::Status::Hovered);
+        let background = if selected {
+            Some(Background::Color(Color { a: 0.20, ..ACTIVE }))
+        } else if hovered {
+            Some(Background::Color(HOVER))
+        } else {
+            None
+        };
+        button::Style {
+            background,
+            text_color: if selected || hovered {
+                TEXT_1
+            } else {
+                TEXT_4
+            },
+            border: Border::default().rounded(CONTROL_RADIUS),
+            ..button::Style::default()
+        }
+    }
+}
+
+pub fn rail_nav_icon(selected: bool) -> Color {
+    if selected { TEXT_1 } else { TEXT_4 }
+}
+
 pub fn account_menu(_theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(BG_ELEV)),

@@ -1311,3 +1311,41 @@ fn mark_success_updates_last_read_without_optimistic_write() {
     assert_eq!(cm.unread_count, 0);
     assert_eq!(cm.mention_count, 0);
 }
+
+#[test]
+fn activity_upsert_dedups_thread_by_identity() {
+    use crate::slack::models::ActivityItem;
+
+    let mk = |key: &str, latest: &str, feed_ts: &str| -> ActivityItem {
+        serde_json::from_value(json!({
+            "is_unread": true,
+            "feed_ts": feed_ts,
+            "key": key,
+            "item": {
+                "type": "thread_v2",
+                "bundle_info": {"payload": {"thread_entry": {
+                    "channel_id": "C1",
+                    "thread_ts": "100.000",
+                    "latest_ts": latest,
+                    "unread_msg_count": 1
+                }}}
+            }
+        }))
+        .unwrap()
+    };
+
+    let mut state = ActivityState::default();
+    state.upsert(mk("thread-C1-101", "101.000", "101.000"));
+    state.upsert(mk("thread-C1-102", "102.000", "102.000"));
+
+    assert_eq!(state.items.len(), 1, "same thread must collapse to one row");
+    assert_eq!(state.items[0].latest_ts(), Some("102.000"));
+
+    let mut other = mk("thread-C2-1", "5.0", "5.0");
+    other.item.bundle_info = serde_json::from_value(json!({"payload": {"thread_entry": {
+        "channel_id": "C2", "thread_ts": "9.0", "latest_ts": "9.0", "unread_msg_count": 1
+    }}}))
+    .unwrap();
+    state.upsert(other);
+    assert_eq!(state.items.len(), 2);
+}

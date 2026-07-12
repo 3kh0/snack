@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::models::{ChannelId, Message, MessageTs, UserId};
+use super::models::{ActivityItem, ChannelId, Message, MessageTs, UserId};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawEvent {
@@ -44,5 +44,6 @@ pub enum RtEvent {
         user: UserId,
         reaction: String,
     },
+    ActivityUpdated(ActivityItem),
     Unknown(RawEvent),
 }

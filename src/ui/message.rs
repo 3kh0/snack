@@ -792,6 +792,34 @@ fn reaction_content<'a>(
         .into()
 }
 
+pub fn inline_line<'a>(
+    ws: &Workspace,
+    line: &str,
+    emoji_previews: &HashMap<String, FilePreview>,
+    elapsed: Duration,
+    size: f32,
+    color: Color,
+) -> Element<'a, Message> {
+    let mut row = Row::new().spacing(0).align_y(Alignment::Center);
+    for token in state::emoji_text_tokens(line) {
+        match token {
+            state::EmojiTextToken::Text(value) if !value.is_empty() => {
+                row = row.push(
+                    text(value)
+                        .size(size)
+                        .color(color)
+                        .wrapping(text::Wrapping::None),
+                );
+            }
+            state::EmojiTextToken::Text(_) => {}
+            state::EmojiTextToken::Emoji(name) => {
+                row = row.push(emoji_inline(ws, &name, emoji_previews, elapsed, size));
+            }
+        }
+    }
+    row.into()
+}
+
 fn emoji_inline<'a>(
     ws: &Workspace,
     name: &str,
@@ -951,7 +979,7 @@ fn avatar<'a>(
     avatar_with_size(key, url, avatar_previews, fallback, 32.0, 7.0)
 }
 
-fn avatar_with_size<'a>(
+pub fn avatar_with_size<'a>(
     key: Option<&str>,
     url: Option<&str>,
     avatar_previews: &HashMap<String, FilePreview>,

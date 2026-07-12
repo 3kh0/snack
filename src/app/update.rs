@@ -453,6 +453,9 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                 if let Some(self_user) = self_user {
                     tasks.push(load_user_avatar_previews(app, &team, vec![self_user]));
                 }
+                if app.active_team.as_deref() == Some(&team) {
+                    tasks.push(load_activity(app));
+                }
                 if app.active_team.as_deref() == Some(&team) && app.active_channel.is_none() {
                     if let Some(channel) = preferred_channel(app, &team) {
                         app.active_channel = Some(channel.clone());
@@ -1010,6 +1013,7 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                 .get(&team)
                 .is_some_and(|ws| ws.rt_generation == generation)
                 && workspace_cacheable_event(&event);
+            let activity_pushed = matches!(event, RtEvent::ActivityUpdated(_));
             let notification = apply_realtime(app, &team, generation, event);
             if cacheable {
                 mark_workspace_dirty(app, &team);
@@ -1027,6 +1031,9 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                     tasks.push(load_visible_avatar_previews(app, &team, &channel));
                     tasks.push(hydrate_visible_emojis(app, &team, &channel));
                     tasks.push(load_visible_emoji_previews(app, &team, &channel));
+                }
+                if activity_pushed {
+                    tasks.push(hydrate_activity_messages(app));
                 }
             }
             Task::batch(tasks)
@@ -1080,6 +1087,107 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
         },
 
         Message::RetryAuth => app.load_session(),
+
+        Message::MainViewSelected(view) => {
+            app.main_view = view;
+            if view == crate::state::MainView::Activity
+                && !app.activity.loaded
+                && !app.activity.loading
+            {
+                return load_activity(app);
+            }
+            Task::none()
+        }
+
+        Message::ActivityLoaded(team, result) => {
+            if app.active_team.as_deref() != Some(team.as_str()) {
+                return Task::none();
+            }
+            app.activity.loading = false;
+            match result {
+                Ok(page) => {
+                    app.activity.items.clear();
+                    for item in page.items {
+                        app.activity.upsert(item);
+                    }
+                    app.activity.loaded = true;
+                    let authors: Vec<UserId> = app
+                        .activity
+                        .items
+                        .iter()
+                        .filter_map(|i| i.author().map(str::to_owned))
+                        .collect();
+                    Task::batch([
+                        hydrate_activity_messages(app),
+                        hydrate_users_by_id(app, &team, authors),
+                    ])
+                }
+                Err(e) => {
+                    app.toast(format!("activity feed failed: {e}"));
+                    Task::none()
+                }
+            }
+        }
+
+        Message::ActivityMessagesLoaded(team, result) => {
+            if app.active_team.as_deref() != Some(team.as_str()) {
+                return Task::none();
+            }
+            match result {
+                Ok(page) => {
+                    let mut messages = Vec::new();
+                    for (channel, data) in page.messages_data {
+                        for msg in data.messages {
+                            if let Some(ts) = msg.ts.clone() {
+                                app.activity
+                                    .hydrated
+                                    .insert((channel.clone(), ts), msg.clone());
+                                messages.push(msg);
+                            }
+                        }
+                    }
+                    Task::batch([
+                        hydrate_missing_users(app, &team, &messages),
+                        hydrate_emojis(app, &team, &messages),
+                        load_emoji_previews(app, &team, &messages),
+                        load_avatar_previews(app, &team, messages),
+                    ])
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "activity messages hydration failed");
+                    Task::none()
+                }
+            }
+        }
+
+        Message::ActivitySelected(key) => {
+            app.activity.selected = Some(key.clone());
+            let target = app.activity.items.iter().find(|i| i.key == key).and_then(|a| {
+                let channel = a.channel()?.to_owned();
+                Some((channel, a.thread_ts().map(str::to_owned)))
+            });
+            let Some((channel, thread_ts)) = target else {
+                return Task::none();
+            };
+            match thread_ts {
+                Some(root_ts) => {
+                    let mut task = update(app, Message::ChannelSelected(channel.clone()));
+                    task = task.chain(update(
+                        app,
+                        Message::ThreadOpened {
+                            channel,
+                            ts: root_ts,
+                        },
+                    ));
+                    task
+                }
+                None => {
+                    app.active_thread = None;
+                    app.thread_open = false;
+                    update(app, Message::ChannelSelected(channel))
+                }
+            }
+        }
 
         Message::AccountMenuToggled => {
             if app.account_menu_open {
@@ -1228,6 +1336,102 @@ fn apply_settings(app: &mut App) {
     if let Err(e) = config::save_settings(&app.settings) {
         app.toast(format!("could not save settings: {e}"));
     }
+}
+
+fn load_activity(app: &mut App) -> Task<Message> {
+    let Some(team) = app.active_team.clone() else {
+        return Task::none();
+    };
+    let Some((transport, session)) = app.live() else {
+        return Task::none();
+    };
+    let Some(ws) = session.workspaces.get(&team) else {
+        return Task::none();
+    };
+    let transport = transport.clone();
+    let client = app.client.clone();
+    let ws = ws.clone();
+    app.activity.loading = true;
+    Task::perform(
+        async move { api::fetch_activity_feed(&transport, &client, &ws, 25).await },
+        move |result| Message::ActivityLoaded(team.clone(), result),
+    )
+}
+
+fn hydrate_users_by_id(app: &App, team: &str, ids: Vec<UserId>) -> Task<Message> {
+    let Some((transport, session)) = app.live() else {
+        return Task::none();
+    };
+    let Some(ws_session) = session.workspaces.get(team) else {
+        return Task::none();
+    };
+    let Some(ws) = app.workspaces.get(team) else {
+        return Task::none();
+    };
+    let mut seen = HashSet::new();
+    let users: Vec<_> = ids
+        .into_iter()
+        .filter(|user| !user.trim().is_empty())
+        .filter(|user| needs_user_hydration(ws, &app.avatar_profile_hydrated, user))
+        .filter(|user| seen.insert(user.clone()))
+        .collect();
+    if users.is_empty() {
+        return Task::none();
+    }
+    let transport = transport.clone();
+    let client = app.client.clone();
+    let ws_session = ws_session.clone();
+    let team = team.to_owned();
+    Task::perform(
+        async move { api::fetch_users_info(&transport, &client, &ws_session, users).await },
+        move |result| Message::UsersLoaded {
+            team: team.clone(),
+            result,
+        },
+    )
+}
+
+fn hydrate_activity_messages(app: &App) -> Task<Message> {
+    let Some(team) = app.active_team.clone() else {
+        return Task::none();
+    };
+    let mut groups: HashMap<ChannelId, Vec<MessageTs>> = HashMap::new();
+    for item in &app.activity.items {
+        let Some(channel) = item.channel() else {
+            continue;
+        };
+        for ts in item.request_ts() {
+            if app
+                .activity
+                .hydrated
+                .contains_key(&(channel.to_owned(), ts.clone()))
+            {
+                continue;
+            }
+            let bucket = groups.entry(channel.to_owned()).or_default();
+            if !bucket.contains(&ts) {
+                bucket.push(ts);
+            }
+        }
+    }
+    if groups.is_empty() {
+        return Task::none();
+    }
+    let message_ids: Vec<(ChannelId, Vec<MessageTs>)> = groups.into_iter().collect();
+
+    let Some((transport, session)) = app.live() else {
+        return Task::none();
+    };
+    let Some(ws) = session.workspaces.get(&team) else {
+        return Task::none();
+    };
+    let transport = transport.clone();
+    let client = app.client.clone();
+    let ws = ws.clone();
+    Task::perform(
+        async move { api::fetch_messages_list(&transport, &client, &ws, message_ids).await },
+        move |result| Message::ActivityMessagesLoaded(team.clone(), result),
+    )
 }
 
 fn select_workspace(app: &mut App, team: TeamId) -> Task<Message> {
@@ -2307,6 +2511,7 @@ fn open_search_result(
     thread_ts: Option<MessageTs>,
 ) -> Task<Message> {
     app.search = None;
+    app.main_view = crate::state::MainView::Home;
     let Some(team) = app.active_team.clone() else {
         return Task::none();
     };
@@ -2477,6 +2682,7 @@ fn palette_activate(app: &mut App, index: usize) -> Task<Message> {
     let Some(team) = app.active_team.clone() else {
         return Task::none();
     };
+    app.main_view = crate::state::MainView::Home;
     match entry.target {
         PaletteTarget::Channel(id) => {
             if let Some(remote) = app
@@ -3992,6 +4198,13 @@ fn apply_realtime(
                 &reaction,
                 false,
             );
+            None
+        }
+        RtEvent::ActivityUpdated(item) => {
+            if app.active_team.as_deref() == Some(team) {
+                app.activity.upsert(item);
+                app.activity.loaded = true;
+            }
             None
         }
         RtEvent::Unknown(raw) => {

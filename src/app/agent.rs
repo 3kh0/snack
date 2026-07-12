@@ -470,6 +470,59 @@ pub fn handle(app: &mut App, id: u64, command: AgentCommand) -> iced::Task<Messa
             complete(id, AgentResponse::ok(id, json!({ "toast": text })));
             iced::Task::none()
         }
+        AgentCommand::MainView { view } => {
+            let target = match view.trim().to_ascii_lowercase().as_str() {
+                "activity" | "notifications" | "bell" => crate::state::MainView::Activity,
+                "home" | "channels" => crate::state::MainView::Home,
+                other => {
+                    complete(
+                        id,
+                        AgentResponse::err(id, format!("unknown main view: {other}")),
+                    );
+                    return iced::Task::none();
+                }
+            };
+            let task = update(app, Message::MainViewSelected(target));
+            complete(
+                id,
+                AgentResponse::ok(
+                    id,
+                    json!({
+                        "main_view": main_view_label(app.main_view),
+                        "activity_loading": app.activity.loading,
+                        "activity_item_count": app.activity.items.len(),
+                    }),
+                ),
+            );
+            task
+        }
+        AgentCommand::ActivitySelect { index } => {
+            let Some(key) = app.activity.items.get(index).map(|i| i.key.clone()) else {
+                complete(id, AgentResponse::err(id, format!("no activity item at {index}")));
+                return iced::Task::none();
+            };
+            let task = update(app, Message::ActivitySelected(key.clone()));
+            complete(
+                id,
+                AgentResponse::ok(
+                    id,
+                    json!({
+                        "key": key,
+                        "active_channel": app.active_channel,
+                        "active_thread": app.active_thread.as_ref().map(|(c, ts)| json!({"channel": c, "ts": ts})),
+                        "thread_open": app.thread_open,
+                    }),
+                ),
+            );
+            task
+        }
+    }
+}
+
+fn main_view_label(view: crate::state::MainView) -> &'static str {
+    match view {
+        crate::state::MainView::Home => "home",
+        crate::state::MainView::Activity => "activity",
     }
 }
 
@@ -628,9 +681,30 @@ pub fn dump_state(app: &App) -> Value {
         })
     });
 
+    let activity = json!({
+        "view": main_view_label(app.main_view),
+        "loading": app.activity.loading,
+        "loaded": app.activity.loaded,
+        "selected": app.activity.selected,
+        "item_count": app.activity.items.len(),
+        "unread": app.activity.items.iter().filter(|i| i.is_unread).count(),
+        "items": app.activity.items.iter().take(20).map(|i| json!({
+            "key": i.key,
+            "kind": i.item.kind,
+            "channel": i.channel(),
+            "ts": i.ts(),
+            "thread_ts": i.thread_ts(),
+            "identity": i.identity(),
+            "author": i.author(),
+            "is_unread": i.is_unread,
+        })).collect::<Vec<_>>(),
+    });
+
     json!({
         "screen": screen,
         "signed_in": app.session.is_some(),
+        "main_view": main_view_label(app.main_view),
+        "activity": activity,
         "active_team": app.active_team,
         "active_channel": app.active_channel,
         "active_channel_name": active_channel_name,
@@ -705,6 +779,8 @@ fn help_data() -> Value {
             {"cmd": "open-settings", "desc": "open settings"},
             {"cmd": "close-settings", "desc": "close settings"},
             {"cmd": "screenshot", "args": {"path": "optional"}, "desc": "capture window PNG"},
+            {"cmd": "main-view", "args": {"view": "home|activity"}, "desc": "switch far-rail surface"},
+            {"cmd": "activity-select", "args": {"index": "usize"}, "desc": "open an activity item in the right panel"},
             {"cmd": "toast", "args": {"text": "string"}, "desc": "show a toast"},
             {"cmd": "allow-destructive", "args": {"enabled": "bool"}, "desc": "allow send/etc"},
             {"cmd": "send", "desc": "send composer (requires allow-destructive)"},
@@ -770,6 +846,12 @@ pub enum AgentCommand {
     Send,
     Toast {
         text: String,
+    },
+    MainView {
+        view: String,
+    },
+    ActivitySelect {
+        index: usize,
     },
 }
 
