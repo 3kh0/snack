@@ -82,6 +82,29 @@ impl SidebarDmsPage {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ClientDmsPage {
+    #[serde(default)]
+    pub dms: Vec<DmEntry>,
+    #[serde(default)]
+    pub response_metadata: Option<ResponseMetadata>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DmEntry {
+    pub id: ChannelId,
+    #[serde(default)]
+    pub latest: Option<MessageTs>,
+    #[serde(default)]
+    pub message: Option<Message>,
+    #[serde(default)]
+    pub channel: Option<Channel>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
 impl CountsPage {
     pub fn activity_unread_count(&self) -> Option<u32> {
         self.activity_v2

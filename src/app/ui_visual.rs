@@ -14,7 +14,7 @@ use iced::{Settings, Size};
 use iced_test::{Error, Simulator};
 
 use super::tests::{
-    activity_app, login_app, multi_paragraph_emoji_app, search_app, settings_app, test_app,
+    activity_app, dms_app, login_app, multi_paragraph_emoji_app, search_app, settings_app, test_app,
 };
 use super::update::update;
 use super::view::view;
@@ -171,6 +171,108 @@ fn ui_visual_activity_unread_filter() -> Result<(), Error> {
     );
     drop(ui);
     capture(&app, "activity-unread")?;
+    Ok(())
+}
+
+#[test]
+fn ui_visual_dms_list_renders() -> Result<(), Error> {
+    let app = dms_app();
+    let mut ui = sim(&app);
+    ui.find("Direct messages")?;
+    ui.find("Alice")?;
+    ui.find("unread dm from alice")?;
+    ui.find("Bob")?;
+    ui.find("You: read reply to bob")?;
+    drop(ui);
+    capture(&app, "dms")?;
+    Ok(())
+}
+
+#[test]
+fn ui_visual_dms_unread_and_name_filters() -> Result<(), Error> {
+    let mut app = dms_app();
+    apply_messages(&mut app, [Message::DmsUnreadOnlyToggled(true)]);
+    assert!(app.dms.unread_only);
+    let mut ui = sim(&app);
+    ui.find("Alice")?;
+    assert!(
+        ui.find("You: read reply to bob").is_err(),
+        "read DM should be hidden by the unread filter"
+    );
+    drop(ui);
+
+    apply_messages(
+        &mut app,
+        [
+            Message::DmsUnreadOnlyToggled(false),
+            Message::DmsFilterChanged("bob".into()),
+        ],
+    );
+    let mut ui = sim(&app);
+    ui.find("Bob")?;
+    assert!(
+        ui.find("unread dm from alice").is_err(),
+        "filter should hide non-matching DMs"
+    );
+    Ok(())
+}
+
+#[test]
+fn ui_visual_dm_unread_clears_after_realtime_mark() -> Result<(), Error> {
+    let mut app = dms_app();
+    apply_messages(
+        &mut app,
+        [
+            Message::Realtime(
+                "T_TEST".into(),
+                1,
+                crate::slack::events::RtEvent::ChannelMarked {
+                    channel: "D_ALICE".into(),
+                    ts: "1783372300.000100".into(),
+                    unread_count: Some(0),
+                    mention_count: Some(0),
+                },
+            ),
+            Message::DmsUnreadOnlyToggled(true),
+        ],
+    );
+
+    let ws = app.workspaces.get("T_TEST").unwrap();
+    let channel = ws.channels.get("D_ALICE").unwrap();
+    assert_eq!(channel.last_read.as_deref(), Some("1783372300.000100"));
+    assert_eq!(ws.unread_total(channel), 0);
+
+    let mut ui = sim(&app);
+    assert!(
+        ui.find("unread dm from alice").is_err(),
+        "DM read on another client should leave the unread filter"
+    );
+    Ok(())
+}
+
+#[test]
+fn ui_visual_dm_history_loading_and_failure_states() -> Result<(), Error> {
+    let mut app = dms_app();
+    app.active_channel = Some("D_ALICE".into());
+
+    let mut ui = sim(&app);
+    ui.find("Loading messages…")?;
+    drop(ui);
+
+    apply_messages(
+        &mut app,
+        [Message::HistoryLoaded(
+            "T_TEST".into(),
+            "D_ALICE".into(),
+            crate::app::HistoryLoadKind::Latest,
+            Err(crate::slack::Error::Transport("offline".into())),
+        )],
+    );
+    let mut ui = sim(&app);
+    ui.find("Couldn't load messages.")?;
+    ui.find("Retry")?;
+    drop(ui);
+    capture(&app, "dm-history-failed")?;
     Ok(())
 }
 

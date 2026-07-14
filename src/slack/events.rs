@@ -45,5 +45,11 @@ pub enum RtEvent {
         reaction: String,
     },
     ActivityUpdated(ActivityItem),
+    ChannelMarked {
+        channel: ChannelId,
+        ts: MessageTs,
+        unread_count: Option<u32>,
+        mention_count: Option<u32>,
+    },
     Unknown(RawEvent),
 }

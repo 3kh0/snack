@@ -221,6 +221,20 @@ pub fn parse_event(text: &str) -> Option<RtEvent> {
         }),
         "reaction_added" => parse_reaction_event(value, true),
         "reaction_removed" => parse_reaction_event(value, false),
+        "channel_marked" | "im_marked" | "group_marked" | "mpim_marked" => {
+            Some(RtEvent::ChannelMarked {
+                channel: value.get("channel").and_then(Value::as_str)?.to_owned(),
+                ts: value.get("ts").and_then(Value::as_str)?.to_owned(),
+                unread_count: value
+                    .get("unread_count_display")
+                    .and_then(Value::as_u64)
+                    .map(|v| v as u32),
+                mention_count: value
+                    .get("mention_count_display")
+                    .and_then(Value::as_u64)
+                    .map(|v| v as u32),
+            })
+        }
         "activity" => {
             let entry = value.get("entry")?.clone();
             let item: super::models::ActivityItem = serde_json::from_value(entry).ok()?;
@@ -371,6 +385,32 @@ mod tests {
                 assert_eq!(item.ts(), Some("1783834090.38"));
             }
             other => panic!("expected ActivityUpdated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_mark_events_for_all_conversation_kinds() {
+        let frame = r#"{"type":"im_marked","channel":"D1","ts":"1783834090.000100","dm_count":3,"unread_count_display":0,"mention_count_display":0}"#;
+        match parse_event(frame) {
+            Some(RtEvent::ChannelMarked {
+                channel,
+                ts,
+                unread_count,
+                mention_count,
+            }) => {
+                assert_eq!(channel, "D1");
+                assert_eq!(ts, "1783834090.000100");
+                assert_eq!(unread_count, Some(0));
+                assert_eq!(mention_count, Some(0));
+            }
+            other => panic!("expected ChannelMarked, got {other:?}"),
+        }
+        for kind in ["channel_marked", "group_marked", "mpim_marked"] {
+            let frame = format!(r#"{{"type":"{kind}","channel":"C1","ts":"1.000001"}}"#);
+            assert!(
+                matches!(parse_event(&frame), Some(RtEvent::ChannelMarked { .. })),
+                "{kind} should parse as ChannelMarked"
+            );
         }
     }
 

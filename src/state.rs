@@ -40,6 +40,7 @@ pub enum Screen {
 pub enum MainView {
     #[default]
     Home,
+    Dms,
     Activity,
 }
 
@@ -85,6 +86,7 @@ pub struct ChannelMessages {
     pub loaded: bool,
     pub has_more_older: bool,
     pub history_loading_older: bool,
+    pub history_failed: bool,
     pub pending: Vec<MessageTs>,
     pub last_read: Option<MessageTs>,
     pub unread_count: u32,

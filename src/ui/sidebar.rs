@@ -420,7 +420,7 @@ fn mention_count(ws: &Workspace, c: &Channel) -> u32 {
 }
 
 /// Number of people in a group DM, parsed from the `mpdm-a--b--c-1` name.
-fn group_member_count(c: &Channel) -> Option<usize> {
+pub(super) fn group_member_count(c: &Channel) -> Option<usize> {
     let name = c.name.as_deref()?;
     let rest = name.strip_prefix("mpdm-")?;
     let rest = rest

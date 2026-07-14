@@ -1,7 +1,7 @@
 use std::sync::{LazyLock, RwLock};
 
 use iced::theme::palette::Seed;
-use iced::widget::{button, container, scrollable, slider, text_input};
+use iced::widget::{button, container, scrollable, slider, text_input, toggler as toggler_widget};
 use iced::{Background, Border, Color, Element, Length, Shadow, Theme, Vector};
 
 use crate::config::{AccentColor, Settings};
@@ -408,6 +408,25 @@ pub fn reaction_button(active: bool) -> impl Fn(&Theme, button::Status) -> butto
             },
             ..button::Style::default()
         }
+    }
+}
+
+pub fn toggler(_theme: &Theme, status: toggler_widget::Status) -> toggler_widget::Style {
+    let toggled = matches!(
+        status,
+        toggler_widget::Status::Active { is_toggled: true }
+            | toggler_widget::Status::Hovered { is_toggled: true }
+    );
+    toggler_widget::Style {
+        background: Background::Color(if toggled { accent() } else { BG_ELEV_HI }),
+        background_border_width: 0.0,
+        background_border_color: Color::TRANSPARENT,
+        foreground: Background::Color(TEXT_1),
+        foreground_border_width: 0.0,
+        foreground_border_color: Color::TRANSPARENT,
+        text_color: Some(TEXT_2),
+        border_radius: None,
+        padding_ratio: 0.15,
     }
 }
 

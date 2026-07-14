@@ -24,9 +24,9 @@ use crate::ui;
 
 use super::palette::{self, PaletteEntry, PaletteState, PaletteTarget};
 use super::{
-    ActivityState, App, ComposerAttachment, ComposerTarget, DesktopNotification, FilePreview,
-    HistoryLoadKind, Message, PendingFileMessage, PendingScrollTarget, SearchHit, SearchState,
-    TextSelection, TextSelectionPoint, TextSelectionSurface, ThreadKey,
+    ActivityState, App, ComposerAttachment, ComposerTarget, DesktopNotification, DmsState,
+    FilePreview, HistoryLoadKind, Message, PendingFileMessage, PendingScrollTarget, SearchHit,
+    SearchState, TextSelection, TextSelectionPoint, TextSelectionSurface, ThreadKey,
 };
 use iced::widget::text_editor::Content;
 
@@ -80,6 +80,13 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                     .map(|ws| !ws.messages.get(&id).map(|cm| cm.loaded).unwrap_or(false))
                     .unwrap_or(false);
                 if app.transport.is_some() && needs_load {
+                    if let Some(cm) = app
+                        .workspaces
+                        .get_mut(&team)
+                        .and_then(|ws| ws.messages.get_mut(&id))
+                    {
+                        cm.history_failed = false;
+                    }
                     return app.load_history(&team, &id);
                 }
                 return Task::batch([
@@ -541,6 +548,7 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                             }
                         }
                         cm.loaded = true;
+                        cm.history_failed = false;
                         if matches!(
                             kind,
                             HistoryLoadKind::Latest
@@ -570,21 +578,20 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                     return Task::batch(tasks);
                 }
                 Err(e) => {
-                    if kind == HistoryLoadKind::Older {
-                        if let Some(cm) = app
-                            .workspaces
-                            .get_mut(&team)
-                            .and_then(|ws| ws.messages.get_mut(&channel))
-                        {
+                    if let Some(ws) = app.workspaces.get_mut(&team) {
+                        let cm = ws.messages.entry(channel.clone()).or_default();
+                        cm.history_failed = true;
+                        if kind == HistoryLoadKind::Older {
                             cm.history_loading_older = false;
                         }
-                        if app
+                    }
+                    if kind == HistoryLoadKind::Older
+                        && app
                             .pending_scroll_to
                             .as_ref()
                             .is_some_and(|(pending_channel, _)| pending_channel == &channel)
-                        {
-                            app.pending_scroll_to = None;
-                        }
+                    {
+                        app.pending_scroll_to = None;
                     }
                     app.toast(format!("history failed for {channel}: {e}"));
                 }
@@ -599,14 +606,8 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                 .remove(&(team.clone(), channel.clone(), ts.clone()));
             match result {
                 Ok(()) => {
-                    if let Some(cm) = app
-                        .workspaces
-                        .get_mut(&team)
-                        .and_then(|ws| ws.messages.get_mut(&channel))
-                    {
-                        cm.last_read = Some(ts);
-                        cm.unread_count = 0;
-                        cm.mention_count = 0;
+                    if let Some(ws) = app.workspaces.get_mut(&team) {
+                        apply_channel_marked(ws, &channel, &ts, 0, 0);
                     }
                     mark_workspace_dirty(app, &team);
                 }
@@ -1015,6 +1016,12 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                 .is_some_and(|ws| ws.rt_generation == generation)
                 && workspace_cacheable_event(&event);
             let activity_pushed = matches!(event, RtEvent::ActivityUpdated(_));
+            let dm_message = match &event {
+                RtEvent::Message(msg) if msg.ts.is_some() => {
+                    msg.channel.clone().map(|channel| (channel, msg.clone()))
+                }
+                _ => None,
+            };
             let notification = apply_realtime(app, &team, generation, event);
             if cacheable {
                 mark_workspace_dirty(app, &team);
@@ -1036,6 +1043,24 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                 if activity_pushed {
                     tasks.push(hydrate_activity_messages(app));
                     tasks.push(refresh_counts(app));
+                }
+                if let Some((channel, msg)) = dm_message {
+                    let is_dm = app
+                        .workspaces
+                        .get(&team)
+                        .and_then(|ws| ws.channels.get(&channel))
+                        .map(|c| c.is_im || c.is_mpim)
+                        .unwrap_or(false)
+                        || app.dms.entries.iter().any(|e| e.id == channel);
+                    if app.dms.loaded && is_dm {
+                        tasks.push(hydrate_missing_users(
+                            app,
+                            &team,
+                            std::slice::from_ref(&msg),
+                        ));
+                        tasks.push(load_avatar_previews(app, &team, vec![msg.clone()]));
+                        app.dms.touch(&channel, msg);
+                    }
                 }
             }
             Task::batch(tasks)
@@ -1096,6 +1121,13 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                 let mut tasks = vec![refresh_counts(app)];
                 if !app.activity.loaded && !app.activity.loading {
                     tasks.push(load_activity(app, None));
+                }
+                return Task::batch(tasks);
+            }
+            if view == crate::state::MainView::Dms {
+                let mut tasks = vec![refresh_counts(app)];
+                if !app.dms.loaded && !app.dms.loading {
+                    tasks.push(load_dms(app, None));
                 }
                 return Task::batch(tasks);
             }
@@ -1221,6 +1253,85 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                     app.active_thread = None;
                     app.thread_open = false;
                     update(app, Message::ChannelSelected(channel))
+                }
+            }
+        }
+
+        Message::DmsScrolled { remaining } => dms_scrolled(app, remaining),
+
+        Message::DmsUnreadOnlyToggled(enabled) => {
+            app.dms.unread_only = enabled;
+            refresh_counts(app)
+        }
+
+        Message::DmsFilterChanged(filter) => {
+            app.dms.filter = filter;
+            Task::none()
+        }
+
+        Message::DmsLoaded {
+            team,
+            cursor,
+            seq,
+            result,
+        } => {
+            if app.active_team.as_deref() != Some(team.as_str()) || app.dms.load_seq != seq {
+                return Task::none();
+            }
+            app.dms.loading = false;
+            match result {
+                Ok(page) => {
+                    let next_cursor = page
+                        .response_metadata
+                        .and_then(|metadata| metadata.next_cursor)
+                        .filter(|cursor| !cursor.is_empty());
+                    if cursor.is_none() {
+                        app.dms.entries.clear();
+                    }
+                    for entry in page.dms {
+                        app.dms.upsert(entry);
+                    }
+                    app.dms.next_cursor = next_cursor;
+                    app.dms.loaded = true;
+                    let channels: Vec<Channel> = app
+                        .dms
+                        .entries
+                        .iter()
+                        .filter_map(|entry| entry.channel.clone())
+                        .collect();
+                    if let Some(ws) = app.workspaces.get_mut(&team) {
+                        ws.apply_channels_info(channels);
+                    }
+                    mark_workspace_dirty(app, &team);
+                    let mut seen = HashSet::new();
+                    let counterparts: Vec<UserId> = app
+                        .dms
+                        .entries
+                        .iter()
+                        .filter_map(|entry| entry.channel.as_ref())
+                        .filter_map(crate::state::dm_user_id)
+                        .filter(|user| !user.trim().is_empty())
+                        .filter(|user| seen.insert((*user).to_owned()))
+                        .map(str::to_owned)
+                        .collect();
+                    let messages: Vec<SlackMessage> = app
+                        .dms
+                        .entries
+                        .iter()
+                        .filter_map(|entry| entry.message.clone())
+                        .collect();
+                    Task::batch([
+                        hydrate_users_by_id(app, &team, counterparts.clone()),
+                        load_user_avatar_previews(app, &team, counterparts),
+                        hydrate_missing_users(app, &team, &messages),
+                        hydrate_emojis(app, &team, &messages),
+                        load_emoji_previews(app, &team, &messages),
+                        load_avatar_previews(app, &team, messages),
+                    ])
+                }
+                Err(e) => {
+                    app.toast(format!("dms failed: {e}"));
+                    Task::none()
                 }
             }
         }
@@ -1426,6 +1537,47 @@ fn load_activity(app: &mut App, cursor: Option<String>) -> Task<Message> {
     )
 }
 
+fn dms_scrolled(app: &mut App, remaining: f32) -> Task<Message> {
+    if app.main_view != crate::state::MainView::Dms
+        || remaining > LOAD_OLDER_ACTIVITY_BOTTOM_PX
+        || !app.dms.loaded
+        || app.dms.loading
+        || app.dms.next_cursor.is_none()
+    {
+        return Task::none();
+    }
+    let cursor = app.dms.next_cursor.clone();
+    load_dms(app, cursor)
+}
+
+fn load_dms(app: &mut App, cursor: Option<String>) -> Task<Message> {
+    let Some(team) = app.active_team.clone() else {
+        return Task::none();
+    };
+    let Some((transport, session)) = app.live() else {
+        return Task::none();
+    };
+    let Some(ws) = session.workspaces.get(&team) else {
+        return Task::none();
+    };
+    let transport = transport.clone();
+    let client = app.client.clone();
+    let ws = ws.clone();
+    app.dms.load_seq = app.dms.load_seq.wrapping_add(1);
+    let seq = app.dms.load_seq;
+    app.dms.loading = true;
+    let requested_cursor = cursor.clone();
+    Task::perform(
+        async move { api::fetch_client_dms(&transport, &client, &ws, 100, cursor).await },
+        move |result| Message::DmsLoaded {
+            team: team.clone(),
+            cursor: requested_cursor.clone(),
+            seq,
+            result,
+        },
+    )
+}
+
 fn refresh_counts(app: &App) -> Task<Message> {
     let Some(team) = app.active_team.clone() else {
         return Task::none();
@@ -1542,6 +1694,7 @@ fn select_workspace(app: &mut App, team: TeamId) -> Task<Message> {
 
     app.active_team = Some(team.clone());
     app.activity = ActivityState::default();
+    app.dms = DmsState::default();
     app.show_account_menu = false;
     app.account_menu_open = false;
     app.active_channel = preferred_channel(app, &team);
@@ -1559,10 +1712,10 @@ fn select_workspace(app: &mut App, team: TeamId) -> Task<Message> {
     app.composer = Content::new();
     app.thread_composer = Content::new();
 
-    let activity_task = if app.main_view == crate::state::MainView::Activity {
-        load_activity(app, None)
-    } else {
-        Task::none()
+    let activity_task = match app.main_view {
+        crate::state::MainView::Activity => load_activity(app, None),
+        crate::state::MainView::Dms => load_dms(app, None),
+        crate::state::MainView::Home => Task::none(),
     };
     let Some(channel) = app.active_channel.clone() else {
         return activity_task;
@@ -1604,6 +1757,7 @@ fn sign_out(app: &mut App) -> Task<Message> {
     app.active_thread = None;
     app.thread_open = false;
     app.activity = ActivityState::default();
+    app.dms = DmsState::default();
     app.workspaces.clear();
     app.threads.clear();
     app.composer = Content::new();
@@ -3759,7 +3913,14 @@ fn hydrate_sidebar_channels(app: &App, team: &str) -> Task<Message> {
     )
 }
 
-fn channel_needs_hydration(channel: &Channel) -> bool {
+pub(super) fn channel_needs_hydration(channel: &Channel) -> bool {
+    if channel.is_im {
+        return channel
+            .user
+            .as_deref()
+            .map(str::trim)
+            .is_none_or(str::is_empty);
+    }
     channel
         .name
         .as_deref()
@@ -4302,10 +4463,48 @@ fn apply_realtime(
             }
             None
         }
+        RtEvent::ChannelMarked {
+            channel,
+            ts,
+            unread_count,
+            mention_count,
+        } => {
+            apply_channel_marked(
+                ws,
+                &channel,
+                &ts,
+                unread_count.unwrap_or(0),
+                mention_count.unwrap_or(0),
+            );
+            None
+        }
         RtEvent::Unknown(raw) => {
             tracing::debug!(kind = %raw.kind, "unknown realtime event, ignoring");
             None
         }
+    }
+}
+
+fn apply_channel_marked(
+    ws: &mut Workspace,
+    channel: &str,
+    ts: &str,
+    unread_count: u32,
+    mention_count: u32,
+) {
+    let cm = ws.messages.entry(channel.to_owned()).or_default();
+    if crate::state::cmp_ts(Some(ts), cm.last_read.as_deref()).is_lt() {
+        return;
+    }
+    cm.last_read = Some(ts.to_owned());
+    cm.unread_count = unread_count;
+    cm.mention_count = mention_count;
+    if let Some(c) = ws.channels.get_mut(channel) {
+        c.last_read = Some(ts.to_owned());
+        c.unread_count = Some(unread_count);
+        c.unread_count_display = Some(unread_count);
+        c.mention_count = Some(mention_count);
+        c.has_unreads = unread_count > 0 || mention_count > 0;
     }
 }
 
@@ -4357,6 +4556,7 @@ fn workspace_cacheable_event(event: &RtEvent) -> bool {
             | RtEvent::MessageDeleted { .. }
             | RtEvent::ReactionAdded { .. }
             | RtEvent::ReactionRemoved { .. }
+            | RtEvent::ChannelMarked { .. }
     )
 }
 

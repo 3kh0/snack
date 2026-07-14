@@ -7,9 +7,9 @@ use crate::config::WorkspaceSession;
 use super::Error;
 use super::client::{PreparedRequest, SlackClient};
 use super::models::{
-    ActivityFeedPage, BootData, Channel, ChannelId, CountsPage, EdgeResults, Emoji, HistoryPage,
-    MessageTs, MessagesListPage, OpenedConversation, SearchInlinePage, SearchMessagesPage,
-    SentMessage, SidebarDmsPage, User, UserId,
+    ActivityFeedPage, BootData, Channel, ChannelId, ClientDmsPage, CountsPage, EdgeResults, Emoji,
+    HistoryPage, MessageTs, MessagesListPage, OpenedConversation, SearchInlinePage,
+    SearchMessagesPage, SentMessage, SidebarDmsPage, User, UserId,
 };
 use super::transport::Transport;
 pub fn user_boot(client: &SlackClient, workspace: &WorkspaceSession) -> PreparedRequest {
@@ -149,6 +149,23 @@ pub fn activity_feed(
 
 pub fn sidebar_dms(client: &SlackClient, workspace: &WorkspaceSession) -> PreparedRequest {
     client.rest_form(workspace, "sidebar.dms", Vec::new())
+}
+
+pub fn client_dms(
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    count: u32,
+    cursor: Option<String>,
+) -> PreparedRequest {
+    let mut fields = vec![
+        ("count", count.to_string()),
+        ("include_closed", "true".to_owned()),
+        ("include_channel", "true".to_owned()),
+        ("exclude_bots", "true".to_owned()),
+        ("priority_mode", "priority".to_owned()),
+    ];
+    push_opt(&mut fields, "cursor", cursor);
+    client.rest_form(workspace, "client.dms", fields)
 }
 
 pub fn users_set_presence(
@@ -418,6 +435,19 @@ pub async fn fetch_sidebar_dms(
 ) -> Result<SidebarDmsPage, Error> {
     let value = transport.execute(sidebar_dms(client, workspace)).await?;
     decode(value, "sidebar.dms")
+}
+
+pub async fn fetch_client_dms(
+    transport: &Transport,
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    count: u32,
+    cursor: Option<String>,
+) -> Result<ClientDmsPage, Error> {
+    let value = transport
+        .execute(client_dms(client, workspace, count, cursor))
+        .await?;
+    decode(value, "client.dms")
 }
 
 pub async fn fetch_activity_feed(
@@ -995,6 +1025,25 @@ mod tests {
         assert!(fields.contains(&("cursor".into(), "older-activity-cursor".into())));
         assert!(fields.contains(&("mode".into(), "chrono_v1".into())));
         assert!(fields.contains(&("unread_only".into(), "true".into())));
+    }
+
+    #[test]
+    fn client_dms_request_matches_desktop_args() {
+        let request = client_dms(
+            &SlackClient::default(),
+            &workspace(),
+            100,
+            Some("older-dms-cursor".into()),
+        );
+        let fields = form_fields(&request);
+
+        assert!(request.url.contains("/api/client.dms?"));
+        assert!(fields.contains(&("count".into(), "100".into())));
+        assert!(fields.contains(&("include_closed".into(), "true".into())));
+        assert!(fields.contains(&("include_channel".into(), "true".into())));
+        assert!(fields.contains(&("exclude_bots".into(), "true".into())));
+        assert!(fields.contains(&("priority_mode".into(), "priority".into())));
+        assert!(fields.contains(&("cursor".into(), "older-dms-cursor".into())));
     }
 
     #[test]
