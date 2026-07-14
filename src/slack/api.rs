@@ -129,6 +129,7 @@ pub fn activity_feed(
     workspace: &WorkspaceSession,
     limit: u32,
     cursor: Option<String>,
+    unread_only: bool,
 ) -> PreparedRequest {
     let mut fields = vec![
         ("limit", limit.to_string()),
@@ -138,7 +139,7 @@ pub fn activity_feed(
     push_opt(&mut fields, "cursor", cursor);
     fields.extend([
         ("archive_only", "false".to_owned()),
-        ("unread_only", "false".to_owned()),
+        ("unread_only", unread_only.to_string()),
         ("priority_only", "false".to_owned()),
         ("only_salesforce_channels", "false".to_owned()),
         ("exclude_automations", "false".to_owned()),
@@ -425,9 +426,10 @@ pub async fn fetch_activity_feed(
     workspace: &WorkspaceSession,
     limit: u32,
     cursor: Option<String>,
+    unread_only: bool,
 ) -> Result<ActivityFeedPage, Error> {
     let value = transport
-        .execute(activity_feed(client, workspace, limit, cursor))
+        .execute(activity_feed(client, workspace, limit, cursor, unread_only))
         .await?;
     decode(value, "activity.feed")
 }
@@ -984,6 +986,7 @@ mod tests {
             &workspace(),
             20,
             Some("older-activity-cursor".into()),
+            true,
         );
         let fields = form_fields(&request);
 
@@ -991,6 +994,7 @@ mod tests {
         assert!(fields.contains(&("limit".into(), "20".into())));
         assert!(fields.contains(&("cursor".into(), "older-activity-cursor".into())));
         assert!(fields.contains(&("mode".into(), "chrono_v1".into())));
+        assert!(fields.contains(&("unread_only".into(), "true".into())));
     }
 
     #[test]

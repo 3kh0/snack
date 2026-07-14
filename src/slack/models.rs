@@ -53,6 +53,8 @@ pub struct CountsPage {
     pub groups: Vec<Channel>,
     #[serde(default)]
     pub mpims: Vec<Channel>,
+    #[serde(default)]
+    pub activity_v2: Option<BTreeMap<String, u32>>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -81,6 +83,12 @@ impl SidebarDmsPage {
 }
 
 impl CountsPage {
+    pub fn activity_unread_count(&self) -> Option<u32> {
+        self.activity_v2
+            .as_ref()
+            .map(|counts| counts.values().copied().fold(0, u32::saturating_add))
+    }
+
     pub fn all_channels(&self) -> Vec<Channel> {
         let mut seen = std::collections::HashSet::new();
         let mut out = Vec::new();
@@ -945,6 +953,12 @@ mod fixture_tests {
         let page: CountsPage = serde_json::from_str(
             r#"{
                 "ok": true,
+                "activity_v2": {
+                    "at_user": 6,
+                    "dm": 2,
+                    "thread_v2": 14,
+                    "message_reaction": 0
+                },
                 "ims": [
                     {
                         "id": "D083XVDGBJ8",
@@ -961,6 +975,7 @@ mod fixture_tests {
         assert_eq!(page.ims[0].updated, Some(1_778_339_234));
         assert!(page.ims[0].has_unreads);
         assert_eq!(page.ims[0].mention_count, Some(1));
+        assert_eq!(page.activity_unread_count(), Some(22));
     }
 
     #[test]

@@ -21,16 +21,8 @@ pub fn list_panel<'a>(
     emoji_previews: &'a AvatarPreviews,
     elapsed: Duration,
 ) -> Element<'a, Message> {
-    let unread = activity.items.iter().filter(|i| i.is_unread).count();
-    let count_chip = container(
-        text(unread.to_string())
-            .size(theme::TEXT_SM)
-            .color(theme::BG_BASE),
-    )
-    .padding([1.0, theme::SPACE_SM])
-    .style(theme::activity_count_pill);
-
-    let header = row![
+    let loaded_unread = activity.items.iter().filter(|i| i.is_unread).count();
+    let mut header = row![
         text("Activity")
             .size(theme::TEXT_LG)
             .color(theme::TEXT_1)
@@ -38,22 +30,37 @@ pub fn list_panel<'a>(
                 weight: font::Weight::Bold,
                 ..iced::Font::default()
             }),
-        count_chip,
-        Space::new().width(Fill),
-        button(text("Unread").size(theme::TEXT_SM))
-            .style(theme::reaction_button(activity.unread_only))
-            .padding([theme::SPACE_XS, theme::SPACE_SM])
-            .on_press(Message::ActivityUnreadOnlyToggled),
-    ]
-    .spacing(theme::SPACE_SM)
-    .align_y(Alignment::Center)
-    .width(Fill);
+    ];
+    if let Some(unread) = ws.activity_unread_count {
+        header = header.push(
+            container(
+                text(unread.to_string())
+                    .size(theme::TEXT_SM)
+                    .color(theme::BG_BASE),
+            )
+            .padding([1.0, theme::SPACE_SM])
+            .style(theme::activity_count_pill),
+        );
+    }
+    let header = header
+        .push(Space::new().width(Fill))
+        .push(
+            button(text("Unread").size(theme::TEXT_SM))
+                .style(theme::reaction_button(activity.unread_only))
+                .padding([theme::SPACE_XS, theme::SPACE_SM])
+                .on_press(Message::ActivityUnreadOnlyToggled),
+        )
+        .spacing(theme::SPACE_SM)
+        .align_y(Alignment::Center)
+        .width(Fill);
 
-    let body: Element<'a, Message> = if activity.loading && activity.items.is_empty() {
+    let body: Element<'a, Message> = if activity.loading
+        && (activity.items.is_empty() || activity.unread_only && loaded_unread == 0)
+    {
         placeholder("Loading activity…")
     } else if activity.items.is_empty() {
         placeholder("No activity yet.")
-    } else if activity.unread_only && unread == 0 {
+    } else if activity.unread_only && loaded_unread == 0 {
         placeholder("No unread activity.")
     } else {
         let mut list = column![].spacing(0).width(Fill);
@@ -392,6 +399,6 @@ fn placeholder<'a>(label: &str) -> Element<'a, Message> {
     .into()
 }
 
-pub fn unread_count(activity: &ActivityState) -> usize {
-    activity.items.iter().filter(|i| i.is_unread).count()
+pub fn unread_count(ws: &Workspace) -> usize {
+    ws.activity_unread_count.unwrap_or(0) as usize
 }

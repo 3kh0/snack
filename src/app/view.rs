@@ -74,7 +74,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
         ws,
         &app.avatar_previews,
         app.main_view,
-        ui::activity::unread_count(&app.activity),
+        ui::activity::unread_count(ws),
     );
 
     if app.main_view == crate::state::MainView::Activity {

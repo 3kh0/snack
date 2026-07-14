@@ -5,7 +5,8 @@ use serde_json::json;
 use super::update::{
     begin_mark, channel_open_scroll_target, emoji_preview_from_bytes, is_permanent_mark_error,
     needs_user_hydration, notification_for_message, pending_target_ts, preferred_channel,
-    should_load_older_activity, should_load_older_history, unique_download_path, update,
+    should_auto_load_activity, should_load_older_activity, should_load_older_history,
+    unique_download_path, update,
 };
 use super::*;
 use crate::slack::Error as SlackError;
@@ -107,6 +108,7 @@ pub(super) fn test_workspace() -> Workspace {
         name: "Test".into(),
         url: "https://test.slack.com".into(),
         self_user_id: SELF_USER.into(),
+        activity_unread_count: None,
         channels,
         starred_order: Vec::new(),
         dm_order: Vec::new(),
@@ -143,6 +145,7 @@ pub(super) fn activity_app() -> App {
     let mut app = test_app();
     app.main_view = MainView::Activity;
     app.activity.loaded = true;
+    app.active_workspace_mut().unwrap().activity_unread_count = Some(1);
 
     for (is_unread, key, ts, text) in [
         (
@@ -537,6 +540,23 @@ fn activity_bottom_scroll_loads_older_only_when_available() {
     activity.loading = false;
     activity.next_cursor = None;
     assert!(!should_load_older_activity(&activity, 0.0));
+}
+
+#[test]
+fn unread_activity_auto_loads_until_a_matching_item_is_found() {
+    let mut app = activity_app();
+    app.activity.unread_only = true;
+    app.activity.items.retain(|item| !item.is_unread);
+    app.activity.next_cursor = Some("older-activity".into());
+
+    assert!(should_auto_load_activity(&app.activity));
+
+    app.activity.items[0].is_unread = true;
+    assert!(!should_auto_load_activity(&app.activity));
+
+    app.activity.items.clear();
+    app.activity.next_cursor = None;
+    assert!(!should_auto_load_activity(&app.activity));
 }
 
 #[test]
@@ -1437,12 +1457,14 @@ fn older_activity_page_appends_items_and_advances_cursor() {
         }
     }))
     .unwrap();
+    let seq = app.activity.load_seq;
 
     let _ = update(
         &mut app,
         Message::ActivityLoaded {
             team,
             cursor: Some("page-2".into()),
+            seq,
             result: Ok(ActivityFeedPage {
                 items: vec![older],
                 response_metadata: Some(ResponseMetadata {

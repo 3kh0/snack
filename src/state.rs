@@ -223,6 +223,7 @@ pub struct Workspace {
     pub name: String,
     pub url: String,
     pub self_user_id: UserId,
+    pub activity_unread_count: Option<u32>,
     pub channels: BTreeMap<ChannelId, Channel>,
     pub starred_order: Vec<ChannelId>,
     pub dm_order: Vec<ChannelId>,
@@ -248,6 +249,7 @@ impl Workspace {
             name: s.name.clone(),
             url: s.url.clone(),
             self_user_id: s.user_id.clone(),
+            activity_unread_count: None,
             channels: BTreeMap::new(),
             starred_order: Vec::new(),
             dm_order: Vec::new(),
@@ -322,6 +324,9 @@ impl Workspace {
     }
 
     pub fn apply_counts(&mut self, counts: crate::slack::models::CountsPage) {
+        if let Some(unread_count) = counts.activity_unread_count() {
+            self.activity_unread_count = Some(unread_count);
+        }
         for channel in counts.all_channels() {
             self.apply_channel_read_state(&channel);
             if let Some(existing) = self.channels.get_mut(&channel.id) {
@@ -1481,6 +1486,7 @@ mod tests {
             name: "test".into(),
             url: "https://t".into(),
             self_user_id: "U_SESSION".into(),
+            activity_unread_count: None,
             channels: BTreeMap::new(),
             starred_order: Vec::new(),
             dm_order: Vec::new(),
@@ -1526,6 +1532,7 @@ mod tests {
             name: "Test".into(),
             url: "https://test.slack.com".into(),
             self_user_id: "U_SELF".into(),
+            activity_unread_count: None,
             channels: BTreeMap::new(),
             starred_order: Vec::new(),
             dm_order: Vec::new(),
@@ -1835,6 +1842,7 @@ mod tests {
             name: "test".into(),
             url: "https://t".into(),
             self_user_id: "USELF".into(),
+            activity_unread_count: None,
             channels: BTreeMap::new(),
             starred_order: Vec::new(),
             dm_order: Vec::new(),

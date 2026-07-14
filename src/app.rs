@@ -104,6 +104,7 @@ pub struct ActivityState {
     pub items: Vec<crate::slack::models::ActivityItem>,
     pub hydrated: HashMap<(ChannelId, MessageTs), SlackMessage>,
     pub next_cursor: Option<String>,
+    pub load_seq: u64,
     pub loading: bool,
     pub loaded: bool,
     pub selected: Option<String>,
@@ -458,6 +459,7 @@ pub enum Message {
     ActivityLoaded {
         team: TeamId,
         cursor: Option<String>,
+        seq: u64,
         result: Result<ActivityFeedPage, SlackError>,
     },
     ActivityMessagesLoaded(TeamId, Result<MessagesListPage, SlackError>),

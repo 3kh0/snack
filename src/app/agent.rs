@@ -690,7 +690,8 @@ pub fn dump_state(app: &App) -> Value {
         "loaded": app.activity.loaded,
         "selected": app.activity.selected,
         "item_count": app.activity.items.len(),
-        "unread": app.activity.items.iter().filter(|i| i.is_unread).count(),
+        "unread": app.active_workspace().and_then(|ws| ws.activity_unread_count),
+        "loaded_unread": app.activity.items.iter().filter(|i| i.is_unread).count(),
         "items": app.activity.items.iter().take(20).map(|i| json!({
             "key": i.key,
             "kind": i.item.kind,

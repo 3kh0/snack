@@ -68,6 +68,7 @@ impl Cache {
             name,
             url,
             self_user_id,
+            activity_unread_count: None,
             channels: Default::default(),
             starred_order: Vec::new(),
             dm_order: Vec::new(),

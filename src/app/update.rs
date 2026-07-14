@@ -1035,6 +1035,7 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                 }
                 if activity_pushed {
                     tasks.push(hydrate_activity_messages(app));
+                    tasks.push(refresh_counts(app));
                 }
             }
             Task::batch(tasks)
@@ -1091,11 +1092,12 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
 
         Message::MainViewSelected(view) => {
             app.main_view = view;
-            if view == crate::state::MainView::Activity
-                && !app.activity.loaded
-                && !app.activity.loading
-            {
-                return load_activity(app, None);
+            if view == crate::state::MainView::Activity {
+                let mut tasks = vec![refresh_counts(app)];
+                if !app.activity.loaded && !app.activity.loading {
+                    tasks.push(load_activity(app, None));
+                }
+                return Task::batch(tasks);
             }
             Task::none()
         }
@@ -1104,15 +1106,17 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
 
         Message::ActivityUnreadOnlyToggled => {
             app.activity.unread_only = !app.activity.unread_only;
-            Task::none()
+            app.activity.next_cursor = None;
+            Task::batch([load_activity(app, None), refresh_counts(app)])
         }
 
         Message::ActivityLoaded {
             team,
             cursor,
+            seq,
             result,
         } => {
-            if app.active_team.as_deref() != Some(team.as_str()) {
+            if app.active_team.as_deref() != Some(team.as_str()) || app.activity.load_seq != seq {
                 return Task::none();
             }
             app.activity.loading = false;
@@ -1130,16 +1134,24 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                     }
                     app.activity.next_cursor = next_cursor;
                     app.activity.loaded = true;
+                    let continue_cursor = should_auto_load_activity(&app.activity)
+                        .then(|| app.activity.next_cursor.clone())
+                        .flatten()
+                        .filter(|next| cursor.as_deref() != Some(next.as_str()));
                     let authors: Vec<UserId> = app
                         .activity
                         .items
                         .iter()
                         .filter_map(|i| i.author().map(str::to_owned))
                         .collect();
-                    Task::batch([
+                    let mut tasks = vec![
                         hydrate_activity_messages(app),
                         hydrate_users_by_id(app, &team, authors),
-                    ])
+                    ];
+                    if let Some(cursor) = continue_cursor {
+                        tasks.push(load_activity(app, Some(cursor)));
+                    }
+                    Task::batch(tasks)
                 }
                 Err(e) => {
                     app.toast(format!("activity feed failed: {e}"));
@@ -1379,6 +1391,12 @@ pub(super) fn should_load_older_activity(activity: &ActivityState, remaining: f3
         && !activity.loading
 }
 
+pub(super) fn should_auto_load_activity(activity: &ActivityState) -> bool {
+    activity.next_cursor.is_some()
+        && (activity.items.is_empty()
+            || activity.unread_only && !activity.items.iter().any(|item| item.is_unread))
+}
+
 fn load_activity(app: &mut App, cursor: Option<String>) -> Task<Message> {
     let Some(team) = app.active_team.clone() else {
         return Task::none();
@@ -1392,15 +1410,38 @@ fn load_activity(app: &mut App, cursor: Option<String>) -> Task<Message> {
     let transport = transport.clone();
     let client = app.client.clone();
     let ws = ws.clone();
+    let unread_only = app.activity.unread_only;
+    app.activity.load_seq = app.activity.load_seq.wrapping_add(1);
+    let seq = app.activity.load_seq;
     app.activity.loading = true;
     let requested_cursor = cursor.clone();
     Task::perform(
-        async move { api::fetch_activity_feed(&transport, &client, &ws, 20, cursor).await },
+        async move { api::fetch_activity_feed(&transport, &client, &ws, 20, cursor, unread_only).await },
         move |result| Message::ActivityLoaded {
             team: team.clone(),
             cursor: requested_cursor.clone(),
+            seq,
             result,
         },
+    )
+}
+
+fn refresh_counts(app: &App) -> Task<Message> {
+    let Some(team) = app.active_team.clone() else {
+        return Task::none();
+    };
+    let Some((transport, session)) = app.live() else {
+        return Task::none();
+    };
+    let Some(ws) = session.workspaces.get(&team) else {
+        return Task::none();
+    };
+    let transport = transport.clone();
+    let client = app.client.clone();
+    let ws = ws.clone();
+    Task::perform(
+        async move { api::fetch_counts(&transport, &client, &ws).await },
+        move |result| Message::CountsLoaded(team.clone(), result),
     )
 }
 

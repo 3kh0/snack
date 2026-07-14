@@ -565,6 +565,7 @@ mod tests {
             name: "Test".into(),
             url: "https://test.slack.com".into(),
             self_user_id: "U_SELF".into(),
+            activity_unread_count: None,
             channels: BTreeMap::from([(
                 "C1".into(),
                 Channel {
