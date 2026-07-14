@@ -78,6 +78,12 @@ pub fn list_panel<'a>(
             ));
         }
         scrollable(list.padding(Padding::ZERO.right(theme::SPACE_SM)))
+            .on_scroll(|viewport| Message::ActivityScrolled {
+                remaining: (viewport.content_bounds().height
+                    - viewport.bounds().height
+                    - viewport.absolute_offset().y)
+                    .max(0.0),
+            })
             .style(theme::scrollbar)
             .height(Fill)
             .into()

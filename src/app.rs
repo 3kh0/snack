@@ -103,6 +103,7 @@ struct DesktopNotification {
 pub struct ActivityState {
     pub items: Vec<crate::slack::models::ActivityItem>,
     pub hydrated: HashMap<(ChannelId, MessageTs), SlackMessage>,
+    pub next_cursor: Option<String>,
     pub loading: bool,
     pub loaded: bool,
     pub selected: Option<String>,
@@ -451,7 +452,14 @@ pub enum Message {
     RtConnected(TeamId, u64, Connection),
     RtDisconnected(TeamId, u64),
     MainViewSelected(crate::state::MainView),
-    ActivityLoaded(TeamId, Result<ActivityFeedPage, SlackError>),
+    ActivityScrolled {
+        remaining: f32,
+    },
+    ActivityLoaded {
+        team: TeamId,
+        cursor: Option<String>,
+        result: Result<ActivityFeedPage, SlackError>,
+    },
     ActivityMessagesLoaded(TeamId, Result<MessagesListPage, SlackError>),
     ActivityUnreadOnlyToggled,
     ActivitySelected(String),

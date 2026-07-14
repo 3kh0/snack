@@ -128,21 +128,22 @@ pub fn activity_feed(
     client: &SlackClient,
     workspace: &WorkspaceSession,
     limit: u32,
+    cursor: Option<String>,
 ) -> PreparedRequest {
-    client.rest_form(
-        workspace,
-        "activity.feed",
-        vec![
-            ("limit", limit.to_string()),
-            ("types", ACTIVITY_TYPES.to_owned()),
-            ("mode", "chrono_v1".to_owned()),
-            ("archive_only", "false".to_owned()),
-            ("unread_only", "false".to_owned()),
-            ("priority_only", "false".to_owned()),
-            ("only_salesforce_channels", "false".to_owned()),
-            ("exclude_automations", "false".to_owned()),
-        ],
-    )
+    let mut fields = vec![
+        ("limit", limit.to_string()),
+        ("types", ACTIVITY_TYPES.to_owned()),
+        ("mode", "chrono_v1".to_owned()),
+    ];
+    push_opt(&mut fields, "cursor", cursor);
+    fields.extend([
+        ("archive_only", "false".to_owned()),
+        ("unread_only", "false".to_owned()),
+        ("priority_only", "false".to_owned()),
+        ("only_salesforce_channels", "false".to_owned()),
+        ("exclude_automations", "false".to_owned()),
+    ]);
+    client.rest_form(workspace, "activity.feed", fields)
 }
 
 pub fn sidebar_dms(client: &SlackClient, workspace: &WorkspaceSession) -> PreparedRequest {
@@ -423,9 +424,10 @@ pub async fn fetch_activity_feed(
     client: &SlackClient,
     workspace: &WorkspaceSession,
     limit: u32,
+    cursor: Option<String>,
 ) -> Result<ActivityFeedPage, Error> {
     let value = transport
-        .execute(activity_feed(client, workspace, limit))
+        .execute(activity_feed(client, workspace, limit, cursor))
         .await?;
     decode(value, "activity.feed")
 }
@@ -973,6 +975,22 @@ mod tests {
         let request = sidebar_dms(&SlackClient::default(), &workspace());
         assert!(request.url.contains("/api/sidebar.dms?"));
         assert!(form_fields(&request).contains(&("token".into(), "xoxc-test-token".into())));
+    }
+
+    #[test]
+    fn activity_request_includes_pagination_cursor() {
+        let request = activity_feed(
+            &SlackClient::default(),
+            &workspace(),
+            20,
+            Some("older-activity-cursor".into()),
+        );
+        let fields = form_fields(&request);
+
+        assert!(request.url.contains("/api/activity.feed?"));
+        assert!(fields.contains(&("limit".into(), "20".into())));
+        assert!(fields.contains(&("cursor".into(), "older-activity-cursor".into())));
+        assert!(fields.contains(&("mode".into(), "chrono_v1".into())));
     }
 
     #[test]

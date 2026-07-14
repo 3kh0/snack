@@ -24,14 +24,15 @@ use crate::ui;
 
 use super::palette::{self, PaletteEntry, PaletteState, PaletteTarget};
 use super::{
-    App, ComposerAttachment, ComposerTarget, DesktopNotification, FilePreview, HistoryLoadKind,
-    Message, PendingFileMessage, PendingScrollTarget, SearchHit, SearchState, TextSelection,
-    TextSelectionPoint, TextSelectionSurface, ThreadKey,
+    ActivityState, App, ComposerAttachment, ComposerTarget, DesktopNotification, FilePreview,
+    HistoryLoadKind, Message, PendingFileMessage, PendingScrollTarget, SearchHit, SearchState,
+    TextSelection, TextSelectionPoint, TextSelectionSurface, ThreadKey,
 };
 use iced::widget::text_editor::Content;
 
 const CACHE_SAVE_DEBOUNCE: Duration = Duration::from_millis(750);
 const LOAD_OLDER_SCROLL_TOP_PX: f32 = 48.0;
+const LOAD_OLDER_ACTIVITY_BOTTOM_PX: f32 = 96.0;
 
 pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
     match message {
@@ -454,7 +455,7 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                     tasks.push(load_user_avatar_previews(app, &team, vec![self_user]));
                 }
                 if app.active_team.as_deref() == Some(&team) {
-                    tasks.push(load_activity(app));
+                    tasks.push(load_activity(app, None));
                 }
                 if app.active_team.as_deref() == Some(&team) && app.active_channel.is_none() {
                     if let Some(channel) = preferred_channel(app, &team) {
@@ -1094,27 +1095,40 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
                 && !app.activity.loaded
                 && !app.activity.loading
             {
-                return load_activity(app);
+                return load_activity(app, None);
             }
             Task::none()
         }
+
+        Message::ActivityScrolled { remaining } => activity_scrolled(app, remaining),
 
         Message::ActivityUnreadOnlyToggled => {
             app.activity.unread_only = !app.activity.unread_only;
             Task::none()
         }
 
-        Message::ActivityLoaded(team, result) => {
+        Message::ActivityLoaded {
+            team,
+            cursor,
+            result,
+        } => {
             if app.active_team.as_deref() != Some(team.as_str()) {
                 return Task::none();
             }
             app.activity.loading = false;
             match result {
                 Ok(page) => {
-                    app.activity.items.clear();
+                    let next_cursor = page
+                        .response_metadata
+                        .and_then(|metadata| metadata.next_cursor)
+                        .filter(|cursor| !cursor.is_empty());
+                    if cursor.is_none() {
+                        app.activity.items.clear();
+                    }
                     for item in page.items {
                         app.activity.upsert(item);
                     }
+                    app.activity.next_cursor = next_cursor;
                     app.activity.loaded = true;
                     let authors: Vec<UserId> = app
                         .activity
@@ -1348,7 +1362,24 @@ fn apply_settings(app: &mut App) {
     }
 }
 
-fn load_activity(app: &mut App) -> Task<Message> {
+fn activity_scrolled(app: &mut App, remaining: f32) -> Task<Message> {
+    if app.main_view != crate::state::MainView::Activity
+        || !should_load_older_activity(&app.activity, remaining)
+    {
+        return Task::none();
+    }
+    let cursor = app.activity.next_cursor.clone();
+    load_activity(app, cursor)
+}
+
+pub(super) fn should_load_older_activity(activity: &ActivityState, remaining: f32) -> bool {
+    remaining <= LOAD_OLDER_ACTIVITY_BOTTOM_PX
+        && activity.loaded
+        && activity.next_cursor.is_some()
+        && !activity.loading
+}
+
+fn load_activity(app: &mut App, cursor: Option<String>) -> Task<Message> {
     let Some(team) = app.active_team.clone() else {
         return Task::none();
     };
@@ -1362,9 +1393,14 @@ fn load_activity(app: &mut App) -> Task<Message> {
     let client = app.client.clone();
     let ws = ws.clone();
     app.activity.loading = true;
+    let requested_cursor = cursor.clone();
     Task::perform(
-        async move { api::fetch_activity_feed(&transport, &client, &ws, 25).await },
-        move |result| Message::ActivityLoaded(team.clone(), result),
+        async move { api::fetch_activity_feed(&transport, &client, &ws, 20, cursor).await },
+        move |result| Message::ActivityLoaded {
+            team: team.clone(),
+            cursor: requested_cursor.clone(),
+            result,
+        },
     )
 }
 
@@ -1464,6 +1500,7 @@ fn select_workspace(app: &mut App, team: TeamId) -> Task<Message> {
     }
 
     app.active_team = Some(team.clone());
+    app.activity = ActivityState::default();
     app.show_account_menu = false;
     app.account_menu_open = false;
     app.active_channel = preferred_channel(app, &team);
@@ -1481,8 +1518,13 @@ fn select_workspace(app: &mut App, team: TeamId) -> Task<Message> {
     app.composer = Content::new();
     app.thread_composer = Content::new();
 
+    let activity_task = if app.main_view == crate::state::MainView::Activity {
+        load_activity(app, None)
+    } else {
+        Task::none()
+    };
     let Some(channel) = app.active_channel.clone() else {
-        return Task::none();
+        return activity_task;
     };
     app.pending_scroll_to =
         channel_open_scroll_target(app, &team, &channel).map(|target| (channel.clone(), target));
@@ -1497,11 +1539,12 @@ fn select_workspace(app: &mut App, team: TeamId) -> Task<Message> {
         })
         .unwrap_or(false);
     if app.transport.is_some() && needs_load {
-        app.load_history(&team, &channel)
+        Task::batch([app.load_history(&team, &channel), activity_task])
     } else {
         Task::batch([
             mark_latest_visible(app, &team, &channel),
             scroll_to_pending(app, &channel),
+            activity_task,
         ])
     }
 }
@@ -1519,6 +1562,7 @@ fn sign_out(app: &mut App) -> Task<Message> {
     app.active_channel = None;
     app.active_thread = None;
     app.thread_open = false;
+    app.activity = ActivityState::default();
     app.workspaces.clear();
     app.threads.clear();
     app.composer = Content::new();

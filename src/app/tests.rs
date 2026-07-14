@@ -5,14 +5,14 @@ use serde_json::json;
 use super::update::{
     begin_mark, channel_open_scroll_target, emoji_preview_from_bytes, is_permanent_mark_error,
     needs_user_hydration, notification_for_message, pending_target_ts, preferred_channel,
-    should_load_older_history, unique_download_path, update,
+    should_load_older_activity, should_load_older_history, unique_download_path, update,
 };
 use super::*;
 use crate::slack::Error as SlackError;
 use crate::slack::events::RtEvent;
 use crate::slack::models::{
-    ActivityItem, Channel, File, HistoryPage, Message as SlackMessage, SearchItem,
-    SearchMessagesPage, SearchPagination, SentMessage, User, UserProfile,
+    ActivityItem, Channel, File, HistoryPage, Message as SlackMessage, ResponseMetadata,
+    SearchItem, SearchMessagesPage, SearchPagination, SentMessage, User, UserProfile,
 };
 use crate::slack::realtime::Connection;
 use crate::state::{ChannelMessages, MainView, Presence, RealtimeStatus};
@@ -520,6 +520,26 @@ fn top_scroll_loads_older_only_when_available() {
 }
 
 #[test]
+fn activity_bottom_scroll_loads_older_only_when_available() {
+    let mut activity = ActivityState {
+        loaded: true,
+        next_cursor: Some("older-activity".into()),
+        ..Default::default()
+    };
+
+    assert!(should_load_older_activity(&activity, 0.0));
+    assert!(should_load_older_activity(&activity, 96.0));
+    assert!(!should_load_older_activity(&activity, 97.0));
+
+    activity.loading = true;
+    assert!(!should_load_older_activity(&activity, 0.0));
+
+    activity.loading = false;
+    activity.next_cursor = None;
+    assert!(!should_load_older_activity(&activity, 0.0));
+}
+
+#[test]
 fn gif_emoji_preview_decodes_as_animation() {
     let mut bytes = Vec::new();
     {
@@ -617,6 +637,8 @@ fn known_user_with_avatar_skips_profile_hydration() {
 fn workspace_selection_switches_active_workspace_and_channel() {
     let mut app = test_app();
     add_second_workspace(&mut app);
+    app.activity.loaded = true;
+    app.activity.next_cursor = Some("first-workspace-cursor".into());
     app.composer = iced::widget::text_editor::Content::with_text("draft");
     app.thread_composer = iced::widget::text_editor::Content::with_text("reply draft");
     app.active_thread = Some(("C_GENERAL".into(), "1783372300.000100".into()));
@@ -628,6 +650,8 @@ fn workspace_selection_switches_active_workspace_and_channel() {
     assert!(app.active_thread.is_none());
     assert!(app.composer.text().is_empty());
     assert!(app.thread_composer.text().is_empty());
+    assert!(!app.activity.loaded);
+    assert!(app.activity.next_cursor.is_none());
 }
 
 #[test]
@@ -1390,4 +1414,53 @@ fn activity_upsert_dedups_thread_by_identity() {
     .unwrap();
     state.upsert(other);
     assert_eq!(state.items.len(), 2);
+}
+
+#[test]
+fn older_activity_page_appends_items_and_advances_cursor() {
+    let mut app = activity_app();
+    let team = app.active_team.clone().unwrap();
+    let existing = app.activity.items.len();
+    app.activity.loading = true;
+    app.activity.next_cursor = Some("page-2".into());
+    let older: ActivityItem = serde_json::from_value(json!({
+        "is_unread": false,
+        "feed_ts": "1783199500.000100",
+        "key": "older-mention",
+        "item": {
+            "type": "at_user",
+            "message": {
+                "ts": "1783199500.000100",
+                "channel": "C_GENERAL",
+                "author_user_id": "U_ALICE"
+            }
+        }
+    }))
+    .unwrap();
+
+    let _ = update(
+        &mut app,
+        Message::ActivityLoaded {
+            team,
+            cursor: Some("page-2".into()),
+            result: Ok(ActivityFeedPage {
+                items: vec![older],
+                response_metadata: Some(ResponseMetadata {
+                    next_cursor: Some("page-3".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+        },
+    );
+
+    assert!(!app.activity.loading);
+    assert_eq!(app.activity.items.len(), existing + 1);
+    assert!(
+        app.activity
+            .items
+            .iter()
+            .any(|item| item.key == "older-mention")
+    );
+    assert_eq!(app.activity.next_cursor.as_deref(), Some("page-3"));
 }
