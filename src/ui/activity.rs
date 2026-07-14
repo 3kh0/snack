@@ -39,18 +39,30 @@ pub fn list_panel<'a>(
                 ..iced::Font::default()
             }),
         count_chip,
+        Space::new().width(Fill),
+        button(text("Unread").size(theme::TEXT_SM))
+            .style(theme::reaction_button(activity.unread_only))
+            .padding([theme::SPACE_XS, theme::SPACE_SM])
+            .on_press(Message::ActivityUnreadOnlyToggled),
     ]
     .spacing(theme::SPACE_SM)
-    .align_y(Alignment::Center);
+    .align_y(Alignment::Center)
+    .width(Fill);
 
     let body: Element<'a, Message> = if activity.loading && activity.items.is_empty() {
         placeholder("Loading activity…")
     } else if activity.items.is_empty() {
         placeholder("No activity yet.")
+    } else if activity.unread_only && unread == 0 {
+        placeholder("No unread activity.")
     } else {
         let mut list = column![].spacing(0).width(Fill);
         let mut current_day: Option<String> = None;
-        for item in &activity.items {
+        for item in activity
+            .items
+            .iter()
+            .filter(|item| !activity.unread_only || item.is_unread)
+        {
             let day = state::date_key_for_ts(&item.feed_ts);
             if day != current_day {
                 current_day = day;

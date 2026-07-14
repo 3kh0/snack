@@ -1099,6 +1099,11 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
 
+        Message::ActivityUnreadOnlyToggled => {
+            app.activity.unread_only = !app.activity.unread_only;
+            Task::none()
+        }
+
         Message::ActivityLoaded(team, result) => {
             if app.active_team.as_deref() != Some(team.as_str()) {
                 return Task::none();

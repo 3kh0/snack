@@ -13,7 +13,9 @@ use std::path::{Path, PathBuf};
 use iced::{Settings, Size};
 use iced_test::{Error, Simulator};
 
-use super::tests::{login_app, multi_paragraph_emoji_app, search_app, settings_app, test_app};
+use super::tests::{
+    activity_app, login_app, multi_paragraph_emoji_app, search_app, settings_app, test_app,
+};
 use super::update::update;
 use super::view::view;
 use super::{App, Message};
@@ -144,6 +146,31 @@ fn ui_visual_search_results_render() -> Result<(), Error> {
     ui.find("#general")?;
     ui.find("morning standup notes")?;
     capture(&app, "search")?;
+    Ok(())
+}
+
+#[test]
+fn ui_visual_activity_unread_filter() -> Result<(), Error> {
+    let mut app = activity_app();
+    let messages = {
+        let mut ui = sim(&app);
+        ui.find("Activity")?;
+        ui.find("Unread design review")?;
+        ui.find("Read launch recap")?;
+        ui.click("Unread")?;
+        drain_messages(ui)
+    };
+    apply_messages(&mut app, messages);
+
+    assert!(app.activity.unread_only);
+    let mut ui = sim(&app);
+    ui.find("Unread design review")?;
+    assert!(
+        ui.find("Read launch recap").is_err(),
+        "read activity should be hidden by the unread filter"
+    );
+    drop(ui);
+    capture(&app, "activity-unread")?;
     Ok(())
 }
 

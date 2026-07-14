@@ -11,11 +11,11 @@ use super::*;
 use crate::slack::Error as SlackError;
 use crate::slack::events::RtEvent;
 use crate::slack::models::{
-    Channel, File, HistoryPage, Message as SlackMessage, SearchItem, SearchMessagesPage,
-    SearchPagination, SentMessage, User, UserProfile,
+    ActivityItem, Channel, File, HistoryPage, Message as SlackMessage, SearchItem,
+    SearchMessagesPage, SearchPagination, SentMessage, User, UserProfile,
 };
 use crate::slack::realtime::Connection;
-use crate::state::{ChannelMessages, Presence, RealtimeStatus};
+use crate::state::{ChannelMessages, MainView, Presence, RealtimeStatus};
 
 pub(super) const SELF_USER: &str = "U_SELF";
 
@@ -136,6 +136,48 @@ pub(super) fn test_app() -> App {
     app.active_team = Some(team);
     app.active_channel = Some("C_GENERAL".into());
     app.screen = Screen::Main;
+    app
+}
+
+pub(super) fn activity_app() -> App {
+    let mut app = test_app();
+    app.main_view = MainView::Activity;
+    app.activity.loaded = true;
+
+    for (is_unread, key, ts, text) in [
+        (
+            true,
+            "unread-mention",
+            "1783372300.000100",
+            "Unread design review",
+        ),
+        (
+            false,
+            "read-mention",
+            "1783285900.000100",
+            "Read launch recap",
+        ),
+    ] {
+        let item: ActivityItem = serde_json::from_value(json!({
+            "is_unread": is_unread,
+            "feed_ts": ts,
+            "key": key,
+            "item": {
+                "type": "at_user",
+                "message": {
+                    "ts": ts,
+                    "channel": "C_GENERAL",
+                    "author_user_id": "U_ALICE"
+                }
+            }
+        }))
+        .unwrap();
+        app.activity
+            .hydrated
+            .insert(("C_GENERAL".into(), ts.into()), msg("U_ALICE", ts, text));
+        app.activity.upsert(item);
+    }
+
     app
 }
 

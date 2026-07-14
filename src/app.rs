@@ -106,6 +106,7 @@ pub struct ActivityState {
     pub loading: bool,
     pub loaded: bool,
     pub selected: Option<String>,
+    pub unread_only: bool,
 }
 
 impl ActivityState {
@@ -452,6 +453,7 @@ pub enum Message {
     MainViewSelected(crate::state::MainView),
     ActivityLoaded(TeamId, Result<ActivityFeedPage, SlackError>),
     ActivityMessagesLoaded(TeamId, Result<MessagesListPage, SlackError>),
+    ActivityUnreadOnlyToggled,
     ActivitySelected(String),
     SignInPressed,
     RetryAuth,
