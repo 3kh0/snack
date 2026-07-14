@@ -2,6 +2,7 @@ pub mod activity;
 pub mod blocks;
 pub mod channel;
 pub mod composer;
+pub mod dms;
 pub mod icons;
 pub mod message;
 pub mod motion;

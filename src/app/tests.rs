@@ -3,10 +3,10 @@ use std::collections::{BTreeMap, HashMap};
 use serde_json::json;
 
 use super::update::{
-    begin_mark, channel_open_scroll_target, emoji_preview_from_bytes, is_permanent_mark_error,
-    needs_user_hydration, notification_for_message, pending_target_ts, preferred_channel,
-    should_auto_load_activity, should_load_older_activity, should_load_older_history,
-    unique_download_path, update,
+    begin_mark, channel_needs_hydration, channel_open_scroll_target, emoji_preview_from_bytes,
+    is_permanent_mark_error, needs_user_hydration, notification_for_message, pending_target_ts,
+    preferred_channel, should_auto_load_activity, should_load_older_activity,
+    should_load_older_history, unique_download_path, update,
 };
 use super::*;
 use crate::slack::Error as SlackError;
@@ -179,6 +179,55 @@ pub(super) fn activity_app() -> App {
             .hydrated
             .insert(("C_GENERAL".into(), ts.into()), msg("U_ALICE", ts, text));
         app.activity.upsert(item);
+    }
+
+    app
+}
+
+pub(super) fn dms_app() -> App {
+    let mut app = test_app();
+    app.main_view = MainView::Dms;
+    app.dms.loaded = true;
+
+    let ws = app.active_workspace_mut().unwrap();
+    ws.channels.insert(
+        "D_ALICE".into(),
+        Channel {
+            id: "D_ALICE".into(),
+            is_im: true,
+            user: Some("U_ALICE".into()),
+            unread_count: Some(2),
+            last_read: Some("1783372000.000100".into()),
+            ..Default::default()
+        },
+    );
+    ws.channels.insert(
+        "D_BOB".into(),
+        Channel {
+            id: "D_BOB".into(),
+            is_im: true,
+            user: Some("U_BOB".into()),
+            last_read: Some("1783372310.000200".into()),
+            ..Default::default()
+        },
+    );
+
+    for (id, user, ts, text) in [
+        (
+            "D_ALICE",
+            "U_ALICE",
+            "1783372300.000100",
+            "unread dm from alice",
+        ),
+        ("D_BOB", SELF_USER, "1783372310.000200", "read reply to bob"),
+    ] {
+        app.dms.upsert(crate::slack::models::DmEntry {
+            id: id.into(),
+            latest: Some(ts.into()),
+            message: Some(msg(user, ts, text)),
+            channel: None,
+            ..Default::default()
+        });
     }
 
     app
@@ -458,6 +507,49 @@ fn unread_channel_open_targets_first_unread_message() {
         ),
         Some("1783370001.000100".into())
     );
+}
+
+#[test]
+fn unread_anchor_ignores_never_read_sentinel() {
+    let mut app = test_app();
+    let team = app.active_team.clone().unwrap();
+    let ws = app.workspaces.get_mut(&team).unwrap();
+    let cm = ws.messages.entry("D_NEW".into()).or_default();
+    cm.last_read = Some("0000000000.000000".into());
+    cm.unread_count = 1;
+
+    assert_eq!(app.unread_anchor(&team, &"D_NEW".into()), None);
+
+    let ws = app.workspaces.get_mut(&team).unwrap();
+    let cm = ws.messages.get_mut("D_NEW").unwrap();
+    cm.last_read = Some("1783370000.000100".into());
+    assert_eq!(
+        app.unread_anchor(&team, &"D_NEW".into()),
+        Some("1783370000.000100".into())
+    );
+}
+
+#[test]
+fn dm_channels_hydrate_on_missing_user_not_missing_name() {
+    let im_with_user = Channel {
+        id: "D1".into(),
+        is_im: true,
+        user: Some("U1".into()),
+        ..Default::default()
+    };
+    let im_without_user = Channel {
+        id: "D2".into(),
+        is_im: true,
+        ..Default::default()
+    };
+    let unnamed_channel = Channel {
+        id: "C1".into(),
+        is_channel: true,
+        ..Default::default()
+    };
+    assert!(!channel_needs_hydration(&im_with_user));
+    assert!(channel_needs_hydration(&im_without_user));
+    assert!(channel_needs_hydration(&unnamed_channel));
 }
 
 #[test]

@@ -473,6 +473,7 @@ pub fn handle(app: &mut App, id: u64, command: AgentCommand) -> iced::Task<Messa
         AgentCommand::MainView { view } => {
             let target = match view.trim().to_ascii_lowercase().as_str() {
                 "activity" | "notifications" | "bell" => crate::state::MainView::Activity,
+                "dms" | "dm" | "direct-messages" => crate::state::MainView::Dms,
                 "home" | "channels" => crate::state::MainView::Home,
                 other => {
                     complete(
@@ -491,6 +492,8 @@ pub fn handle(app: &mut App, id: u64, command: AgentCommand) -> iced::Task<Messa
                         "main_view": main_view_label(app.main_view),
                         "activity_loading": app.activity.loading,
                         "activity_item_count": app.activity.items.len(),
+                        "dms_loading": app.dms.loading,
+                        "dms_entry_count": app.dms.entries.len(),
                     }),
                 ),
             );
@@ -525,6 +528,7 @@ pub fn handle(app: &mut App, id: u64, command: AgentCommand) -> iced::Task<Messa
 fn main_view_label(view: crate::state::MainView) -> &'static str {
     match view {
         crate::state::MainView::Home => "home",
+        crate::state::MainView::Dms => "dms",
         crate::state::MainView::Activity => "activity",
     }
 }
@@ -704,11 +708,28 @@ pub fn dump_state(app: &App) -> Value {
         })).collect::<Vec<_>>(),
     });
 
+    let dms = json!({
+        "loading": app.dms.loading,
+        "loaded": app.dms.loaded,
+        "unread_only": app.dms.unread_only,
+        "filter": app.dms.filter,
+        "entry_count": app.dms.entries.len(),
+        "next_cursor": app.dms.next_cursor.is_some(),
+        "entries": app.dms.entries.iter().take(20).map(|e| json!({
+            "id": e.id,
+            "latest": e.latest,
+            "user": e.channel.as_ref().and_then(|c| c.user.as_ref()),
+            "is_mpim": e.channel.as_ref().map(|c| c.is_mpim).unwrap_or(false),
+            "text": e.message.as_ref().and_then(|m| m.text.as_deref()),
+        })).collect::<Vec<_>>(),
+    });
+
     json!({
         "screen": screen,
         "signed_in": app.session.is_some(),
         "main_view": main_view_label(app.main_view),
         "activity": activity,
+        "dms": dms,
         "active_team": app.active_team,
         "active_channel": app.active_channel,
         "active_channel_name": active_channel_name,

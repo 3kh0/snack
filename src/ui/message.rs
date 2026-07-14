@@ -887,9 +887,9 @@ fn action_item<'a>(label: &'a str, on_press: Message) -> Element<'a, Message> {
         .into()
 }
 
-pub fn empty_placeholder<'a>() -> Element<'a, Message> {
+pub fn empty_placeholder<'a>(label: &str) -> Element<'a, Message> {
     container(
-        text("No messages yet.")
+        text(label.to_owned())
             .size(theme::TEXT_MD)
             .color(theme::MUTED),
     )

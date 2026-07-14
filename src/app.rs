@@ -13,7 +13,7 @@ use crate::config::{self, Session};
 use crate::slack::api::{self, HistoryArgs};
 use crate::slack::events::RtEvent;
 use crate::slack::models::{
-    ActivityFeedPage, BootData, Channel, ChannelId, CountsPage, Emoji, HistoryPage,
+    ActivityFeedPage, BootData, Channel, ChannelId, ClientDmsPage, CountsPage, Emoji, HistoryPage,
     Message as SlackMessage, MessageTs, MessagesListPage, SearchMessagesPage, SentMessage,
     SidebarDmsPage, TeamId, User, UserId,
 };
@@ -130,6 +130,59 @@ impl ActivityState {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct DmsState {
+    pub entries: Vec<crate::slack::models::DmEntry>,
+    pub next_cursor: Option<String>,
+    pub load_seq: u64,
+    pub loading: bool,
+    pub loaded: bool,
+    pub unread_only: bool,
+    pub filter: String,
+}
+
+impl DmsState {
+    pub fn upsert(&mut self, entry: crate::slack::models::DmEntry) {
+        if let Some(existing) = self.entries.iter_mut().find(|e| e.id == entry.id) {
+            if crate::state::cmp_ts(entry.latest.as_deref(), existing.latest.as_deref()).is_lt() {
+                return;
+            }
+            let channel = entry.channel.clone().or_else(|| existing.channel.take());
+            *existing = entry;
+            existing.channel = channel;
+        } else {
+            self.entries.push(entry);
+        }
+        self.sort();
+    }
+
+    pub fn touch(&mut self, channel: &str, message: SlackMessage) {
+        let Some(ts) = message.ts.clone() else {
+            return;
+        };
+        if let Some(existing) = self.entries.iter_mut().find(|e| e.id == channel) {
+            if crate::state::cmp_ts(Some(&ts), existing.latest.as_deref()).is_lt() {
+                return;
+            }
+            existing.latest = Some(ts);
+            existing.message = Some(message);
+        } else {
+            self.entries.push(crate::slack::models::DmEntry {
+                id: channel.to_owned(),
+                latest: Some(ts),
+                message: Some(message),
+                ..Default::default()
+            });
+        }
+        self.sort();
+    }
+
+    fn sort(&mut self) {
+        self.entries
+            .sort_by(|a, b| crate::state::cmp_ts(b.latest.as_deref(), a.latest.as_deref()));
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SearchHit {
     pub channel: ChannelId,
@@ -184,6 +237,7 @@ pub struct App {
     thread_open: bool,
     main_view: crate::state::MainView,
     activity: ActivityState,
+    dms: DmsState,
     workspaces: BTreeMap<TeamId, Workspace>,
     threads: HashMap<ThreadKey, ChannelMessages>,
     composer: Content,
@@ -465,6 +519,17 @@ pub enum Message {
     ActivityMessagesLoaded(TeamId, Result<MessagesListPage, SlackError>),
     ActivityUnreadOnlyToggled,
     ActivitySelected(String),
+    DmsScrolled {
+        remaining: f32,
+    },
+    DmsLoaded {
+        team: TeamId,
+        cursor: Option<String>,
+        seq: u64,
+        result: Result<ClientDmsPage, SlackError>,
+    },
+    DmsUnreadOnlyToggled(bool),
+    DmsFilterChanged(String),
     SignInPressed,
     RetryAuth,
     AccountMenuToggled,
@@ -517,6 +582,7 @@ impl App {
             thread_open: false,
             main_view: crate::state::MainView::Home,
             activity: ActivityState::default(),
+            dms: DmsState::default(),
             workspaces: BTreeMap::new(),
             threads: HashMap::new(),
             composer: Content::new(),
@@ -680,7 +746,8 @@ impl App {
         if !unread {
             return None;
         }
-        ws.messages.get(channel)?.last_read.clone()
+        let anchor = ws.messages.get(channel)?.last_read.clone()?;
+        (crate::state::ts_key(&anchor).0 > 0).then_some(anchor)
     }
 
     fn load_history_around(

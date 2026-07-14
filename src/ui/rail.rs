@@ -22,6 +22,7 @@ pub fn view<'a>(
     ws: &'a Workspace,
     avatars: &'a AvatarPreviews,
     view: MainView,
+    dm_unread: usize,
     activity_unread: usize,
 ) -> Element<'a, Message> {
     let home = nav_button(
@@ -29,6 +30,12 @@ pub fn view<'a>(
         view == MainView::Home,
         0,
         Message::MainViewSelected(MainView::Home),
+    );
+    let dms = nav_button(
+        icons::dms(),
+        view == MainView::Dms,
+        dm_unread,
+        Message::MainViewSelected(MainView::Dms),
     );
     let notifications = nav_button(
         icons::bell(),
@@ -44,7 +51,7 @@ pub fn view<'a>(
         .style(theme::rail_button)
         .on_press(Message::AccountMenuToggled);
 
-    let body = column![home, notifications, Space::new().height(Fill), account]
+    let body = column![home, dms, notifications, Space::new().height(Fill), account]
         .spacing(theme::SPACE_SM)
         .align_x(Alignment::Center)
         .padding(RAIL_PADDING)

@@ -74,8 +74,39 @@ fn main_view(app: &App) -> Element<'_, Message> {
         ws,
         &app.avatar_previews,
         app.main_view,
+        ui::dms::unread_count_total(ws),
         ui::activity::unread_count(ws),
     );
+
+    if app.main_view == crate::state::MainView::Dms {
+        let list = ui::dms::list_panel(
+            ws,
+            &app.dms,
+            app.active_channel.as_deref(),
+            &app.avatar_previews,
+            &app.emoji_previews,
+            app.emoji_animation_started.elapsed(),
+        );
+        let right: Element<'_, Message> =
+            match (app.active_team.as_ref(), app.active_thread.as_ref()) {
+                (Some(team), Some((channel, root_ts))) if app.thread_open => {
+                    thread_static_panel(app, ws, team, channel, root_ts)
+                }
+                _ if app.active_channel.is_some() => {
+                    channel_main_panel(app, ws, "Select a conversation to start messaging.")
+                }
+                _ => container(center_text("Select a conversation to start messaging."))
+                    .width(Fill)
+                    .height(Fill)
+                    .style(ui::theme::panel)
+                    .into(),
+            };
+        let body = row![rail, list, right]
+            .spacing(ui::theme::gap())
+            .width(Fill)
+            .height(Fill);
+        return with_modal(app, with_account_menu(app, shell(body.into())));
+    }
 
     if app.main_view == crate::state::MainView::Activity {
         let list = ui::activity::list_panel(

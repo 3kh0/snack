@@ -1,5 +1,6 @@
 use iced::widget::{
-    Column, Id, Row, Space, column, container, image, mouse_area, row, scrollable, stack, text,
+    Column, Id, Row, Space, button, column, container, image, mouse_area, row, scrollable, stack,
+    text,
 };
 use iced::{Alignment, ContentFit, Element, Fill, Length, font};
 
@@ -121,7 +122,9 @@ pub fn view<'a>(
                 .height(Fill)
                 .into()
         }
-        _ => message::empty_placeholder(),
+        Some(cm) if cm.history_failed => history_failed_placeholder(channel_id),
+        Some(cm) if cm.loaded => message::empty_placeholder("No messages yet."),
+        _ => message::empty_placeholder("Loading messages…"),
     };
 
     let typing = ws.typing_names(channel_id);
@@ -173,6 +176,25 @@ fn same_message_group(
     let previous_secs = state::ts_key(previous_ts).0;
     let current_secs = state::ts_key(current_ts).0;
     current_secs.saturating_sub(previous_secs) <= 300
+}
+
+fn history_failed_placeholder<'a>(channel_id: &str) -> Element<'a, Message> {
+    container(
+        column![
+            text("Couldn't load messages.")
+                .size(theme::TEXT_MD)
+                .color(theme::MUTED),
+            button(text("Retry").size(theme::TEXT_SM))
+                .padding([theme::SPACE_XS, theme::SPACE_MD])
+                .style(theme::secondary_button)
+                .on_press(Message::ChannelSelected(channel_id.to_owned())),
+        ]
+        .spacing(theme::SPACE_SM)
+        .align_x(Alignment::Center),
+    )
+    .center_x(Fill)
+    .padding(theme::SPACE_LG)
+    .into()
 }
 
 fn channel_header<'a>(
