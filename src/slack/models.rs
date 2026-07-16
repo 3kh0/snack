@@ -388,6 +388,8 @@ pub struct Channel {
     pub is_archived: bool,
     #[serde(default)]
     pub is_starred: bool,
+    #[serde(default)]
+    pub is_ext_shared: bool,
     #[serde(default, deserialize_with = "deserialize_optional_u64")]
     pub updated: Option<u64>,
     #[serde(default)]
@@ -545,6 +547,8 @@ pub struct BootPrefs {
     #[serde(default)]
     pub priority_sidebar_section: bool,
     #[serde(default)]
+    pub vip_users: Option<String>,
+    #[serde(default)]
     pub channel_sections: Option<String>,
     #[serde(default)]
     pub team_channel_sections: Option<String>,
@@ -632,6 +636,41 @@ pub struct OpenedConversation {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OpenedChannel {
     pub id: ChannelId,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ChannelSectionsPage {
+    #[serde(default)]
+    pub channel_sections: Vec<ChannelSection>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ChannelSection {
+    pub channel_section_id: String,
+    #[serde(default)]
+    pub name: String,
+    /// "slack_connect" | "direct_messages" | "stars" | "channels" |
+    /// "user_group" | "recent_apps" | "salesforce_records" | "agents" | "standard"
+    #[serde(rename = "type", default)]
+    pub kind: String,
+    #[serde(default)]
+    pub next_channel_section_id: Option<String>,
+    #[serde(default)]
+    pub is_hidden: bool,
+    #[serde(default)]
+    pub channel_ids_page: ChannelIdsPage,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ChannelIdsPage {
+    #[serde(default)]
+    pub channel_ids: Vec<ChannelId>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1010,6 +1049,48 @@ mod fixture_tests {
         assert_eq!(
             boot.prefs.sidebar_behavior.as_deref(),
             Some("hide_read_channels_unless_starred")
+        );
+    }
+
+    #[test]
+    fn deserialize_channel_sections_page() {
+        let page: ChannelSectionsPage = serde_json::from_str(
+            r#"{
+                "ok": true,
+                "channel_sections": [
+                    {"channel_section_id":"L_CONNECT","name":"Slack Connect","type":"slack_connect",
+                     "emoji":"","next_channel_section_id":"L_DMS","last_updated":1754360820,
+                     "channel_ids_page":{"channel_ids":[],"count":0},"is_redacted":false},
+                    {"channel_section_id":"L_DMS","name":"Direct Messages","type":"direct_messages",
+                     "next_channel_section_id":"L_STARS","channel_ids_page":{"channel_ids":[],"count":0}},
+                    {"channel_section_id":"L_STARS","name":"","type":"stars",
+                     "next_channel_section_id":"L_CUSTOM","channel_ids_page":{"channel_ids":[],"count":0}},
+                    {"channel_section_id":"L_CUSTOM","name":"my section","type":"standard",
+                     "next_channel_section_id":"L_CHANNELS",
+                     "channel_ids_page":{"channel_ids":["C_IN_SECTION"],"count":1}},
+                    {"channel_section_id":"L_CHANNELS","name":"Channels","type":"channels",
+                     "next_channel_section_id":null,"channel_ids_page":{"channel_ids":[],"count":0}}
+                ],
+                "last_updated": 1783732486,
+                "count": 5
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(page.channel_sections.len(), 5);
+        assert_eq!(page.channel_sections[0].kind, "slack_connect");
+        assert_eq!(
+            page.channel_sections[0].next_channel_section_id.as_deref(),
+            Some("L_DMS")
+        );
+        assert_eq!(
+            page.channel_sections[3].channel_ids_page.channel_ids,
+            ["C_IN_SECTION"]
+        );
+        assert!(
+            page.channel_sections[4]
+                .next_channel_section_id
+                .is_none()
         );
     }
 

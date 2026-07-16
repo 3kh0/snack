@@ -516,6 +516,19 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
 
+        Message::ChannelSectionsLoaded(team, result) => {
+            match result {
+                Ok(page) => {
+                    if let Some(ws) = app.workspaces.get_mut(&team) {
+                        ws.apply_channel_sections(page);
+                    }
+                    mark_workspace_dirty(app, &team);
+                }
+                Err(e) => tracing::warn!(%team, error = %e, "channel sections failed"),
+            }
+            Task::none()
+        }
+
         Message::SidebarDmsLoaded(team, result) => {
             match result {
                 Ok(dms) => {

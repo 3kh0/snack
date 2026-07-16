@@ -7,9 +7,9 @@ use crate::config::WorkspaceSession;
 use super::Error;
 use super::client::{PreparedRequest, SlackClient};
 use super::models::{
-    ActivityFeedPage, BootData, Channel, ChannelId, ClientDmsPage, CountsPage, EdgeResults, Emoji,
-    HistoryPage, MessageTs, MessagesListPage, OpenedConversation, SearchInlinePage,
-    SearchMessagesPage, SentMessage, SidebarDmsPage, User, UserId,
+    ActivityFeedPage, BootData, Channel, ChannelId, ChannelSectionsPage, ClientDmsPage, CountsPage,
+    EdgeResults, Emoji, HistoryPage, MessageTs, MessagesListPage, OpenedConversation,
+    SearchInlinePage, SearchMessagesPage, SentMessage, SidebarDmsPage, User, UserId,
 };
 use super::transport::Transport;
 pub fn user_boot(client: &SlackClient, workspace: &WorkspaceSession) -> PreparedRequest {
@@ -93,6 +93,10 @@ pub fn conversations_info(
 
 pub fn client_counts(client: &SlackClient, workspace: &WorkspaceSession) -> PreparedRequest {
     client.rest_form(workspace, "client.counts", Vec::new())
+}
+
+pub fn channel_sections(client: &SlackClient, workspace: &WorkspaceSession) -> PreparedRequest {
+    client.rest_form(workspace, "users.channelSections.list", Vec::new())
 }
 
 const ACTIVITY_TYPES: &str = "at_user,at_user_group,at_channel,at_everyone,keyword,\
@@ -426,6 +430,17 @@ pub async fn fetch_counts(
 ) -> Result<CountsPage, Error> {
     let value = transport.execute(client_counts(client, workspace)).await?;
     decode(value, "client.counts")
+}
+
+pub async fn fetch_channel_sections(
+    transport: &Transport,
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+) -> Result<ChannelSectionsPage, Error> {
+    let value = transport
+        .execute(channel_sections(client, workspace))
+        .await?;
+    decode(value, "users.channelSections.list")
 }
 
 pub async fn fetch_sidebar_dms(

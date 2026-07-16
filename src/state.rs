@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use crate::slack::models::{
@@ -219,6 +219,40 @@ impl ChannelMessages {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct SidebarConfig {
+    pub sections: Vec<crate::slack::models::ChannelSection>,
+    pub section_prefs: HashMap<String, SectionPref>,
+    pub hidden_sections: HashSet<String>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct SectionPref {
+    #[serde(default)]
+    pub sort: Option<String>,
+    #[serde(default)]
+    pub sidebar: Option<String>,
+    #[serde(default)]
+    pub c: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SectionSort {
+    Alpha,
+    Recent,
+    Priority,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedSection {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub sort: SectionSort,
+    pub show_all: bool,
+    pub channel_ids: Vec<ChannelId>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Workspace {
     pub team_id: TeamId,
@@ -235,6 +269,8 @@ pub struct Workspace {
     pub frecency: BTreeMap<ChannelId, FrecencyEntry>,
     pub hide_read_channels_unless_starred: bool,
     pub priority_sidebar_section: bool,
+    pub vip_users: HashSet<UserId>,
+    pub sidebar: SidebarConfig,
     pub users: HashMap<UserId, User>,
     pub custom_emoji: HashMap<String, Emoji>,
     pub messages: HashMap<ChannelId, ChannelMessages>,
@@ -263,6 +299,8 @@ impl Workspace {
             frecency: BTreeMap::new(),
             hide_read_channels_unless_starred: false,
             priority_sidebar_section: false,
+            vip_users: HashSet::new(),
+            sidebar: SidebarConfig::default(),
             users: HashMap::new(),
             custom_emoji: HashMap::new(),
             messages: HashMap::new(),
@@ -307,6 +345,30 @@ impl Workspace {
         self.hide_read_channels_unless_starred =
             boot.prefs.sidebar_behavior.as_deref() == Some("hide_read_channels_unless_starred");
         self.priority_sidebar_section = boot.prefs.priority_sidebar_section;
+        self.vip_users = boot
+            .prefs
+            .vip_users
+            .as_deref()
+            .unwrap_or_default()
+            .split(',')
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+            .collect();
+        self.sidebar.section_prefs = boot
+            .prefs
+            .channel_sections
+            .as_deref()
+            .and_then(|json| serde_json::from_str(json).ok())
+            .unwrap_or_default();
+        self.sidebar.hidden_sections = boot
+            .prefs
+            .hidden_user_group_sections
+            .as_deref()
+            .unwrap_or_default()
+            .split(',')
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+            .collect();
 
         for channel in boot.all_channels() {
             if channel.is_im || channel.is_mpim {
@@ -345,9 +407,90 @@ impl Workspace {
                 existing.mention_count = channel.mention_count.or(existing.mention_count);
                 existing.has_unreads |= channel.has_unreads;
                 existing.last_read = channel.last_read.or_else(|| existing.last_read.take());
+                existing.updated = channel.updated.max(existing.updated);
             } else {
                 self.channels.insert(channel.id.clone(), channel);
             }
+        }
+    }
+
+    pub fn apply_channel_sections(&mut self, page: crate::slack::models::ChannelSectionsPage) {
+        self.sidebar.sections = page.channel_sections;
+    }
+
+    pub fn resolved_sidebar_sections(&self) -> Vec<ResolvedSection> {
+        let mut out = Vec::new();
+        if self.priority_sidebar_section {
+            out.push(self.resolve_section("priority", "priority", "VIP unreads", &[]));
+        }
+        if self.sidebar.sections.is_empty() {
+            for (kind, title) in [
+                ("slack_connect", "External connections"),
+                ("direct_messages", "Direct messages"),
+                ("stars", "Starred"),
+                ("channels", "Channels"),
+            ] {
+                out.push(self.resolve_section(kind, kind, title, &[]));
+            }
+            return out;
+        }
+        for section in linked_list_order(&self.sidebar.sections) {
+            if section.is_hidden
+                || self
+                    .sidebar
+                    .hidden_sections
+                    .contains(&section.channel_section_id)
+            {
+                continue;
+            }
+            let title: &str = match section.kind.as_str() {
+                "slack_connect" => "External connections",
+                "direct_messages" => "Direct messages",
+                "stars" => "Starred",
+                "channels" => "Channels",
+                _ if section.channel_ids_page.channel_ids.is_empty() => continue,
+                _ => &section.name,
+            };
+            out.push(self.resolve_section(
+                &section.channel_section_id,
+                &section.kind,
+                title,
+                &section.channel_ids_page.channel_ids,
+            ));
+        }
+        for (kind, title) in [("direct_messages", "Direct messages"), ("channels", "Channels")] {
+            if !out.iter().any(|s| s.kind == kind) {
+                out.push(self.resolve_section(kind, kind, title, &[]));
+            }
+        }
+        out
+    }
+
+    fn resolve_section(
+        &self,
+        id: &str,
+        kind: &str,
+        title: &str,
+        channel_ids: &[ChannelId],
+    ) -> ResolvedSection {
+        let pref = self.sidebar.section_prefs.get(id);
+        let sort = match pref.and_then(|p| p.sort.as_deref()) {
+            Some("recent") => SectionSort::Recent,
+            Some("priority") => SectionSort::Priority,
+            Some(_) => SectionSort::Alpha,
+            None if kind == "direct_messages" || kind == "priority" => SectionSort::Recent,
+            None => SectionSort::Alpha,
+        };
+        let show_all = pref.map_or(kind == "stars" || kind == "slack_connect", |p| {
+            p.sidebar.as_deref() == Some("all") || kind == "stars"
+        });
+        ResolvedSection {
+            id: id.to_owned(),
+            kind: kind.to_owned(),
+            title: title.to_owned(),
+            sort,
+            show_all,
+            channel_ids: channel_ids.to_vec(),
         }
     }
 
@@ -525,6 +668,16 @@ impl Workspace {
 
     pub fn priority_score(&self, channel_id: &str) -> Option<f64> {
         self.priority_scores.get(channel_id).copied()
+    }
+
+    pub fn channel_recency(&self, channel: &Channel) -> u64 {
+        let seen = self
+            .messages
+            .get(&channel.id)
+            .and_then(ChannelMessages::latest_ts)
+            .map(|ts| ts_key(&ts).0)
+            .unwrap_or(0);
+        seen.max(channel.updated.unwrap_or(0))
     }
 
     pub fn unread_total(&self, channel: &Channel) -> u32 {
@@ -767,10 +920,15 @@ pub fn dm_label(ws: &Workspace, c: &Channel) -> String {
     channel_label(c).trim_start_matches('#').to_owned()
 }
 
-/// Whether this conversation is treated as VIP (priority sidebar / channel metadata).
 pub fn is_vip_channel(ws: &Workspace, c: &Channel) -> bool {
-    if ws.priority_sidebar_section && ws.priority_score(&c.id).is_some() {
-        return true;
+    if ws.priority_sidebar_section && !ws.vip_users.is_empty() {
+        if c.is_im {
+            if dm_user_id(c).is_some_and(|user| ws.vip_users.contains(user)) {
+                return true;
+            }
+        } else if latest_author(ws, &c.id).is_some_and(|user| ws.vip_users.contains(user)) {
+            return true;
+        }
     }
     c.extra.iter().any(|(key, value)| {
         let key = key.to_ascii_lowercase();
@@ -778,6 +936,55 @@ pub fn is_vip_channel(ws: &Workspace, c: &Channel) -> bool {
             || (key.contains("priority") && value.as_bool().unwrap_or(false))
             || value_names_vip(value)
     })
+}
+
+fn linked_list_order(
+    sections: &[crate::slack::models::ChannelSection],
+) -> Vec<&crate::slack::models::ChannelSection> {
+    let by_id: HashMap<&str, &crate::slack::models::ChannelSection> = sections
+        .iter()
+        .map(|s| (s.channel_section_id.as_str(), s))
+        .collect();
+    let pointed_at: HashSet<&str> = sections
+        .iter()
+        .filter_map(|s| s.next_channel_section_id.as_deref())
+        .collect();
+    let Some(head) = sections
+        .iter()
+        .find(|s| !pointed_at.contains(s.channel_section_id.as_str()))
+    else {
+        return sections.iter().collect();
+    };
+    let mut out = Vec::with_capacity(sections.len());
+    let mut seen = HashSet::new();
+    let mut cursor = Some(head);
+    while let Some(section) = cursor {
+        if !seen.insert(section.channel_section_id.as_str()) {
+            break;
+        }
+        out.push(section);
+        cursor = section
+            .next_channel_section_id
+            .as_deref()
+            .and_then(|id| by_id.get(id).copied());
+    }
+    for section in sections {
+        if !seen.contains(section.channel_section_id.as_str()) {
+            out.push(section);
+        }
+    }
+    out
+}
+
+fn latest_author<'a>(ws: &'a Workspace, channel_id: &str) -> Option<&'a str> {
+    ws.messages
+        .get(channel_id)?
+        .messages
+        .iter()
+        .filter(|m| m.ts.is_some())
+        .max_by(|a, b| cmp_ts(a.ts.as_deref(), b.ts.as_deref()))?
+        .user
+        .as_deref()
 }
 
 fn value_names_vip(value: &serde_json::Value) -> bool {
@@ -1525,6 +1732,8 @@ mod tests {
             frecency: BTreeMap::new(),
             hide_read_channels_unless_starred: false,
             priority_sidebar_section: false,
+            vip_users: HashSet::new(),
+            sidebar: SidebarConfig::default(),
             users: HashMap::new(),
             custom_emoji: HashMap::new(),
             messages: HashMap::new(),
@@ -1556,7 +1765,53 @@ mod tests {
     }
 
     #[test]
-    fn is_vip_channel_from_priority_and_metadata() {
+    fn resolves_section_order_from_real_linked_list() {
+        let page: crate::slack::models::ChannelSectionsPage = serde_json::from_str(
+            r#"{
+                "ok": true,
+                "channel_sections": [
+                    {"channel_section_id":"L_CONNECT","name":"Slack Connect","type":"slack_connect","next_channel_section_id":"L_DMS"},
+                    {"channel_section_id":"L_DMS","name":"Direct Messages","type":"direct_messages","next_channel_section_id":"L_STARS"},
+                    {"channel_section_id":"L_STARS","name":"","type":"stars","next_channel_section_id":"L_UG"},
+                    {"channel_section_id":"L_UG","name":"helpers","type":"user_group","next_channel_section_id":"L_APPS"},
+                    {"channel_section_id":"L_APPS","name":"Recent Apps","type":"recent_apps","next_channel_section_id":"L_CHANNELS"},
+                    {"channel_section_id":"L_CHANNELS","name":"Channels","type":"channels","next_channel_section_id":"L_AGENTS"},
+                    {"channel_section_id":"L_AGENTS","name":"Agents","type":"agents","next_channel_section_id":null}
+                ]
+            }"#,
+        )
+        .unwrap();
+        let mut ws = Workspace::from_session(&crate::config::WorkspaceSession {
+            team_id: "T1".into(),
+            enterprise_id: None,
+            user_id: "U_SELF".into(),
+            name: "Test".into(),
+            url: "https://t".into(),
+            token: "xoxc".into(),
+        });
+        ws.priority_sidebar_section = true;
+        ws.apply_channel_sections(page);
+
+        let titles: Vec<String> = ws
+            .resolved_sidebar_sections()
+            .into_iter()
+            .map(|s| s.title)
+            .collect();
+
+        assert_eq!(
+            titles,
+            [
+                "VIP unreads",
+                "External connections",
+                "Direct messages",
+                "Starred",
+                "Channels"
+            ]
+        );
+    }
+
+    #[test]
+    fn is_vip_channel_from_vip_users_and_metadata() {
         let mut ws = Workspace {
             team_id: "T".into(),
             name: "Test".into(),
@@ -1572,6 +1827,8 @@ mod tests {
             frecency: BTreeMap::new(),
             hide_read_channels_unless_starred: false,
             priority_sidebar_section: true,
+            vip_users: HashSet::new(),
+            sidebar: SidebarConfig::default(),
             users: HashMap::new(),
             custom_emoji: HashMap::new(),
             messages: HashMap::new(),
@@ -1581,7 +1838,7 @@ mod tests {
             rt: RealtimeStatus::default(),
             rt_generation: 0,
         };
-        ws.priority_scores.insert("D_VIP".into(), 0.8);
+        ws.vip_users.insert("U_ALFIE".into());
 
         let vip_dm = Channel {
             id: "D_VIP".into(),
@@ -1590,6 +1847,24 @@ mod tests {
             ..Default::default()
         };
         assert!(is_vip_channel(&ws, &vip_dm));
+
+        let vip_channel = Channel {
+            id: "C_VIP_POST".into(),
+            is_channel: true,
+            ..Default::default()
+        };
+        let cm = ws.messages.entry("C_VIP_POST".into()).or_default();
+        cm.upsert(SlackMessage {
+            ts: Some("100.000000".into()),
+            user: Some("U_OTHER".into()),
+            ..Default::default()
+        });
+        cm.upsert(SlackMessage {
+            ts: Some("200.000000".into()),
+            user: Some("U_ALFIE".into()),
+            ..Default::default()
+        });
+        assert!(is_vip_channel(&ws, &vip_channel));
 
         let plain_dm = Channel {
             id: "D_PLAIN".into(),
@@ -1883,6 +2158,8 @@ mod tests {
             frecency: BTreeMap::new(),
             hide_read_channels_unless_starred: false,
             priority_sidebar_section: false,
+            vip_users: HashSet::new(),
+            sidebar: SidebarConfig::default(),
             users: HashMap::new(),
             custom_emoji: HashMap::new(),
             messages: HashMap::new(),

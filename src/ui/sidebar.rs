@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 
 use iced::widget::text::Wrapping;
@@ -11,56 +12,75 @@ use crate::state::{self, Workspace, channel_display_name};
 
 type AvatarPreviews = HashMap<UserId, FilePreview>;
 
-#[derive(Debug, Default)]
-struct SidebarSections<'a> {
-    vip_unreads: Vec<&'a Channel>,
-    dms: Vec<&'a Channel>,
-    starred: Vec<&'a Channel>,
-    other_unreads: Vec<&'a Channel>,
+#[derive(Debug)]
+struct SidebarGroup<'a> {
+    title: String,
+    channels: Vec<&'a Channel>,
 }
 
-fn grouped<'a>(ws: &'a Workspace, active: Option<&str>) -> SidebarSections<'a> {
-    let mut sections = SidebarSections::default();
-    for c in ws.channels.values() {
-        if ws.is_starred_channel(c) {
-            sections.starred.push(c);
-            continue;
-        }
+fn grouped<'a>(ws: &'a Workspace, active: Option<&str>) -> Vec<SidebarGroup<'a>> {
+    let sections = ws.resolved_sidebar_sections();
 
-        if c.is_im || c.is_mpim {
-            if has_unreads(ws, c)
-                || active == Some(c.id.as_str())
-                || ws.should_show_unstarred_read_channels()
-            {
-                sections.dms.push(c);
-            }
-            continue;
-        }
-
-        if is_vip(ws, c) && has_unreads(ws, c) {
-            sections.vip_unreads.push(c);
-            continue;
-        }
-
-        if has_unreads(ws, c)
-            || active == Some(c.id.as_str())
-            || ws.should_show_unstarred_read_channels()
-        {
-            sections.other_unreads.push(c);
+    let mut custom: HashMap<&str, usize> = HashMap::new();
+    for (i, section) in sections.iter().enumerate() {
+        for id in &section.channel_ids {
+            custom.entry(id.as_str()).or_insert(i);
         }
     }
-    sort_priority_section(&mut sections.vip_unreads, ws);
-    sort_dm_section(&mut sections.dms, ws);
-    sort_ordered_section(&mut sections.starred, &ws.starred_order, ws);
-    sort_unread_section(&mut sections.other_unreads, ws);
+    let index_of = |kind: &str| sections.iter().position(|s| s.kind == kind);
+    let vip = index_of("priority");
+    let stars = index_of("stars");
+    let dms = index_of("direct_messages");
+    let connect = index_of("slack_connect");
+    let channels = index_of("channels");
+
+    let mut groups: Vec<Vec<&Channel>> = vec![Vec::new(); sections.len()];
+    for c in ws.channels.values() {
+        let target = if vip.is_some() && is_vip(ws, c) && has_unreads(ws, c) {
+            vip
+        } else if let Some(&section) = custom.get(c.id.as_str()) {
+            Some(section)
+        } else if ws.is_starred_channel(c) && stars.is_some() {
+            stars
+        } else if c.is_im || c.is_mpim {
+            dms
+        } else if c.is_ext_shared && connect.is_some() {
+            connect
+        } else {
+            channels
+        };
+        let Some(target) = target else { continue };
+        let visible = sections[target].show_all
+            || has_unreads(ws, c)
+            || active == Some(c.id.as_str())
+            || ws.should_show_unstarred_read_channels();
+        if visible {
+            groups[target].push(c);
+        }
+    }
+
     sections
+        .into_iter()
+        .zip(groups)
+        .map(|(section, mut channels)| {
+            match section.sort {
+                state::SectionSort::Recent => sort_recent_section(&mut channels, ws),
+                state::SectionSort::Priority => sort_priority_section(&mut channels, ws),
+                state::SectionSort::Alpha => sort_alpha_section(&mut channels, ws),
+            }
+            SidebarGroup {
+                title: section.title,
+                channels,
+            }
+        })
+        .collect()
 }
 
-fn sort_unread_section(channels: &mut [&Channel], ws: &Workspace) {
+fn sort_recent_section(channels: &mut [&Channel], ws: &Workspace) {
     channels.sort_by(|a, b| {
-        unread_total(ws, b)
-            .cmp(&unread_total(ws, a))
-            .then_with(|| channel_display_name(ws, a).cmp(&channel_display_name(ws, b)))
+        ws.channel_recency(b)
+            .cmp(&ws.channel_recency(a))
+            .then_with(|| name_cmp(ws, a, b))
     });
 }
 
@@ -69,34 +89,58 @@ fn sort_priority_section(channels: &mut [&Channel], ws: &Workspace) {
         ws.priority_score(&b.id)
             .unwrap_or(0.0)
             .total_cmp(&ws.priority_score(&a.id).unwrap_or(0.0))
-            .then_with(|| unread_total(ws, b).cmp(&unread_total(ws, a)))
-            .then_with(|| channel_display_name(ws, a).cmp(&channel_display_name(ws, b)))
+            .then_with(|| name_cmp(ws, a, b))
     });
 }
 
-fn sort_dm_section(channels: &mut [&Channel], ws: &Workspace) {
+fn sort_alpha_section(channels: &mut [&Channel], ws: &Workspace) {
     channels.sort_by(|a, b| {
-        order_index(&ws.dm_order, &a.id)
-            .cmp(&order_index(&ws.dm_order, &b.id))
-            .then_with(|| b.updated.unwrap_or(0).cmp(&a.updated.unwrap_or(0)))
-            .then_with(|| unread_total(ws, b).cmp(&unread_total(ws, a)))
-            .then_with(|| channel_display_name(ws, a).cmp(&channel_display_name(ws, b)))
+        (mention_count(ws, b) > 0)
+            .cmp(&(mention_count(ws, a) > 0))
+            .then_with(|| name_cmp(ws, a, b))
     });
 }
 
-fn sort_ordered_section(channels: &mut [&Channel], order: &[String], ws: &Workspace) {
-    channels.sort_by(|a, b| {
-        order_index(order, &a.id)
-            .cmp(&order_index(order, &b.id))
-            .then_with(|| channel_display_name(ws, a).cmp(&channel_display_name(ws, b)))
-    });
+fn name_cmp(ws: &Workspace, a: &Channel, b: &Channel) -> Ordering {
+    natural_cmp(&channel_display_name(ws, a), &channel_display_name(ws, b))
+        .then_with(|| a.id.cmp(&b.id))
 }
 
-fn order_index(order: &[String], id: &str) -> usize {
-    order
-        .iter()
-        .position(|ordered_id| ordered_id == id)
-        .unwrap_or(usize::MAX)
+fn natural_cmp(a: &str, b: &str) -> Ordering {
+    let mut a = a.chars().peekable();
+    let mut b = b.chars().peekable();
+    loop {
+        return match (a.peek().copied(), b.peek().copied()) {
+            (None, None) => Ordering::Equal,
+            (None, Some(_)) => Ordering::Less,
+            (Some(_), None) => Ordering::Greater,
+            (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
+                match take_number(&mut a).cmp(&take_number(&mut b)) {
+                    Ordering::Equal => continue,
+                    unequal => unequal,
+                }
+            }
+            (Some(x), Some(y)) => {
+                match x.to_lowercase().cmp(y.to_lowercase()) {
+                    Ordering::Equal => {
+                        a.next();
+                        b.next();
+                        continue;
+                    }
+                    unequal => unequal,
+                }
+            }
+        };
+    }
+}
+
+fn take_number(chars: &mut std::iter::Peekable<std::str::Chars>) -> u64 {
+    let mut n: u64 = 0;
+    while let Some(c) = chars.peek().and_then(|c| c.to_digit(10)) {
+        n = n.saturating_mul(10).saturating_add(u64::from(c));
+        chars.next();
+    }
+    n
 }
 
 fn section_header<'a>(title: &str) -> Element<'a, Message> {
@@ -118,7 +162,7 @@ fn push_section<'a>(
     ws: &'a Workspace,
     avatars: &AvatarPreviews,
     active: Option<&str>,
-    title: &'static str,
+    title: &str,
     channels: Vec<&'a Channel>,
 ) -> Column<'a, Message> {
     if channels.is_empty() {
@@ -365,24 +409,9 @@ pub fn view<'a>(
         ));
     }
 
-    list = push_section(
-        list,
-        ws,
-        avatars,
-        active,
-        "VIP unreads",
-        sections.vip_unreads,
-    );
-    list = push_section(list, ws, avatars, active, "Direct messages", sections.dms);
-    list = push_section(list, ws, avatars, active, "Starred", sections.starred);
-    list = push_section(
-        list,
-        ws,
-        avatars,
-        active,
-        "Other channels",
-        sections.other_unreads,
-    );
+    for group in sections {
+        list = push_section(list, ws, avatars, active, &group.title, group.channels);
+    }
 
     let header = container(
         text(ws.name.clone())
@@ -503,6 +532,8 @@ mod tests {
             frecency: BTreeMap::new(),
             hide_read_channels_unless_starred: false,
             priority_sidebar_section: false,
+            vip_users: std::collections::HashSet::new(),
+            sidebar: Default::default(),
             users: HashMap::new(),
             custom_emoji: HashMap::new(),
             messages,
@@ -516,6 +547,22 @@ mod tests {
 
     fn ids(channels: &[&Channel]) -> Vec<String> {
         channels.iter().map(|channel| channel.id.clone()).collect()
+    }
+
+    fn section_ids(groups: &[SidebarGroup<'_>], title: &str) -> Vec<String> {
+        groups
+            .iter()
+            .find(|group| group.title == title)
+            .map(|group| ids(&group.channels))
+            .unwrap_or_default()
+    }
+
+    fn section_titles(groups: &[SidebarGroup<'_>]) -> Vec<String> {
+        groups
+            .iter()
+            .filter(|group| !group.channels.is_empty())
+            .map(|group| group.title.clone())
+            .collect()
     }
 
     #[test]
@@ -540,39 +587,53 @@ mod tests {
             &[("C_VIP", 1), ("C_UNREAD", 2)],
         );
         ws.hide_read_channels_unless_starred = true;
+        ws.priority_sidebar_section = true;
 
         let sections = grouped(&ws, Some("C_ACTIVE"));
 
-        assert_eq!(ids(&sections.vip_unreads), ["C_VIP"]);
-        assert!(sections.dms.is_empty());
-        assert_eq!(ids(&sections.starred), ["C_STAR"]);
-        assert_eq!(ids(&sections.other_unreads), ["C_UNREAD", "C_ACTIVE"]);
+        assert_eq!(section_ids(&sections, "VIP unreads"), ["C_VIP"]);
+        assert!(section_ids(&sections, "Direct messages").is_empty());
+        assert_eq!(section_ids(&sections, "Starred"), ["C_STAR"]);
+        assert_eq!(section_ids(&sections, "Channels"), ["C_UNREAD", "C_ACTIVE"]);
     }
 
     #[test]
-    fn uses_slack_sidebar_ordering_sources() {
-        let mut ws = workspace(
-            vec![
-                channel("C_LOW", "alpha-vip"),
-                channel("C_HIGH", "zulu-vip"),
-                channel("C_STAR_2", "announcements"),
-                channel("C_STAR_1", "community"),
-                dm("D_LATE", "late"),
-                dm("D_FIRST", "first"),
-            ],
-            &[("C_LOW", 1), ("C_HIGH", 1)],
-        );
-        ws.priority_sidebar_section = true;
-        ws.priority_scores.insert("C_LOW".into(), 0.2);
-        ws.priority_scores.insert("C_HIGH".into(), 0.9);
-        ws.starred_order = vec!["C_STAR_1".into(), "C_STAR_2".into()];
-        ws.dm_order = vec!["D_FIRST".into(), "D_LATE".into()];
+    fn hidden_sections_stay_hidden() {
+        use crate::slack::models::{ChannelIdsPage, ChannelSection};
+
+        let mut ws = workspace(vec![channel("C_G", "grouped")], &[("C_G", 1)]);
+        ws.apply_channel_sections(crate::slack::models::ChannelSectionsPage {
+            channel_sections: vec![ChannelSection {
+                channel_section_id: "L_UG".into(),
+                name: "helpers".into(),
+                kind: "user_group".into(),
+                channel_ids_page: ChannelIdsPage {
+                    channel_ids: vec!["C_G".into()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        ws.sidebar.hidden_sections.insert("L_UG".into());
 
         let sections = grouped(&ws, None);
 
-        assert_eq!(ids(&sections.vip_unreads), ["C_HIGH", "C_LOW"]);
-        assert_eq!(ids(&sections.starred), ["C_STAR_1", "C_STAR_2"]);
-        assert_eq!(ids(&sections.dms), ["D_FIRST", "D_LATE"]);
+        assert!(!section_titles(&sections).contains(&"helpers".to_string()));
+    }
+
+    #[test]
+    fn external_channels_get_their_own_section_and_stay_visible_when_read() {
+        let mut ext = channel("C_EXT", "vercel-embassy");
+        ext.is_ext_shared = true;
+        let read = channel("C_READ", "quiet");
+        let mut ws = workspace(vec![ext, read], &[]);
+        ws.hide_read_channels_unless_starred = true;
+
+        let sections = grouped(&ws, None);
+
+        assert_eq!(section_ids(&sections, "External connections"), ["C_EXT"]);
+        assert!(section_ids(&sections, "Channels").is_empty());
     }
 
     #[test]
@@ -585,7 +646,7 @@ mod tests {
 
         let sections = grouped(&ws, None);
 
-        assert_eq!(ids(&sections.dms), ["D_UNREAD"]);
+        assert_eq!(section_ids(&sections, "Direct messages"), ["D_UNREAD"]);
     }
 
     #[test]

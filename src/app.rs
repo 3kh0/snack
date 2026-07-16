@@ -13,9 +13,9 @@ use crate::config::{self, Session};
 use crate::slack::api::{self, HistoryArgs};
 use crate::slack::events::RtEvent;
 use crate::slack::models::{
-    ActivityFeedPage, BootData, Channel, ChannelId, ClientDmsPage, CountsPage, Emoji, HistoryPage,
-    Message as SlackMessage, MessageTs, MessagesListPage, SearchMessagesPage, SentMessage,
-    SidebarDmsPage, TeamId, User, UserId,
+    ActivityFeedPage, BootData, Channel, ChannelId, ChannelSectionsPage, ClientDmsPage, CountsPage,
+    Emoji, HistoryPage, Message as SlackMessage, MessageTs, MessagesListPage, SearchMessagesPage,
+    SentMessage, SidebarDmsPage, TeamId, User, UserId,
 };
 use crate::slack::realtime::Connection;
 use crate::slack::{Error as SlackError, SlackClient, Transport};
@@ -349,6 +349,7 @@ pub enum Message {
     BootLoaded(TeamId, Result<BootData, SlackError>),
     CountsLoaded(TeamId, Result<CountsPage, SlackError>),
     SidebarDmsLoaded(TeamId, Result<SidebarDmsPage, SlackError>),
+    ChannelSectionsLoaded(TeamId, Result<ChannelSectionsPage, SlackError>),
     HistoryLoaded(
         TeamId,
         ChannelId,
@@ -720,7 +721,19 @@ impl App {
                 async move { api::fetch_sidebar_dms(&dms_transport, &dms_client, &dms_ws).await },
                 move |result| Message::SidebarDmsLoaded(team.clone(), result),
             );
-            [boot, counts, dms]
+
+            let sections_transport = transport.clone();
+            let sections_client = self.client.clone();
+            let sections_ws = ws.clone();
+            let team = ws.team_id.clone();
+            let sections = Task::perform(
+                async move {
+                    api::fetch_channel_sections(&sections_transport, &sections_client, &sections_ws)
+                        .await
+                },
+                move |result| Message::ChannelSectionsLoaded(team.clone(), result),
+            );
+            [boot, counts, dms, sections]
         });
         Task::batch(tasks)
     }

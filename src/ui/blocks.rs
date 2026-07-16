@@ -583,6 +583,8 @@ mod tests {
             frecency: BTreeMap::new(),
             hide_read_channels_unless_starred: false,
             priority_sidebar_section: false,
+            vip_users: std::collections::HashSet::new(),
+            sidebar: Default::default(),
             users: HashMap::from([(
                 "U1".into(),
                 User {
