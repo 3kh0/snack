@@ -4463,6 +4463,14 @@ fn apply_realtime(
             }
             None
         }
+        RtEvent::RoomJoin { room, .. } | RtEvent::RoomLeave { room, .. } => {
+            ws.apply_room(room);
+            None
+        }
+        RtEvent::RoomUpdate { room } => {
+            ws.apply_room(room);
+            None
+        }
         RtEvent::ChannelMarked {
             channel,
             ts,

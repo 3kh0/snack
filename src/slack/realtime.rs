@@ -240,6 +240,20 @@ pub fn parse_event(text: &str) -> Option<RtEvent> {
             let item: super::models::ActivityItem = serde_json::from_value(entry).ok()?;
             Some(RtEvent::ActivityUpdated(item))
         }
+        "sh_room_join" | "sh_room_leave" | "sh_room_update" => {
+            let room: super::models::Room =
+                serde_json::from_value(value.get("room")?.clone()).ok()?;
+            let user = value
+                .get("user")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            Some(match kind {
+                "sh_room_join" => RtEvent::RoomJoin { room, user },
+                "sh_room_leave" => RtEvent::RoomLeave { room, user },
+                _ => RtEvent::RoomUpdate { room },
+            })
+        }
         _ => {
             let raw: RawEvent = serde_json::from_value(value).ok()?;
             Some(RtEvent::Unknown(raw))
@@ -411,6 +425,36 @@ mod tests {
                 matches!(parse_event(&frame), Some(RtEvent::ChannelMarked { .. })),
                 "{kind} should parse as ChannelMarked"
             );
+        }
+    }
+
+    #[test]
+    fn parses_room_join_and_leave_and_update() {
+        let join = r#"{"type":"sh_room_join","user":"U08TBE25U82","huddle":{"channel_id":"C0P5NE354"},"room":{"id":"R0BHHSL2011","call_family":"huddle","channels":["C0P5NE354"],"created_by":"U08TBE25U82","has_ended":false,"huddle_link":"https://app.slack.com/huddle/E09/C0P5NE354","participants":["U08TBE25U82"],"media_backend_type":"free_willy"}}"#;
+        match parse_event(join) {
+            Some(RtEvent::RoomJoin { room, user }) => {
+                assert_eq!(room.id, "R0BHHSL2011");
+                assert_eq!(room.channel().map(String::as_str), Some("C0P5NE354"));
+                assert_eq!(room.participants, vec!["U08TBE25U82".to_owned()]);
+                assert!(room.is_active());
+                assert_eq!(user, "U08TBE25U82");
+            }
+            other => panic!("expected RoomJoin, got {other:?}"),
+        }
+
+        let leave = r#"{"type":"sh_room_leave","user":"U1","room":{"id":"R1","channels":["C1"],"participants":[],"has_ended":false}}"#;
+        assert!(matches!(
+            parse_event(leave),
+            Some(RtEvent::RoomLeave { room, user }) if room.id == "R1" && user == "U1"
+        ));
+
+        let update = r#"{"type":"sh_room_update","user":"U1","room":{"id":"R1","channels":["C1"],"participants":[],"has_ended":true}}"#;
+        match parse_event(update) {
+            Some(RtEvent::RoomUpdate { room }) => {
+                assert!(room.has_ended);
+                assert!(!room.is_active());
+            }
+            other => panic!("expected RoomUpdate, got {other:?}"),
         }
     }
 

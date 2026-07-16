@@ -12,6 +12,20 @@ use wry::{WebContext, WebViewBuilder};
 use crate::config::{self, Session, WorkspaceSession};
 use crate::slack::xparams::Identity;
 
+// Present the login window as an ordinary desktop browser. The Slack desktop
+// user agent (`Slack_SSB`) makes Slack serve the native SSB boot flow
+// (`/ssb/first`, `/gantry/auth`), which needs desktop-only JS APIs a bare
+// webview lacks — the client never boots, `localConfig_v2` never gets the
+// `xoxc-` token, and login loops. REST/edge calls still use the desktop
+// identity from `xparams::Identity`; only this window is a plain browser.
+const LOGIN_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36";
+
+// Poll `localStorage` for the booted web client's config and hand it back over
+// IPC. We deliberately do NOT force-navigate to `/client/<id>`: the old regex
+// scanned page HTML and matched base64/SAML fragments, hijacking the SAML
+// redirect into a bogus client URL and looping forever. With a browser UA
+// Slack routes itself to the client after sign-in, so passive polling is enough.
 const SCR: &str = r#"
 (function () {
   if (window.__snackGrab) return;
@@ -24,12 +38,6 @@ const SCR: &str = r#"
     try {
       var lc = localStorage.getItem('localConfig_v2');
       if (lc && lc.indexOf('xoxc-') !== -1) { clearInterval(iv); ipc('CFG:' + lc); return; }
-      var p = location.pathname || '';
-      var onClient = p.indexOf('/client') === 0;
-      if (!onClient) {
-        var m = document.documentElement.innerHTML.match(/[TE][A-Z0-9]{7,}/);
-        if (m) { ipc('LOG: navigating to client ' + m[0]); location.href = 'https://app.slack.com/client/' + m[0]; }
-      }
     } catch (e) { ipc('LOG: err ' + e); }
     if (tries > 1200) clearInterval(iv); // ~14 min safety cap
   }, 700);
@@ -40,9 +48,111 @@ pub fn login() -> Result<Session, String> {
     drive_login()
 }
 
-fn drive_login() -> Result<Session, String> {
-    let identity = Identity::from_capture();
+/// Injected into the huddle-capture webview: hook `fetch`, `XMLHttpRequest`, and
+/// `WebSocket` and forward any huddle-related API call (request + response) and
+/// any websocket URL over IPC. Read-only observation of the official client —
+/// we issue nothing ourselves, so join/leave happen exactly as Slack does them
+/// (leaving a huddle is a media-socket disconnect, not a REST call).
+const CAPTURE_SCR: &str = r#"
+(function () {
+  if (window.__snackCap) return;
+  window.__snackCap = true;
+  function ipc(m) { try { window.ipc.postMessage(m); } catch (e) {} }
+  var RE = /\/api\/(rooms|screenhero|huddles|calls)\./;
+  function emit(url, req, res) {
+    if (!RE.test(url)) return;
+    try {
+      ipc('CAP:' + JSON.stringify({
+        url: String(url),
+        req: String(req || '').slice(0, 2000),
+        res: String(res || '').slice(0, 6000),
+      }));
+    } catch (e) {}
+  }
+  var of = window.fetch;
+  window.fetch = function (input, init) {
+    var url = (typeof input === 'string') ? input : (input && input.url) || '';
+    var body = (init && init.body) || (input && input.body) || '';
+    return of.apply(this, arguments).then(function (res) {
+      try { res.clone().text().then(function (t) { emit(url, body, t); }); } catch (e) {}
+      return res;
+    });
+  };
+  var oOpen = XMLHttpRequest.prototype.open;
+  var oSend = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open = function (m, url) { this.__u = url; return oOpen.apply(this, arguments); };
+  XMLHttpRequest.prototype.send = function (body) {
+    var xhr = this;
+    xhr.addEventListener('load', function () { emit(xhr.__u, body, xhr.responseText); });
+    return oSend.apply(this, arguments);
+  };
+  var OW = window.WebSocket;
+  window.WebSocket = function (url, protocols) {
+    ipc('WS:' + url);
+    return protocols === undefined ? new OW(url) : new OW(url, protocols);
+  };
+  window.WebSocket.prototype = OW.prototype;
+  ipc('LOG: capture hooks installed on ' + location.href);
+})();
+"#;
 
+/// `SNACK_HUDDLE_WEBVIEW=1` entry point: open the real Slack client and log the
+/// huddle join/leave API + media-socket traffic. The user drives a huddle in the
+/// window; we print captured requests/responses until the window is closed.
+pub fn capture_huddle_webview() -> Result<(), String> {
+    let mut event_loop = EventLoop::new();
+    let window = WindowBuilder::new()
+        .with_title("snack huddle capture — join/leave a huddle, then close")
+        .with_inner_size(LogicalSize::new(1100.0, 800.0))
+        .build(&event_loop)
+        .map_err(|e| format!("window: {e}"))?;
+
+    let data_dir = config::config_dir()
+        .map_err(|e| format!("config dir: {e}"))?
+        .join("webview");
+    let _ = std::fs::create_dir_all(&data_dir);
+    let mut web_context = WebContext::new(Some(data_dir));
+
+    let _webview = WebViewBuilder::new_with_web_context(&mut web_context)
+        .with_url("https://app.slack.com/")
+        .with_user_agent(LOGIN_USER_AGENT)
+        .with_initialization_script(CAPTURE_SCR)
+        .with_ipc_handler(|req: Request<String>| {
+            let body = req.into_body();
+            if let Some(cap) = body.strip_prefix("CAP:") {
+                println!("===== huddle api call =====");
+                println!("{}", crate::slack::client::redact_secrets(cap));
+                println!("===== end =====");
+            } else if let Some(ws) = body.strip_prefix("WS:") {
+                println!("[websocket] {}", crate::slack::client::redact_secrets(ws));
+            } else if let Some(log) = body.strip_prefix("LOG:") {
+                eprintln!("snack huddle-webview [webview]:{log}");
+            }
+        })
+        .with_navigation_handler(|url| !url.starts_with("slack://"))
+        .with_devtools(true)
+        .build(&window)
+        .map_err(|e| format!("webview: {e}"))?;
+
+    eprintln!(
+        "snack huddle-webview: open a channel, start/join a huddle, then leave and \
+         close this window. Huddle API calls + the media socket URL will print here."
+    );
+
+    event_loop.run_return(|event, _, control_flow| {
+        *control_flow = ControlFlow::Wait;
+        if let Event::WindowEvent {
+            event: WindowEvent::CloseRequested,
+            ..
+        } = event
+        {
+            *control_flow = ControlFlow::Exit;
+        }
+    });
+    Ok(())
+}
+
+fn drive_login() -> Result<Session, String> {
     let mut event_loop = EventLoop::new();
     let window = WindowBuilder::new()
         .with_title("Sign in to Slack")
@@ -59,7 +169,7 @@ fn drive_login() -> Result<Session, String> {
     let (tx, rx) = mpsc::channel::<String>();
     let webview = WebViewBuilder::new_with_web_context(&mut web_context)
         .with_url("https://app.slack.com/")
-        .with_user_agent(&identity.user_agent)
+        .with_user_agent(LOGIN_USER_AGENT)
         .with_initialization_script(SCR)
         .with_ipc_handler(move |req: Request<String>| {
             let body = req.into_body();

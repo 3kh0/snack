@@ -32,6 +32,30 @@ pub fn main() -> iced::Result {
         tracing::warn!(%error, "could not register Windows notification identity");
     }
 
+    if let Some(channel) = std::env::var_os("SNACK_HUDDLE_CAPTURE") {
+        let channel = channel.to_string_lossy().into_owned();
+        std::process::exit(run_huddle_capture(&channel));
+    }
+
+    if std::env::var_os("SNACK_HUDDLE_TRACE").is_some() {
+        std::process::exit(run_huddle_trace());
+    }
+
+    if let Some(channel) = std::env::var_os("SNACK_HUDDLE_JOIN") {
+        let channel = channel.to_string_lossy().into_owned();
+        std::process::exit(run_huddle_join(&channel));
+    }
+
+    if std::env::var_os("SNACK_HUDDLE_WEBVIEW").is_some() {
+        match auth::capture_huddle_webview() {
+            Ok(()) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("snack huddle-webview: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if std::env::var_os("SNACK_AUTH").is_some() {
         match auth::login() {
             Ok(session) => {
@@ -49,4 +73,189 @@ pub fn main() -> iced::Result {
     }
 
     app::run()
+}
+
+/// Phase 0 huddle protocol capture (read-only). Loads the saved session and
+/// dumps the redacted JSON that reveals the huddle wire format for a channel.
+///
+/// Usage: `SNACK_HUDDLE_CAPTURE=<channel_id> [SNACK_HUDDLE_TEAM=<team_id>] snack`
+/// Start a huddle in that channel from the official client first, then run this.
+fn run_huddle_capture(channel: &str) -> i32 {
+    let session = match config::load_session() {
+        Ok(Some(session)) => session,
+        Ok(None) => {
+            eprintln!("snack huddle-capture: no saved session; run SNACK_AUTH=1 snack first");
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("snack huddle-capture: failed to load session: {e}");
+            return 1;
+        }
+    };
+
+    let workspace = match std::env::var("SNACK_HUDDLE_TEAM") {
+        Ok(team) => session.workspaces.get(&team),
+        Err(_) => session.workspaces.values().next(),
+    };
+    let Some(workspace) = workspace.cloned() else {
+        eprintln!("snack huddle-capture: no matching workspace in session");
+        return 1;
+    };
+
+    let transport = match slack::Transport::new(session.d_cookie.clone()) {
+        Ok(transport) => transport,
+        Err(e) => {
+            eprintln!("snack huddle-capture: transport init failed: {e}");
+            return 1;
+        }
+    };
+    let client = slack::SlackClient::default();
+
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(e) => {
+            eprintln!("snack huddle-capture: runtime init failed: {e}");
+            return 1;
+        }
+    };
+
+    match runtime.block_on(slack::huddle_api::capture_channel_huddle(
+        &transport,
+        &client,
+        &workspace,
+        channel.to_owned(),
+    )) {
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!("snack huddle-capture: {e}");
+            1
+        }
+    }
+}
+
+/// Audio-gate capture (consented): join the active huddle in a channel, dump the
+/// media/signaling response, then leave. `SNACK_HUDDLE_ROOM` skips discovery;
+/// `SNACK_HUDDLE_JOIN_SECS` bounds the discovery wait.
+fn run_huddle_join(channel: &str) -> i32 {
+    let session = match config::load_session() {
+        Ok(Some(session)) => session,
+        Ok(None) => {
+            eprintln!("snack huddle-join: no saved session; run SNACK_AUTH=1 snack first");
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("snack huddle-join: failed to load session: {e}");
+            return 1;
+        }
+    };
+
+    let workspace = match std::env::var("SNACK_HUDDLE_TEAM") {
+        Ok(team) => session.workspaces.get(&team),
+        Err(_) => session.workspaces.values().next(),
+    };
+    let Some(workspace) = workspace.cloned() else {
+        eprintln!("snack huddle-join: no matching workspace in session");
+        return 1;
+    };
+
+    let transport = match slack::Transport::new(session.d_cookie.clone()) {
+        Ok(transport) => transport,
+        Err(e) => {
+            eprintln!("snack huddle-join: transport init failed: {e}");
+            return 1;
+        }
+    };
+    let client = slack::SlackClient::default();
+    let room_override = std::env::var("SNACK_HUDDLE_ROOM").ok();
+    let secs = std::env::var("SNACK_HUDDLE_JOIN_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(60);
+    let user_agent = slack::xparams::Identity::from_capture().user_agent;
+
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(e) => {
+            eprintln!("snack huddle-join: runtime init failed: {e}");
+            return 1;
+        }
+    };
+
+    match runtime.block_on(slack::huddle_api::capture_rooms_join(
+        &transport,
+        &client,
+        &workspace,
+        &session.d_cookie,
+        &user_agent,
+        channel,
+        room_override,
+        std::time::Duration::from_secs(secs),
+    )) {
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!("snack huddle-join: {e}");
+            1
+        }
+    }
+}
+
+/// Phase 0 realtime trace: dump flannel websocket frames (highlighting huddle
+/// events) for a bounded window. `SNACK_HUDDLE_TRACE_SECS` overrides the length.
+fn run_huddle_trace() -> i32 {
+    let session = match config::load_session() {
+        Ok(Some(session)) => session,
+        Ok(None) => {
+            eprintln!("snack huddle-trace: no saved session; run SNACK_AUTH=1 snack first");
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("snack huddle-trace: failed to load session: {e}");
+            return 1;
+        }
+    };
+
+    let workspace = match std::env::var("SNACK_HUDDLE_TEAM") {
+        Ok(team) => session.workspaces.get(&team),
+        Err(_) => session.workspaces.values().next(),
+    };
+    let Some(workspace) = workspace.cloned() else {
+        eprintln!("snack huddle-trace: no matching workspace in session");
+        return 1;
+    };
+
+    let secs = std::env::var("SNACK_HUDDLE_TRACE_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(90);
+    let user_agent = slack::xparams::Identity::from_capture().user_agent;
+
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(e) => {
+            eprintln!("snack huddle-trace: runtime init failed: {e}");
+            return 1;
+        }
+    };
+
+    match runtime.block_on(slack::huddle_api::trace_realtime(
+        &workspace,
+        &session.d_cookie,
+        &user_agent,
+        std::time::Duration::from_secs(secs),
+    )) {
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!("snack huddle-trace: {e}");
+            1
+        }
+    }
 }

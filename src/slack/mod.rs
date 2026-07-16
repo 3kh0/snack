@@ -2,6 +2,7 @@ pub mod api;
 pub mod client;
 pub mod edge;
 pub mod events;
+pub mod huddle_api;
 pub mod models;
 pub mod realtime;
 pub mod transport;

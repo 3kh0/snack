@@ -123,6 +123,7 @@ pub(super) fn test_workspace() -> Workspace {
         messages,
         typing: HashMap::new(),
         presence: HashMap::new(),
+        active_huddles: HashMap::new(),
         rt: RealtimeStatus::default(),
         rt_generation: 1,
     }

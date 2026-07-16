@@ -101,6 +101,27 @@ fn ui_visual_main_channel_renders() -> Result<(), Error> {
 }
 
 #[test]
+fn ui_visual_channel_huddle_indicator() -> Result<(), Error> {
+    let mut app = test_app();
+    let team = app.active_team.clone().expect("active team");
+    let ws = app.workspaces.get_mut(&team).expect("workspace");
+    ws.apply_room(crate::slack::models::Room {
+        id: "R_TEST".into(),
+        channels: vec!["C_GENERAL".into()],
+        participants: vec!["U_ALICE".into(), "U_BOB".into()],
+        huddle_link: Some("https://app.slack.com/huddle/T_TEST/C_GENERAL".into()),
+        ..Default::default()
+    });
+
+    let mut ui = sim(&app);
+    ui.find("general")?;
+    ui.find("Huddle · 2")?;
+    drop(ui);
+    capture(&app, "channel-huddle")?;
+    Ok(())
+}
+
+#[test]
 fn ui_visual_switch_channel_by_text() -> Result<(), Error> {
     let mut app = test_app();
     assert_eq!(app.active_channel.as_deref(), Some("C_GENERAL"));
