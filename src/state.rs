@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
 
 use crate::slack::models::{
-    Channel, ChannelId, Emoji, File, Message as SlackMessage, MessageTs, Reaction, TeamId, User,
-    UserId,
+    Channel, ChannelId, Emoji, File, Message as SlackMessage, MessageTs, Reaction, Room, TeamId,
+    User, UserId,
 };
 use crate::slack::realtime::Connection;
 
@@ -240,6 +240,8 @@ pub struct Workspace {
     pub messages: HashMap<ChannelId, ChannelMessages>,
     pub typing: HashMap<ChannelId, Vec<(UserId, Instant)>>,
     pub presence: HashMap<UserId, Presence>,
+    /// Active huddles keyed by channel id. A channel has at most one live huddle.
+    pub active_huddles: HashMap<ChannelId, Room>,
     pub rt: RealtimeStatus,
     pub rt_generation: u64,
 }
@@ -266,6 +268,7 @@ impl Workspace {
             messages: HashMap::new(),
             typing: HashMap::new(),
             presence: HashMap::new(),
+            active_huddles: HashMap::new(),
             rt: RealtimeStatus::default(),
             rt_generation: 0,
         }
@@ -444,6 +447,30 @@ impl Workspace {
             return;
         }
         self.presence.insert(user, presence);
+    }
+
+    /// Apply a huddle room update from a realtime `sh_room_*` event. Ended or
+    /// empty huddles are removed; active ones are upserted under their channel.
+    /// Returns true if the active-huddle set changed (so callers can repaint).
+    pub fn apply_room(&mut self, room: Room) -> bool {
+        let Some(channel) = room.channel().cloned() else {
+            return false;
+        };
+        if !room.is_active() || room.participants.is_empty() {
+            // Only clear the channel if this ending frame is for the room we
+            // are actually tracking — a stale leave must not drop a newer one.
+            let tracked = self
+                .active_huddles
+                .get(&channel)
+                .is_some_and(|existing| existing.id == room.id);
+            return tracked && self.active_huddles.remove(&channel).is_some();
+        }
+        self.active_huddles.insert(channel, room);
+        true
+    }
+
+    pub fn active_huddle(&self, channel: &str) -> Option<&Room> {
+        self.active_huddles.get(channel)
     }
 
     pub fn presence_for_channel(&self, channel: &Channel) -> Presence {
@@ -1503,6 +1530,7 @@ mod tests {
             messages: HashMap::new(),
             typing: HashMap::new(),
             presence: HashMap::new(),
+            active_huddles: HashMap::new(),
             rt: RealtimeStatus::default(),
             rt_generation: 0,
         };
@@ -1549,6 +1577,7 @@ mod tests {
             messages: HashMap::new(),
             typing: HashMap::new(),
             presence: HashMap::new(),
+            active_huddles: HashMap::new(),
             rt: RealtimeStatus::default(),
             rt_generation: 0,
         };
@@ -1859,6 +1888,7 @@ mod tests {
             messages: HashMap::new(),
             typing: HashMap::new(),
             presence: HashMap::new(),
+            active_huddles: HashMap::new(),
             rt: RealtimeStatus::default(),
             rt_generation: 0,
         };
@@ -1867,6 +1897,44 @@ mod tests {
         ws.set_typing("C1", "U2".into(), now);
         assert!(ws.prune_typing(now, Duration::from_secs(4)));
         assert_eq!(ws.typing_names("C1"), vec![ws.display_name("U2")]);
+    }
+
+    #[test]
+    fn apply_room_tracks_and_clears_active_huddles() {
+        let mut ws = Workspace::from_session(&crate::config::WorkspaceSession {
+            team_id: "T1".into(),
+            enterprise_id: None,
+            user_id: "U0".into(),
+            name: "T".into(),
+            url: "https://t.slack.com".into(),
+            token: "xoxc-x".into(),
+        });
+
+        let mut room = Room {
+            id: "R1".into(),
+            channels: vec!["C1".into()],
+            participants: vec!["U1".into()],
+            ..Default::default()
+        };
+        assert!(ws.apply_room(room.clone()));
+        assert_eq!(ws.active_huddle("C1").map(|r| r.id.as_str()), Some("R1"));
+
+        // A stale leave for a different room must not clear the tracked one.
+        let other = Room {
+            id: "R2".into(),
+            channels: vec!["C1".into()],
+            participants: vec![],
+            has_ended: true,
+            ..Default::default()
+        };
+        assert!(!ws.apply_room(other));
+        assert!(ws.active_huddle("C1").is_some());
+
+        // Ending the tracked room clears it.
+        room.has_ended = true;
+        room.participants.clear();
+        assert!(ws.apply_room(room));
+        assert!(ws.active_huddle("C1").is_none());
     }
 
     #[test]

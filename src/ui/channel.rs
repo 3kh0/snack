@@ -202,12 +202,14 @@ fn channel_header<'a>(
     channel_id: &str,
     avatars: &AvatarPreviews,
 ) -> Element<'a, Message> {
+    let badge = ws.active_huddle(channel_id).map(huddle_badge);
+
     let Some(channel) = ws.channels.get(channel_id) else {
-        return plain_header(channel_id.to_owned());
+        return header_shell(plain_title(channel_id.to_owned()), badge);
     };
 
     if channel.is_im {
-        return dm_header(ws, channel, avatars);
+        return dm_header(ws, channel, avatars, badge);
     }
 
     let label = if channel.is_mpim {
@@ -215,28 +217,70 @@ fn channel_header<'a>(
     } else {
         state::channel_label(channel)
     };
-    plain_header(label)
+    header_shell(plain_title(label), badge)
 }
 
-fn plain_header<'a>(label: String) -> Element<'a, Message> {
-    container(
-        text(label)
-            .size(theme::TEXT_LG)
-            .color(theme::TEXT_1)
-            .font(iced::Font {
-                weight: iced::font::Weight::Bold,
-                ..iced::Font::default()
-            }),
+fn plain_title<'a>(label: String) -> Element<'a, Message> {
+    text(label)
+        .size(theme::TEXT_LG)
+        .color(theme::TEXT_1)
+        .font(iced::Font {
+            weight: iced::font::Weight::Bold,
+            ..iced::Font::default()
+        })
+        .into()
+}
+
+/// Wrap a header title, pushing an optional huddle badge to the right edge.
+fn header_shell<'a>(
+    title: Element<'a, Message>,
+    badge: Option<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    let mut row = Row::new()
+        .spacing(theme::SPACE_SM)
+        .align_y(Alignment::Center)
+        .push(title);
+    if let Some(badge) = badge {
+        row = row.push(Space::new().width(Fill)).push(badge);
+    }
+    container(row).padding(theme::SPACE_MD).width(Fill).into()
+}
+
+/// A "Huddle · N" pill showing the live participant count; joining hands off to
+/// the official client/browser via the room's `huddle_link` (audio is a later
+/// phase).
+fn huddle_badge<'a>(room: &crate::slack::models::Room) -> Element<'a, Message> {
+    let dot = container(
+        Space::new()
+            .width(Length::Fixed(theme::PRESENCE_DOT))
+            .height(Length::Fixed(theme::PRESENCE_DOT)),
     )
-    .padding(theme::SPACE_MD)
-    .width(Fill)
-    .into()
+    .style(theme::presence_online);
+
+    let count = room.participants.len();
+    let content = row![
+        dot,
+        text(format!("Huddle · {count}"))
+            .size(theme::TEXT_SM)
+            .color(theme::TEXT_1),
+    ]
+    .spacing(theme::SPACE_XS)
+    .align_y(Alignment::Center);
+
+    let mut join = button(content)
+        .padding([4.0, 10.0])
+        .style(theme::secondary_button);
+    if let Some(link) = &room.huddle_link {
+        join = join.on_press(Message::OpenUrl(link.clone()));
+    }
+    join.into()
 }
 
 fn dm_header<'a>(
     ws: &Workspace,
     channel: &Channel,
     avatars: &AvatarPreviews,
+    badge: Option<Element<'a, Message>>,
 ) -> Element<'a, Message> {
     let name = state::channel_display_name(ws, channel);
     let presence = ws.presence_for_channel(channel);
@@ -259,7 +303,7 @@ fn dm_header<'a>(
         title = title.push(vip_badge());
     }
 
-    container(title).padding(theme::SPACE_MD).width(Fill).into()
+    header_shell(title.into(), badge)
 }
 
 fn dm_avatar_with_presence<'a>(

@@ -408,6 +408,48 @@ pub struct Channel {
     pub extra: BTreeMap<String, Value>,
 }
 
+/// A huddle/call "room", as delivered on `sh_room_*` realtime frames and the
+/// `huddle_thread` system message. Only the fields snack uses for awareness +
+/// join-handoff are named; the rest are preserved in `extra`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Room {
+    pub id: String,
+    #[serde(default)]
+    pub call_family: Option<String>,
+    #[serde(default)]
+    pub channels: Vec<ChannelId>,
+    #[serde(default)]
+    pub created_by: Option<UserId>,
+    #[serde(default)]
+    pub date_start: Option<i64>,
+    #[serde(default)]
+    pub date_end: Option<i64>,
+    #[serde(default)]
+    pub has_ended: bool,
+    #[serde(default)]
+    pub huddle_link: Option<String>,
+    #[serde(default)]
+    pub participants: Vec<UserId>,
+    #[serde(default)]
+    pub participant_history: Vec<UserId>,
+    #[serde(default)]
+    pub media_backend_type: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+impl Room {
+    /// The channel this huddle lives in (huddles are single-channel in practice).
+    pub fn channel(&self) -> Option<&ChannelId> {
+        self.channels.first()
+    }
+
+    /// A huddle is "active" while it has not ended.
+    pub fn is_active(&self) -> bool {
+        !self.has_ended
+    }
+}
+
 fn deserialize_optional_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
 where
     D: serde::Deserializer<'de>,
