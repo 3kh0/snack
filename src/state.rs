@@ -458,7 +458,10 @@ impl Workspace {
                 &section.channel_ids_page.channel_ids,
             ));
         }
-        for (kind, title) in [("direct_messages", "Direct messages"), ("channels", "Channels")] {
+        for (kind, title) in [
+            ("direct_messages", "Direct messages"),
+            ("channels", "Channels"),
+        ] {
             if !out.iter().any(|s| s.kind == kind) {
                 out.push(self.resolve_section(kind, kind, title, &[]));
             }

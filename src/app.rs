@@ -39,6 +39,26 @@ use view::view;
 
 type ActiveThreadKey = (ChannelId, MessageTs);
 type ThreadKey = (TeamId, ChannelId, MessageTs);
+fn thread_replies_args(
+    channel: ChannelId,
+    root_ts: MessageTs,
+    unread_range: Option<(MessageTs, MessageTs)>,
+) -> (api::RepliesArgs, Option<MessageTs>) {
+    let unread_anchor = unread_range.as_ref().map(|(oldest, _)| oldest.clone());
+    let bounded = unread_anchor.is_some();
+    let latest = unread_range.map(|(_, latest)| latest);
+    (
+        api::RepliesArgs {
+            channel,
+            ts: root_ts,
+            latest,
+            limit: bounded.then_some(200),
+            inclusive: bounded,
+            ..Default::default()
+        },
+        unread_anchor,
+    )
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TextSelectionSurface {
@@ -368,6 +388,7 @@ pub enum Message {
     ThreadOpened {
         channel: ChannelId,
         ts: MessageTs,
+        unread_range: Option<(MessageTs, MessageTs)>,
     },
     ThreadClosed,
     ThreadDismissed,
@@ -375,6 +396,7 @@ pub enum Message {
         team: TeamId,
         channel: ChannelId,
         root_ts: MessageTs,
+        unread_anchor: Option<MessageTs>,
         result: Result<HistoryPage, SlackError>,
     },
     ThreadSendPressed,
@@ -993,7 +1015,13 @@ impl App {
         )
     }
 
-    fn load_thread(&self, team: &str, channel: &ChannelId, root_ts: &MessageTs) -> Task<Message> {
+    fn load_thread(
+        &self,
+        team: &str,
+        channel: &ChannelId,
+        root_ts: &MessageTs,
+        unread_range: Option<(MessageTs, MessageTs)>,
+    ) -> Task<Message> {
         let Some((transport, session)) = self.live() else {
             return Task::none();
         };
@@ -1008,14 +1036,14 @@ impl App {
         let root_ts = root_ts.clone();
         let fetch_channel = channel.clone();
         let fetch_ts = root_ts.clone();
+        let (args, unread_anchor) = thread_replies_args(fetch_channel, fetch_ts, unread_range);
         Task::perform(
-            async move {
-                api::fetch_replies(&transport, &client, &ws, fetch_channel, fetch_ts, None).await
-            },
+            async move { api::fetch_replies(&transport, &client, &ws, args).await },
             move |result| Message::ThreadLoaded {
                 team: team.clone(),
                 channel: channel.clone(),
                 root_ts: root_ts.clone(),
+                unread_anchor: unread_anchor.clone(),
                 result,
             },
         )

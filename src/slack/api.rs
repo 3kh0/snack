@@ -30,6 +30,17 @@ pub struct HistoryArgs {
     pub inclusive: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct RepliesArgs {
+    pub channel: ChannelId,
+    pub ts: MessageTs,
+    pub cursor: Option<String>,
+    pub latest: Option<MessageTs>,
+    pub oldest: Option<MessageTs>,
+    pub limit: Option<u32>,
+    pub inclusive: bool,
+}
+
 pub fn conversations_history(
     client: &SlackClient,
     workspace: &WorkspaceSession,
@@ -54,12 +65,20 @@ pub fn conversations_history(
 pub fn conversations_replies(
     client: &SlackClient,
     workspace: &WorkspaceSession,
-    channel: ChannelId,
-    ts: MessageTs,
-    cursor: Option<String>,
+    args: RepliesArgs,
 ) -> PreparedRequest {
-    let mut fields = vec![("channel", channel), ("ts", ts)];
-    push_opt(&mut fields, "cursor", cursor);
+    let mut fields = vec![("channel", args.channel), ("ts", args.ts)];
+    push_opt(&mut fields, "cursor", args.cursor);
+    push_opt(&mut fields, "latest", args.latest);
+    push_opt(&mut fields, "oldest", args.oldest);
+    push_opt(
+        &mut fields,
+        "limit",
+        args.limit.map(|limit| limit.to_string()),
+    );
+    if args.inclusive {
+        fields.push(("inclusive", "true".to_owned()));
+    }
     client.rest_form(workspace, "conversations.replies", fields)
 }
 
@@ -398,14 +417,10 @@ pub async fn fetch_replies(
     transport: &Transport,
     client: &SlackClient,
     workspace: &WorkspaceSession,
-    channel: ChannelId,
-    ts: MessageTs,
-    cursor: Option<String>,
+    args: RepliesArgs,
 ) -> Result<HistoryPage, Error> {
     let value = transport
-        .execute(conversations_replies(
-            client, workspace, channel, ts, cursor,
-        ))
+        .execute(conversations_replies(client, workspace, args))
         .await?;
     decode(value, "conversations.replies")
 }
@@ -848,15 +863,25 @@ mod tests {
         let request = conversations_replies(
             &SlackClient::default(),
             &workspace(),
-            "C0159TSJVH8".into(),
-            "1783372360.741769".into(),
-            None,
+            RepliesArgs {
+                channel: "C0159TSJVH8".into(),
+                ts: "1783372360.741769".into(),
+                oldest: Some("1783372400.000001".into()),
+                latest: Some("1783372500.000001".into()),
+                limit: Some(200),
+                inclusive: true,
+                ..Default::default()
+            },
         );
         let fields = form_fields(&request);
 
         assert!(request.url.contains("/api/conversations.replies?"));
         assert!(fields.contains(&("channel".into(), "C0159TSJVH8".into())));
         assert!(fields.contains(&("ts".into(), "1783372360.741769".into())));
+        assert!(fields.contains(&("oldest".into(), "1783372400.000001".into())));
+        assert!(fields.contains(&("latest".into(), "1783372500.000001".into())));
+        assert!(fields.contains(&("limit".into(), "200".into())));
+        assert!(fields.contains(&("inclusive".into(), "true".into())));
     }
 
     #[test]

@@ -122,7 +122,11 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
 
-        Message::ThreadOpened { channel, ts } => {
+        Message::ThreadOpened {
+            channel,
+            ts,
+            unread_range,
+        } => {
             app.text_selection = None;
             app.active_channel = Some(channel.clone());
             app.active_thread = Some((channel.clone(), ts.clone()));
@@ -130,13 +134,14 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
             let Some(team) = app.active_team.clone() else {
                 return Task::none();
             };
-            let needs_load = !app
-                .threads
-                .get(&(team.clone(), channel.clone(), ts.clone()))
-                .map(|cm| cm.loaded)
-                .unwrap_or(false);
+            let needs_load = unread_range.is_some()
+                || !app
+                    .threads
+                    .get(&(team.clone(), channel.clone(), ts.clone()))
+                    .map(|cm| cm.loaded)
+                    .unwrap_or(false);
             if needs_load {
-                app.load_thread(&team, &channel, &ts)
+                app.load_thread(&team, &channel, &ts, unread_range)
             } else {
                 Task::batch([
                     load_thread_file_previews(app, &team, &channel, &ts),
@@ -165,6 +170,7 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
             team,
             channel,
             root_ts,
+            unread_anchor,
             result,
         } => {
             if app.active_team.as_deref() != Some(&team) {
@@ -179,8 +185,25 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
                         .collect();
                     let key = (team.clone(), channel.clone(), root_ts.clone());
                     let cm = app.threads.entry(key).or_default();
+                    let pending_messages = if unread_anchor.is_some() {
+                        cm.messages
+                            .iter()
+                            .filter(|message| {
+                                message.ts.as_deref().is_some_and(|ts| cm.is_pending(ts))
+                            })
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    } else {
+                        Vec::new()
+                    };
+                    if unread_anchor.is_some() {
+                        cm.messages.clear();
+                    }
                     let n = messages.len();
                     for msg in messages.clone() {
+                        cm.upsert(msg);
+                    }
+                    for msg in pending_messages {
                         cm.upsert(msg);
                     }
                     cm.loaded = true;
@@ -192,6 +215,13 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
                         load_avatar_previews(app, &team, messages),
                         load_thread_file_previews(app, &team, &channel, &root_ts),
                         load_thread_emoji_previews(app, &team, &channel, &root_ts),
+                        scroll_thread_to_unread(
+                            app,
+                            &team,
+                            &channel,
+                            &root_ts,
+                            unread_anchor.as_deref(),
+                        ),
                     ]);
                 }
                 Err(e) => {
@@ -1260,9 +1290,15 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
                 .find(|i| i.key == key)
                 .and_then(|a| {
                     let channel = a.channel()?.to_owned();
-                    Some((channel, a.thread_ts().map(str::to_owned)))
+                    let unread_range = a.is_unread.then(|| {
+                        a.min_unread_ts()
+                            .zip(a.latest_ts())
+                            .map(|(oldest, latest)| (oldest.to_owned(), latest.to_owned()))
+                    });
+                    let unread_range = unread_range.flatten();
+                    Some((channel, a.thread_ts().map(str::to_owned), unread_range))
                 });
-            let Some((channel, thread_ts)) = target else {
+            let Some((channel, thread_ts, unread_range)) = target else {
                 return Task::none();
             };
             match thread_ts {
@@ -1273,6 +1309,7 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
                         Message::ThreadOpened {
                             channel,
                             ts: root_ts,
+                            unread_range,
                         },
                     ));
                     task
@@ -2866,7 +2903,7 @@ fn open_search_result(
                 .map(|cm| cm.loaded)
                 .unwrap_or(false);
             if needs_thread && app.transport.is_some() {
-                tasks.push(app.load_thread(&team, &channel, &root));
+                tasks.push(app.load_thread(&team, &channel, &root, None));
             }
         }
         None => {
@@ -3299,6 +3336,30 @@ fn scroll_to_pending(app: &mut App, channel: &ChannelId) -> Task<Message> {
         }
         None => Task::none(),
     }
+}
+
+fn scroll_thread_to_unread(
+    app: &App,
+    team: &str,
+    channel: &ChannelId,
+    root_ts: &MessageTs,
+    unread_anchor: Option<&str>,
+) -> Task<Message> {
+    let Some(unread_anchor) = unread_anchor else {
+        return Task::none();
+    };
+    let messages = app
+        .threads
+        .get(&(team.to_owned(), channel.clone(), root_ts.clone()))
+        .map(|thread| thread.messages.as_slice())
+        .unwrap_or_default();
+    let Some(ratio) = crate::state::scroll_ratio_for_ts(messages, unread_anchor) else {
+        return Task::none();
+    };
+    operation::snap_to(
+        ui::thread::scrollable_id(channel, root_ts),
+        RelativeOffset { x: 0.0, y: ratio },
+    )
 }
 
 pub(super) fn channel_open_scroll_target(

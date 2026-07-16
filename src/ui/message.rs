@@ -98,6 +98,7 @@ pub fn row<'a>(
                         Message::ThreadOpened {
                             channel: channel_id.clone(),
                             ts,
+                            unread_range: None,
                         },
                     ));
                 }
@@ -385,6 +386,7 @@ fn thread_summary<'a>(
         .on_press(Message::ThreadOpened {
             channel: channel_id.to_owned(),
             ts: ts.to_owned(),
+            unread_range: None,
         })
         .into()
 }

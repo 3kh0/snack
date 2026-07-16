@@ -1,5 +1,5 @@
 use iced::widget::text_editor::Content;
-use iced::widget::{Column, button, column, container, mouse_area, row, scrollable, text};
+use iced::widget::{Column, Id, button, column, container, mouse_area, row, scrollable, text};
 use iced::{Element, Fill, Font, Length};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -11,6 +11,10 @@ use crate::app::{
 };
 use crate::slack::models::Message as SlackMessage;
 use crate::state::{ChannelMessages, Workspace};
+
+pub fn scrollable_id(channel_id: &str, root_ts: &str) -> Id {
+    Id::from(format!("thread-messages:{channel_id}:{root_ts}"))
+}
 
 pub fn view<'a>(
     ws: &Workspace,
@@ -103,7 +107,11 @@ pub fn view<'a>(
                 };
                 col = col.push(row);
             }
-            scrollable(col).style(theme::scrollbar).height(Fill).into()
+            scrollable(col)
+                .id(scrollable_id(channel_id, root_ts))
+                .style(theme::scrollbar)
+                .height(Fill)
+                .into()
         }
         _ => {
             let mut col = Column::new().spacing(theme::SPACE_XS);
@@ -154,7 +162,11 @@ pub fn view<'a>(
                 container(text(status).size(theme::TEXT_MD).color(theme::MUTED))
                     .padding(theme::SPACE_MD),
             );
-            scrollable(col).style(theme::scrollbar).height(Fill).into()
+            scrollable(col)
+                .id(scrollable_id(channel_id, root_ts))
+                .style(theme::scrollbar)
+                .height(Fill)
+                .into()
         }
     };
 

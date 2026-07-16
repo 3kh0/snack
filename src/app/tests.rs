@@ -888,6 +888,7 @@ fn thread_open_tracks_selected_root() {
         Message::ThreadOpened {
             channel: "C_GENERAL".into(),
             ts: "1783372300.000100".into(),
+            unread_range: None,
         },
     );
 
@@ -909,6 +910,7 @@ fn thread_loaded_stores_replies() {
             team: team.clone(),
             channel: "C_GENERAL".into(),
             root_ts: root_ts.clone(),
+            unread_anchor: None,
             result: Ok(HistoryPage {
                 messages: vec![
                     msg("U_ALICE", &root_ts, "morning"),
@@ -925,6 +927,53 @@ fn thread_loaded_stores_replies() {
     let cm = &app.threads[&(team, "C_GENERAL".into(), root_ts)];
     assert!(cm.loaded);
     assert_eq!(cm.messages.len(), 2);
+}
+
+#[test]
+fn unread_thread_window_replaces_stale_full_thread() {
+    let mut app = test_app();
+    let team = app.active_team.clone().unwrap();
+    let channel = "C_GENERAL".to_owned();
+    let root_ts = "1783372300.000100".to_owned();
+    let unread_ts = "1783372400.000100".to_owned();
+    let key = (team.clone(), channel.clone(), root_ts.clone());
+    let mut stale = ChannelMessages::default();
+    stale.upsert(msg("U_ALICE", &root_ts, "root"));
+    stale.upsert(msg("U_BOB", "1783372310.000100", "old read reply"));
+    app.threads.insert(key.clone(), stale);
+
+    let _ = update(
+        &mut app,
+        Message::ThreadLoaded {
+            team,
+            channel,
+            root_ts: root_ts.clone(),
+            unread_anchor: Some(unread_ts.clone()),
+            result: Ok(HistoryPage {
+                messages: vec![
+                    msg("U_ALICE", &root_ts, "root"),
+                    SlackMessage {
+                        thread_ts: Some(root_ts),
+                        ..msg("U_BOB", &unread_ts, "first unread")
+                    },
+                ],
+                ..Default::default()
+            }),
+        },
+    );
+
+    let cm = &app.threads[&key];
+    assert_eq!(cm.messages.len(), 2);
+    assert!(
+        !cm.messages
+            .iter()
+            .any(|message| message.ts.as_deref() == Some("1783372310.000100"))
+    );
+    assert!(
+        cm.messages
+            .iter()
+            .any(|message| message.ts.as_deref() == Some(&unread_ts))
+    );
 }
 
 #[test]

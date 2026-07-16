@@ -863,6 +863,10 @@ impl ActivityItem {
         self.thread_entry().and_then(|e| e.latest_ts.as_deref())
     }
 
+    pub fn min_unread_ts(&self) -> Option<&str> {
+        self.thread_entry().and_then(|e| e.min_unread_ts.as_deref())
+    }
+
     pub fn preview_ts(&self) -> Option<&str> {
         self.latest_ts().or_else(|| self.ts())
     }
@@ -928,7 +932,8 @@ mod fixture_tests {
                 "items": [
                     {"is_unread":true,"feed_ts":"1783828299.522099","key":"thread_v2-C0B1-1",
                      "item":{"type":"thread_v2","bundle_info":{"payload":{"thread_entry":{
-                        "channel_id":"C0B1","thread_ts":"1783823177.936649","latest_ts":"1783828299.522099","unread_msg_count":1}}}}},
+                        "channel_id":"C0B1","thread_ts":"1783823177.936649","latest_ts":"1783828299.522099",
+                        "min_unread_ts":"1783828200.000001","unread_msg_count":1}}}}},
                     {"is_unread":false,"feed_ts":"1783827397.000000","key":"reaction-1",
                      "item":{"type":"message_reaction","message":{"ts":"1783716780.838909","channel":"C05S"},
                              "reaction":{"user":"U08R","name":"yay"}}},
@@ -946,6 +951,7 @@ mod fixture_tests {
         assert_eq!(thread.item.kind, "thread_v2");
         assert_eq!(thread.channel(), Some("C0B1"));
         assert_eq!(thread.ts(), Some("1783823177.936649"));
+        assert_eq!(thread.min_unread_ts(), Some("1783828200.000001"));
         assert!(thread.is_unread);
 
         let reaction = &page.items[1];
@@ -1087,11 +1093,7 @@ mod fixture_tests {
             page.channel_sections[3].channel_ids_page.channel_ids,
             ["C_IN_SECTION"]
         );
-        assert!(
-            page.channel_sections[4]
-                .next_channel_section_id
-                .is_none()
-        );
+        assert!(page.channel_sections[4].next_channel_section_id.is_none());
     }
 
     #[test]
