@@ -11,21 +11,9 @@ use wry::{WebContext, WebViewBuilder};
 
 use crate::config::{self, Session, WorkspaceSession};
 use crate::slack::xparams::Identity;
-
-// Present the login window as an ordinary desktop browser. The Slack desktop
-// user agent (`Slack_SSB`) makes Slack serve the native SSB boot flow
-// (`/ssb/first`, `/gantry/auth`), which needs desktop-only JS APIs a bare
-// webview lacks — the client never boots, `localConfig_v2` never gets the
-// `xoxc-` token, and login loops. REST/edge calls still use the desktop
-// identity from `xparams::Identity`; only this window is a plain browser.
 const LOGIN_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36";
 
-// Poll `localStorage` for the booted web client's config and hand it back over
-// IPC. We deliberately do NOT force-navigate to `/client/<id>`: the old regex
-// scanned page HTML and matched base64/SAML fragments, hijacking the SAML
-// redirect into a bogus client URL and looping forever. With a browser UA
-// Slack routes itself to the client after sign-in, so passive polling is enough.
 const SCR: &str = r#"
 (function () {
   if (window.__snackGrab) return;
@@ -48,11 +36,6 @@ pub fn login() -> Result<Session, String> {
     drive_login()
 }
 
-/// Injected into the huddle-capture webview: hook `fetch`, `XMLHttpRequest`, and
-/// `WebSocket` and forward any huddle-related API call (request + response) and
-/// any websocket URL over IPC. Read-only observation of the official client —
-/// we issue nothing ourselves, so join/leave happen exactly as Slack does them
-/// (leaving a huddle is a media-socket disconnect, not a REST call).
 const CAPTURE_SCR: &str = r#"
 (function () {
   if (window.__snackCap) return;
@@ -96,9 +79,6 @@ const CAPTURE_SCR: &str = r#"
 })();
 "#;
 
-/// `SNACK_HUDDLE_WEBVIEW=1` entry point: open the real Slack client and log the
-/// huddle join/leave API + media-socket traffic. The user drives a huddle in the
-/// window; we print captured requests/responses until the window is closed.
 pub fn capture_huddle_webview() -> Result<(), String> {
     let mut event_loop = EventLoop::new();
     let window = WindowBuilder::new()

@@ -75,11 +75,6 @@ pub fn main() -> iced::Result {
     app::run()
 }
 
-/// Phase 0 huddle protocol capture (read-only). Loads the saved session and
-/// dumps the redacted JSON that reveals the huddle wire format for a channel.
-///
-/// Usage: `SNACK_HUDDLE_CAPTURE=<channel_id> [SNACK_HUDDLE_TEAM=<team_id>] snack`
-/// Start a huddle in that channel from the official client first, then run this.
 fn run_huddle_capture(channel: &str) -> i32 {
     let session = match config::load_session() {
         Ok(Some(session)) => session,
@@ -136,9 +131,6 @@ fn run_huddle_capture(channel: &str) -> i32 {
     }
 }
 
-/// Audio-gate capture (consented): join the active huddle in a channel, dump the
-/// media/signaling response, then leave. `SNACK_HUDDLE_ROOM` skips discovery;
-/// `SNACK_HUDDLE_JOIN_SECS` bounds the discovery wait.
 fn run_huddle_join(channel: &str) -> i32 {
     let session = match config::load_session() {
         Ok(Some(session)) => session,
@@ -205,8 +197,6 @@ fn run_huddle_join(channel: &str) -> i32 {
     }
 }
 
-/// Phase 0 realtime trace: dump flannel websocket frames (highlighting huddle
-/// events) for a bounded window. `SNACK_HUDDLE_TRACE_SECS` overrides the length.
 fn run_huddle_trace() -> i32 {
     let session = match config::load_session() {
         Ok(Some(session)) => session,
