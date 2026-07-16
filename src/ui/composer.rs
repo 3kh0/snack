@@ -57,7 +57,7 @@ fn editor_owned<'a>(
         .key_binding(move |press| key_binding(press, target, binding_send.clone()))
         .size(theme::TEXT_MD)
         .padding([theme::SPACE_XS, theme::SPACE_SM])
-        .height(Length::Fixed(32.0))
+        .height(Length::Fixed(30.0))
         .style(theme::composer_editor);
 
     composer_shell(input.into(), attachments, target, send).into()
@@ -77,7 +77,7 @@ fn editor<'a>(
         .key_binding(move |press| key_binding(press, target, binding_send.clone()))
         .size(theme::TEXT_MD)
         .padding([theme::SPACE_XS, theme::SPACE_SM])
-        .height(Length::Fixed(32.0))
+        .height(Length::Fixed(30.0))
         .style(theme::composer_editor);
 
     composer_shell(input.into(), attachments, target, send).into()
@@ -98,41 +98,41 @@ fn composer_shell<'a>(
             row![
                 button(
                     container(material_add_icon())
-                        .width(Length::Fixed(32.0))
-                        .height(Length::Fixed(32.0))
+                        .width(Length::Fixed(28.0))
+                        .height(Length::Fixed(28.0))
                         .center_x(Fill)
                         .center_y(Fill),
                 )
                 .on_press(Message::AttachmentPickerOpened(target))
                 .style(theme::action_button)
                 .padding(0.0)
-                .width(Length::Fixed(32.0))
-                .height(Length::Fixed(32.0)),
+                .width(Length::Fixed(28.0))
+                .height(Length::Fixed(28.0)),
                 input,
                 button(
                     container(material_send_icon())
-                        .width(Length::Fixed(32.0))
-                        .height(Length::Fixed(32.0))
+                        .width(Length::Fixed(28.0))
+                        .height(Length::Fixed(28.0))
                         .center_x(Fill)
                         .center_y(Fill),
                 )
                 .on_press(send)
                 .style(theme::action_button)
                 .padding(0.0)
-                .width(Length::Fixed(32.0))
-                .height(Length::Fixed(32.0)),
+                .width(Length::Fixed(28.0))
+                .height(Length::Fixed(28.0)),
             ]
             .spacing(theme::SPACE_XS)
             .align_y(Alignment::Center),
         )
         .style(theme::file_attachment)
         .padding(theme::SPACE_XS)
-        .height(Length::Fixed(40.0)),
+        .height(Length::Fixed(36.0)),
     );
     container(body.spacing(theme::SPACE_SM))
         .width(Fill)
         .height(Length::Shrink)
-        .padding(theme::SPACE_MD)
+        .padding([theme::SPACE_SM, theme::SPACE_MD])
 }
 
 fn attachment_strip<'a>(

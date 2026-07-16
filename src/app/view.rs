@@ -36,18 +36,25 @@ fn with_palette<'a>(app: &'a App, base: Element<'a, Message>) -> Element<'a, Mes
 fn login_view() -> Element<'static, Message> {
     let card = container(
         column![
-            text("Snack")
-                .size(ui::theme::TEXT_LG)
-                .color(ui::theme::TEXT_1),
-            text("Sign in to your Slack workspace.")
-                .size(ui::theme::TEXT_MD)
-                .color(ui::theme::TEXT_2),
-            text("Opens a new window for the Slack sign-in flow.")
-                .size(ui::theme::TEXT_SM)
-                .color(ui::theme::TEXT_4),
+            column![
+                text("Snack")
+                    .size(ui::theme::TEXT_LG)
+                    .color(ui::theme::TEXT_1)
+                    .font(iced::Font {
+                        weight: iced::font::Weight::Bold,
+                        ..iced::Font::default()
+                    }),
+                text("Sign in to your Slack workspace.")
+                    .size(ui::theme::TEXT_MD)
+                    .color(ui::theme::TEXT_2),
+                text("Opens a new window for the Slack sign-in flow.")
+                    .size(ui::theme::TEXT_SM)
+                    .color(ui::theme::TEXT_4),
+            ]
+            .spacing(ui::theme::SPACE_XS),
             button(text("Sign in").size(ui::theme::TEXT_MD))
                 .style(ui::theme::primary_button)
-                .padding([ui::theme::SPACE_SM, ui::theme::SPACE_LG])
+                .padding([ui::theme::SPACE_XS + 2.0, ui::theme::SPACE_MD])
                 .on_press(Message::SignInPressed),
             button(text("Reload session").size(ui::theme::TEXT_SM))
                 .style(ui::theme::link_button)
@@ -55,7 +62,8 @@ fn login_view() -> Element<'static, Message> {
         ]
         .spacing(ui::theme::SPACE_MD),
     )
-    .padding(ui::theme::SPACE_LG * 2.0)
+    .width(iced::Length::Fixed(300.0))
+    .padding(ui::theme::SPACE_MD)
     .style(ui::theme::panel);
 
     container(container(card).center_x(Fill).center_y(Fill))

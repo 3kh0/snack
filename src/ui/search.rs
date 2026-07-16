@@ -35,7 +35,7 @@ pub fn view<'a>(ws: &Workspace, state: &SearchState) -> Element<'a, Message> {
             .padding([theme::SPACE_XS, theme::SPACE_SM])
             .on_press(Message::SearchCleared),
     ]
-    .spacing(theme::SPACE_MD);
+    .spacing(theme::SPACE_SM);
 
     let body: Element<'a, Message> = if state.hits.is_empty() {
         let label = if state.loading {
@@ -44,10 +44,10 @@ pub fn view<'a>(ws: &Workspace, state: &SearchState) -> Element<'a, Message> {
             "No messages found."
         };
         container(text(label).size(theme::TEXT_MD).color(theme::MUTED))
-            .padding(theme::SPACE_LG)
+            .padding(theme::SPACE_MD)
             .into()
     } else {
-        let mut list = Column::new().spacing(theme::SPACE_XS);
+        let mut list = Column::new().spacing(0);
         for hit in &state.hits {
             list = list.push(hit_row(ws, hit));
         }
@@ -57,7 +57,7 @@ pub fn view<'a>(ws: &Workspace, state: &SearchState) -> Element<'a, Message> {
     let footer = pagination(state);
 
     column![
-        container(header).padding(theme::SPACE_MD),
+        container(header).padding([theme::SPACE_SM, theme::SPACE_MD]),
         theme::divider(),
         container(body).height(Fill),
         footer,
@@ -96,12 +96,12 @@ fn hit_row<'a>(ws: &Workspace, hit: &SearchHit) -> Element<'a, Message> {
         snippet
     };
 
-    let content = column![meta, text(snippet).size(theme::TEXT_MD)].spacing(theme::SPACE_XS);
+    let content = column![meta, text(snippet).size(theme::TEXT_MD)].spacing(2.0);
 
     let target_ts = msg.ts.clone().unwrap_or_default();
     button(content)
         .width(Fill)
-        .padding([theme::SPACE_XS, theme::SPACE_MD])
+        .padding([theme::SPACE_XS + 2.0, theme::SPACE_MD])
         .style(theme::channel_row(false))
         .on_press(Message::SearchResultSelected {
             channel: hit.channel.clone(),
@@ -135,7 +135,9 @@ fn pagination<'a>(state: &SearchState) -> Element<'a, Message> {
                 .on_press(Message::SearchPageRequested(state.page + 1)),
         );
     }
-    container(controls).padding(theme::SPACE_MD).into()
+    container(controls)
+        .padding([theme::SPACE_SM, theme::SPACE_MD])
+        .into()
 }
 
 fn author_name(ws: &Workspace, hit: &SearchHit) -> String {

@@ -13,12 +13,15 @@ pub const SPACE_LG: f32 = 16.0;
 
 pub const TEXT_SM: f32 = 12.0;
 pub const TEXT_MD: f32 = 14.0;
-pub const TEXT_LG: f32 = 16.0;
+pub const TEXT_LG: f32 = 15.0;
 
 pub const SIDEBAR_WIDTH: f32 = 240.0;
-pub const THREAD_WIDTH: f32 = 360.0;
+pub const THREAD_WIDTH: f32 = 340.0;
 
-pub const CONTROL_RADIUS: f32 = 8.0;
+pub const CONTROL_RADIUS: f32 = 6.0;
+
+pub const MSG_AVATAR: f32 = 28.0;
+pub const MSG_AVATAR_RADIUS: f32 = 6.0;
 
 // midnight theme (converted from https://github.com/refact0r/midnight-discord)
 
@@ -50,12 +53,12 @@ pub const BROADCAST_BG: Color = Color {
     a: 0.58,
 };
 
-pub const SIDEBAR_ICON: f32 = 16.0; // svg glyph size
-pub const SIDEBAR_ICON_SLOT: f32 = 24.0; // fixed leading column so labels align
-pub const SIDEBAR_AVATAR: f32 = 20.0; // dm avatar / group-count chip
-pub const SIDEBAR_AVATAR_RADIUS: f32 = 4.5;
-pub const PRESENCE_DOT: f32 = 8.0; // online/offline indicator on avatars
-pub const PING_BADGE_H: f32 = 18.0; // normalized ping badge height
+pub const SIDEBAR_ICON: f32 = 15.0; // svg glyph size
+pub const SIDEBAR_ICON_SLOT: f32 = 22.0; // fixed leading column so labels align
+pub const SIDEBAR_AVATAR: f32 = 18.0; // dm avatar / group-count chip
+pub const SIDEBAR_AVATAR_RADIUS: f32 = 4.0;
+pub const PRESENCE_DOT: f32 = 7.0; // online/offline indicator on avatars
+pub const PING_BADGE_H: f32 = 16.0; // normalized ping badge height
 
 pub const MUTED: Color = TEXT_5;
 pub const SIDEBAR_FG: Color = TEXT_3;
@@ -72,8 +75,8 @@ impl Default for Vars {
     fn default() -> Self {
         Vars {
             accent: accent_ramp(AccentColor::Blue),
-            gap: 12.0,
-            panel_radius: 12.0,
+            gap: 8.0,
+            panel_radius: 8.0,
             border_thickness: 1.0,
         }
     }
@@ -295,9 +298,9 @@ pub fn action_bar(_theme: &Theme) -> container::Style {
             radius: CONTROL_RADIUS.into(),
         },
         shadow: Shadow {
-            color: Color { a: 0.35, ..BG_BASE },
-            offset: Vector::new(0.0, 2.0),
-            blur_radius: 8.0,
+            color: Color { a: 0.28, ..BG_BASE },
+            offset: Vector::new(0.0, 1.0),
+            blur_radius: 6.0,
         },
         ..container::Style::default()
     }
@@ -586,7 +589,7 @@ pub fn account_avatar_placeholder(_theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(accent_5())),
         text_color: Some(TEXT_1),
-        border: Border::default().rounded(8.0),
+        border: Border::default().rounded(CONTROL_RADIUS),
         ..container::Style::default()
     }
 }
@@ -739,9 +742,9 @@ pub fn account_menu(_theme: &Theme) -> container::Style {
             radius: CONTROL_RADIUS.into(),
         },
         shadow: Shadow {
-            color: Color { a: 0.35, ..BG_BASE },
-            offset: Vector::new(0.0, 4.0),
-            blur_radius: 16.0,
+            color: Color { a: 0.30, ..BG_BASE },
+            offset: Vector::new(0.0, 2.0),
+            blur_radius: 10.0,
         },
         ..container::Style::default()
     }

@@ -13,8 +13,8 @@ use std::time::Duration;
 
 pub const VISIBLE_MESSAGE_LIMIT: usize = 200;
 
-const HEADER_AVATAR: f32 = 28.0;
-const HEADER_AVATAR_RADIUS: f32 = 6.0;
+const HEADER_AVATAR: f32 = 24.0;
+const HEADER_AVATAR_RADIUS: f32 = 5.0;
 
 type AvatarPreviews = HashMap<UserId, FilePreview>;
 
@@ -243,7 +243,10 @@ fn header_shell<'a>(
     if let Some(badge) = badge {
         row = row.push(Space::new().width(Fill)).push(badge);
     }
-    container(row).padding(theme::SPACE_MD).width(Fill).into()
+    container(row)
+        .padding([theme::SPACE_SM, theme::SPACE_MD])
+        .width(Fill)
+        .into()
 }
 
 /// A "Huddle · N" pill showing the live participant count; joining hands off to
@@ -268,7 +271,7 @@ fn huddle_badge<'a>(room: &crate::slack::models::Room) -> Element<'a, Message> {
     .align_y(Alignment::Center);
 
     let mut join = button(content)
-        .padding([4.0, 10.0])
+        .padding([3.0, theme::SPACE_SM])
         .style(theme::secondary_button);
     if let Some(link) = &room.huddle_link {
         join = join.on_press(Message::OpenUrl(link.clone()));
@@ -400,11 +403,11 @@ fn date_separator<'a>(label: String) -> Element<'a, Message> {
         .push(line())
         .push(
             container(text(label).size(theme::TEXT_SM).color(theme::TEXT_2))
-                .padding([4.0, 12.0])
+                .padding([2.0, theme::SPACE_SM])
                 .style(theme::date_separator_label),
         )
         .push(line())
-        .padding([theme::SPACE_SM, theme::SPACE_MD])
+        .padding([theme::SPACE_XS + 2.0, theme::SPACE_SM])
         .into()
 }
 

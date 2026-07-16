@@ -9,13 +9,13 @@ use crate::config::{AccountId, Session};
 use crate::slack::models::UserId;
 use crate::state::{MainView, Presence, Workspace};
 
-pub const RAIL_WIDTH: f32 = 40.0;
+pub const RAIL_WIDTH: f32 = 44.0;
 
-pub const ICON_SIZE: f32 = 28.0;
+pub const ICON_SIZE: f32 = 30.0;
 const NAV_ICON_SIZE: f32 = 18.0;
-const AVATAR_RADIUS: f32 = 8.0;
-const RAIL_PADDING: f32 = 6.0;
-const MENU_WIDTH: f32 = 280.0;
+const AVATAR_RADIUS: f32 = 7.0;
+const RAIL_PADDING: f32 = 7.0;
+const MENU_WIDTH: f32 = 260.0;
 
 type AvatarPreviews = HashMap<UserId, FilePreview>;
 
@@ -53,7 +53,7 @@ pub fn view<'a>(
         .on_press(Message::AccountMenuToggled);
 
     let body = column![home, dms, notifications, Space::new().height(Fill), account]
-        .spacing(theme::SPACE_SM)
+        .spacing(theme::SPACE_XS + 2.0)
         .align_x(Alignment::Center)
         .padding(RAIL_PADDING)
         .width(Length::Fill)
@@ -200,11 +200,11 @@ pub fn account_menu<'a>(
             false,
             Message::SignOutPressed,
         ))
-        .spacing(theme::SPACE_SM);
+        .spacing(theme::SPACE_XS);
 
     container(menu)
         .width(Length::Fixed(MENU_WIDTH))
-        .padding(theme::SPACE_MD)
+        .padding(theme::SPACE_SM)
         .style(theme::account_menu)
         .into()
 }
@@ -273,7 +273,7 @@ fn menu_button<'a>(label: &str, selected: bool, message: Message) -> Element<'a,
         .align_y(Alignment::Center),
     )
     .width(Fill)
-    .padding([theme::SPACE_SM, theme::SPACE_SM])
+    .padding([theme::SPACE_XS + 2.0, theme::SPACE_SM])
     .style(theme::account_menu_button)
     .on_press(message)
     .into()

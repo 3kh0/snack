@@ -120,16 +120,14 @@ fn natural_cmp(a: &str, b: &str) -> Ordering {
                     unequal => unequal,
                 }
             }
-            (Some(x), Some(y)) => {
-                match x.to_lowercase().cmp(y.to_lowercase()) {
-                    Ordering::Equal => {
-                        a.next();
-                        b.next();
-                        continue;
-                    }
-                    unequal => unequal,
+            (Some(x), Some(y)) => match x.to_lowercase().cmp(y.to_lowercase()) {
+                Ordering::Equal => {
+                    a.next();
+                    b.next();
+                    continue;
                 }
-            }
+                unequal => unequal,
+            },
         };
     }
 }
@@ -146,14 +144,14 @@ fn take_number(chars: &mut std::iter::Peekable<std::str::Chars>) -> u64 {
 fn section_header<'a>(title: &str) -> Element<'a, Message> {
     container(
         text(title.to_ascii_uppercase())
-            .size(theme::TEXT_SM)
+            .size(theme::TEXT_SM - 1.0)
             .color(theme::TEXT_4)
             .font(iced::Font {
                 weight: font::Weight::Semibold,
                 ..iced::Font::default()
             }),
     )
-    .padding([theme::SPACE_SM, theme::SPACE_MD])
+    .padding([theme::SPACE_SM, theme::SPACE_SM])
     .into()
 }
 
@@ -227,7 +225,7 @@ fn channel_button<'a>(
 
     button(row)
         .width(Fill)
-        .padding([theme::SPACE_XS, theme::SPACE_SM])
+        .padding([3.0, theme::SPACE_SM])
         .style(theme::channel_row(active))
         .on_press(Message::ChannelSelected(c.id.clone()))
         .into()
@@ -357,7 +355,7 @@ fn workspace_button<'a>(ws: &Workspace, active: bool) -> Element<'a, Message> {
             .align_y(iced::Alignment::Center),
     )
     .width(Fill)
-    .padding([theme::SPACE_XS, theme::SPACE_SM])
+    .padding([3.0, theme::SPACE_SM])
     .style(theme::channel_row(active))
     .on_press(Message::WorkspaceSelected(ws.team_id.clone()))
     .into()
@@ -383,7 +381,7 @@ fn jump_to_button<'a>() -> Element<'a, Message> {
 
     button(inner)
         .width(Fill)
-        .padding(theme::SPACE_SM)
+        .padding([theme::SPACE_XS + 1.0, theme::SPACE_SM])
         .style(theme::channel_row(false))
         .on_press(Message::PaletteToggled)
         .into()
@@ -422,7 +420,7 @@ pub fn view<'a>(
                 ..iced::Font::default()
             }),
     )
-    .padding(theme::SPACE_MD);
+    .padding([theme::SPACE_SM, theme::SPACE_SM]);
 
     let search = container(jump_to_button()).padding([0.0, theme::SPACE_SM]);
 
@@ -431,6 +429,7 @@ pub fn view<'a>(
         search,
         scrollable(list).style(theme::scrollbar).height(Fill)
     ]
+    .spacing(theme::SPACE_XS)
     .width(Length::Fixed(width))
     .height(Fill);
 

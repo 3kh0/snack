@@ -14,8 +14,9 @@ use crate::state::{self, Presence, Workspace};
 
 type AvatarPreviews = HashMap<String, FilePreview>;
 
-const AVATAR: f32 = 36.0;
-const UNREAD_BAR: f32 = 3.0;
+const AVATAR: f32 = 32.0;
+const UNREAD_BAR: f32 = 2.0;
+const PANEL_WIDTH: f32 = 340.0;
 
 pub fn list_panel<'a>(
     ws: &'a Workspace,
@@ -49,7 +50,7 @@ pub fn list_panel<'a>(
         .on_input(Message::DmsFilterChanged)
         .style(theme::input)
         .size(theme::TEXT_MD)
-        .padding(theme::SPACE_SM)
+        .padding([theme::SPACE_XS + 2.0, theme::SPACE_SM])
         .width(Fill);
 
     let filter = dms.filter.trim().to_lowercase();
@@ -100,14 +101,14 @@ pub fn list_panel<'a>(
     };
 
     let content = column![header, find, body]
-        .spacing(theme::SPACE_MD)
+        .spacing(theme::SPACE_SM)
         .width(Fill)
         .height(Fill);
 
     container(content)
-        .width(Length::Fixed(400.0))
+        .width(Length::Fixed(PANEL_WIDTH))
         .height(Fill)
-        .padding(theme::SPACE_MD)
+        .padding(theme::SPACE_SM)
         .style(theme::panel)
         .into()
 }
@@ -198,7 +199,7 @@ fn dm_row<'a>(
 
     button(inner)
         .width(Fill)
-        .padding([theme::SPACE_SM, 0.0])
+        .padding([theme::SPACE_XS + 2.0, 0.0])
         .style(theme::activity_row(active, unread))
         .on_press(Message::ChannelSelected(entry.id.clone()))
         .into()

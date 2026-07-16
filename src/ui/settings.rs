@@ -5,8 +5,8 @@ use super::{motion, theme};
 use crate::app::Message;
 use crate::config::{AccentColor, Settings};
 
-const CARD_WIDTH: f32 = 420.0;
-const SWATCH_SIZE: f32 = 34.0;
+const CARD_WIDTH: f32 = 380.0;
+const SWATCH_SIZE: f32 = 28.0;
 
 pub fn modal<'a>(
     base: Element<'a, Message>,
@@ -17,11 +17,11 @@ pub fn modal<'a>(
         let progress = motion::t(anim, at);
         let alpha = motion::fade(progress);
         let scrim = motion::scrim(progress, Message::SettingsClosed);
-        let card = motion::zoom_y(card(settings, alpha), progress, -12.0);
+        let card = motion::zoom_y(card(settings, alpha), progress, -8.0);
         let centered = container(card)
             .center_x(Fill)
             .center_y(Fill)
-            .padding(theme::SPACE_LG);
+            .padding(theme::SPACE_MD);
 
         Element::from(stack![scrim, centered].width(Fill).height(Fill))
     })
@@ -70,12 +70,12 @@ fn card<'a>(s: &Settings, alpha: f32) -> Element<'a, Message> {
         theme::divider_faded(alpha),
         actions(alpha),
     ]
-    .spacing(theme::SPACE_LG)
+    .spacing(theme::SPACE_MD)
     .width(Fill);
 
     container(body)
         .width(Length::Fixed(CARD_WIDTH))
-        .padding(theme::SPACE_LG)
+        .padding(theme::SPACE_MD)
         .style(theme::fade_container(theme::panel, alpha))
         .into()
 }
@@ -132,7 +132,7 @@ fn slider_row<'a>(
             .step(1.0)
             .style(theme::fade_slider(alpha)),
     ]
-    .spacing(theme::SPACE_SM)
+    .spacing(theme::SPACE_XS)
     .into()
 }
 
@@ -140,12 +140,12 @@ fn actions<'a>(alpha: f32) -> Element<'a, Message> {
     row![
         button(text("Reset").size(theme::TEXT_SM))
             .style(theme::fade_button(theme::secondary_button, alpha))
-            .padding([theme::SPACE_XS, theme::SPACE_MD])
+            .padding([theme::SPACE_XS, theme::SPACE_SM])
             .on_press(Message::SettingsReset),
         Space::new().width(Fill),
         button(text("Done").size(theme::TEXT_SM))
             .style(theme::fade_button(theme::primary_button, alpha))
-            .padding([theme::SPACE_XS, theme::SPACE_MD])
+            .padding([theme::SPACE_XS, theme::SPACE_SM])
             .on_press(Message::SettingsClosed),
     ]
     .align_y(Alignment::Center)

@@ -169,10 +169,10 @@ pub struct Settings {
 }
 
 fn default_gap() -> f32 {
-    12.0
+    8.0
 }
 fn default_panel_radius() -> f32 {
-    12.0
+    8.0
 }
 fn default_border_thickness() -> f32 {
     1.0

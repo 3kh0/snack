@@ -125,7 +125,7 @@ pub fn row<'a>(
                 let bar = container(actions.padding(2))
                     .padding(2)
                     .style(theme::action_bar);
-                super::motion::slide_y(bar.into(), progress, -6.0)
+                super::motion::slide_y(bar.into(), progress, -4.0)
             })
             .into()
         })
@@ -174,11 +174,11 @@ pub fn row<'a>(
                 .push(avatar)
                 .push(container(content).width(Fill)),
         )
-        .padding([theme::SPACE_XS, theme::SPACE_MD])
+        .padding([theme::SPACE_XS / 2.0, theme::SPACE_SM])
         .into();
     }
 
-    let mut col = Column::new().spacing(theme::SPACE_XS);
+    let mut col = Column::new().spacing(2.0);
     if !compact {
         col = col.push(header);
     }
@@ -322,7 +322,7 @@ pub fn row<'a>(
             })
             .push(content),
     )
-    .padding([theme::SPACE_XS, theme::SPACE_MD])
+    .padding([if compact { 1.0 } else { theme::SPACE_XS }, theme::SPACE_SM])
     .width(Fill);
 
     match action_bar {
@@ -419,7 +419,9 @@ fn thread_participant_avatar<'a>(
 }
 
 fn avatar_spacer<'a>() -> Element<'a, Message> {
-    iced::widget::Space::new().width(Length::Fixed(32.0)).into()
+    iced::widget::Space::new()
+        .width(Length::Fixed(theme::MSG_AVATAR))
+        .into()
 }
 
 fn sending_clock<'a>(elapsed: Duration) -> Element<'a, Message> {
@@ -881,7 +883,7 @@ fn animated_frame(
 
 fn action_item<'a>(label: &'a str, on_press: Message) -> Element<'a, Message> {
     button(text(label).size(theme::TEXT_SM))
-        .padding([theme::SPACE_XS, theme::SPACE_SM])
+        .padding([2.0, theme::SPACE_SM])
         .style(theme::action_button)
         .on_press(on_press)
         .into()
@@ -976,7 +978,14 @@ fn avatar<'a>(
     avatar_previews: &HashMap<String, FilePreview>,
     fallback: Option<char>,
 ) -> Element<'a, Message> {
-    avatar_with_size(key, url, avatar_previews, fallback, 32.0, 7.0)
+    avatar_with_size(
+        key,
+        url,
+        avatar_previews,
+        fallback,
+        theme::MSG_AVATAR,
+        theme::MSG_AVATAR_RADIUS,
+    )
 }
 
 pub fn avatar_with_size<'a>(

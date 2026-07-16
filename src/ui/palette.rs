@@ -13,7 +13,7 @@ use crate::state::{Presence, Workspace};
 
 type AvatarPreviews = HashMap<UserId, FilePreview>;
 
-const CARD_WIDTH: f32 = 560.0;
+const CARD_WIDTH: f32 = 520.0;
 
 pub const INPUT_ID: &str = "palette-input";
 
@@ -28,11 +28,11 @@ pub fn modal<'a>(
         let progress = motion::t(anim, at);
         let alpha = motion::fade(progress);
         let scrim = motion::scrim(progress, Message::PaletteClosed);
-        let card = motion::zoom_y(card(ws, state, avatars, alpha), progress, -12.0);
+        let card = motion::zoom_y(card(ws, state, avatars, alpha), progress, -8.0);
         let centered = container(card)
             .center_x(Fill)
             .align_top(Fill)
-            .padding(theme::SPACE_LG * 5.0);
+            .padding([theme::SPACE_LG * 3.0, theme::SPACE_LG]);
 
         Element::from(stack![scrim, centered].width(Fill).height(Fill))
     })
@@ -52,12 +52,12 @@ fn card<'a>(
         .on_input(Message::PaletteQueryChanged)
         .on_submit(Message::PaletteSubmitted)
         .style(theme::fade_input(theme::input, alpha))
-        .size(theme::TEXT_LG)
-        .padding(theme::SPACE_MD)
+        .size(theme::TEXT_MD)
+        .padding([theme::SPACE_SM, theme::SPACE_MD])
         .width(Fill);
 
     let body = column![
-        container(input).padding(theme::SPACE_SM),
+        container(input).padding(theme::SPACE_XS),
         theme::divider_faded(alpha),
         results(ws, state, avatars, alpha),
     ]
@@ -65,7 +65,7 @@ fn card<'a>(
 
     container(body)
         .width(Length::Fixed(CARD_WIDTH))
-        .padding(theme::SPACE_SM)
+        .padding(theme::SPACE_XS)
         .style(theme::fade_container(theme::panel, alpha))
         .into()
 }
@@ -87,11 +87,11 @@ fn results<'a>(
                 .size(theme::TEXT_MD)
                 .color(theme::fade(theme::MUTED, alpha)),
         )
-        .padding(theme::SPACE_LG)
+        .padding(theme::SPACE_MD)
         .into();
     }
 
-    let mut list = Column::new().spacing(theme::SPACE_XS);
+    let mut list = Column::new().spacing(0);
     if state.query.trim().is_empty() {
         list = list.push(section_header("Recent", alpha));
     }
@@ -125,7 +125,7 @@ fn section_header<'a>(title: &str, alpha: f32) -> Element<'a, Message> {
                 ..iced::Font::default()
             }),
     )
-    .padding([theme::SPACE_SM, theme::SPACE_MD])
+    .padding([theme::SPACE_XS + 2.0, theme::SPACE_SM])
     .into()
 }
 
@@ -163,7 +163,7 @@ fn entry_row<'a>(
 
     button(content)
         .width(Fill)
-        .padding([theme::SPACE_XS, theme::SPACE_MD])
+        .padding([theme::SPACE_XS + 1.0, theme::SPACE_SM])
         .style(theme::fade_button(theme::channel_row(selected), alpha))
         .on_press(Message::PaletteEntryPressed(index))
         .into()

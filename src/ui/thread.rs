@@ -45,7 +45,7 @@ pub fn view<'a>(
             .on_press(Message::ThreadClosed),
     ]
     .align_y(iced::Alignment::Center)
-    .spacing(theme::SPACE_MD);
+    .spacing(theme::SPACE_SM);
 
     let list: Element<'a, Message> = match replies {
         Some(cm) if !cm.messages.is_empty() => {
@@ -161,7 +161,7 @@ pub fn view<'a>(
     let input = composer::thread_view(content, attachments, ComposerTarget::Thread);
 
     container(column![
-        container(header).padding(theme::SPACE_MD),
+        container(header).padding([theme::SPACE_SM, theme::SPACE_MD]),
         theme::divider(),
         container(list).height(Fill),
         input,
