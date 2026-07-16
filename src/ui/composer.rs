@@ -13,6 +13,16 @@ use unicode_segmentation::UnicodeSegmentation;
 use super::theme;
 use crate::app::{ComposerAttachment, ComposerTarget, FormatMark, Message};
 
+pub const CHANNEL_INPUT_ID: &str = "composer-channel";
+pub const THREAD_INPUT_ID: &str = "composer-thread";
+
+pub fn input_id(target: ComposerTarget) -> &'static str {
+    match target {
+        ComposerTarget::Channel => CHANNEL_INPUT_ID,
+        ComposerTarget::Thread => THREAD_INPUT_ID,
+    }
+}
+
 pub fn view<'a>(
     content: &'a Content,
     attachments: &'a [ComposerAttachment],
@@ -52,6 +62,7 @@ fn editor_owned<'a>(
 ) -> Element<'a, Message> {
     let binding_send = send.clone();
     let input = text_editor(content)
+        .id(input_id(target))
         .placeholder(placeholder)
         .on_action(move |action| Message::ComposerAction { target, action })
         .key_binding(move |press| key_binding(press, target, binding_send.clone()))
@@ -72,6 +83,7 @@ fn editor<'a>(
 ) -> Element<'a, Message> {
     let binding_send = send.clone();
     let input = text_editor(content)
+        .id(input_id(target))
         .placeholder(placeholder)
         .on_action(move |action| Message::ComposerAction { target, action })
         .key_binding(move |press| key_binding(press, target, binding_send.clone()))
@@ -389,6 +401,12 @@ fn key_binding(press: KeyPress, target: ComposerTarget, send: Message) -> Option
         return Some(Binding::Custom(Message::PasteAttachmentsRequested(target)));
     }
 
+    if modifiers.command()
+        && matches!(key, Key::Character(c) if c.as_str().eq_ignore_ascii_case("k"))
+    {
+        return Some(Binding::Custom(Message::PaletteToggled));
+    }
+
     // Slack: Enter sends, Shift+Enter inserts a newline.
     if is_enter(key, &press.modified_key) {
         return Some(if modifiers.shift() {
@@ -396,6 +414,10 @@ fn key_binding(press: KeyPress, target: ComposerTarget, send: Message) -> Option
         } else {
             Binding::Custom(send)
         });
+    }
+
+    if modifiers.command() && matches!(key, Key::Character(_)) {
+        return None;
     }
 
     Binding::from_key_press(press)

@@ -146,10 +146,13 @@ fn has_pending_sends(app: &App) -> bool {
 
 fn palette_hotkey(
     event: iced::Event,
-    _status: iced::event::Status,
+    status: iced::event::Status,
     _id: iced::window::Id,
 ) -> Option<Message> {
     use iced::keyboard::{Event, Key};
+    if status == iced::event::Status::Captured {
+        return None;
+    }
     let iced::Event::Keyboard(Event::KeyPressed { key, modifiers, .. }) = event else {
         return None;
     };

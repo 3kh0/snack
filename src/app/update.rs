@@ -92,6 +92,12 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
                 app.thread_open = false;
                 app.thread_composer = Content::new();
             }
+
+            let focus = if same_channel {
+                Task::none()
+            } else {
+                focus_active_composer(app)
+            };
             if let Some(team) = app.active_team.clone() {
                 let needs_load = app
                     .workspaces
@@ -106,7 +112,7 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
                     {
                         cm.history_failed = false;
                     }
-                    return app.load_history(&team, &id);
+                    return Task::batch([app.load_history(&team, &id), focus]);
                 }
                 return Task::batch([
                     hydrate_visible_missing_users(app, &team, &id),
@@ -117,9 +123,10 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
                     hydrate_visible_emojis(app, &team, &id),
                     load_visible_emoji_previews(app, &team, &id),
                     scroll_to_pending(app, &id),
+                    focus,
                 ]);
             }
-            Task::none()
+            focus
         }
 
         Message::ThreadOpened {
@@ -131,8 +138,9 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
             app.active_channel = Some(channel.clone());
             app.active_thread = Some((channel.clone(), ts.clone()));
             app.thread_open = true;
+            let focus = focus_active_composer(app);
             let Some(team) = app.active_team.clone() else {
-                return Task::none();
+                return focus;
             };
             let needs_load = unread_range.is_some()
                 || !app
@@ -141,13 +149,14 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
                     .map(|cm| cm.loaded)
                     .unwrap_or(false);
             if needs_load {
-                app.load_thread(&team, &channel, &ts, unread_range)
+                Task::batch([app.load_thread(&team, &channel, &ts, unread_range), focus])
             } else {
                 Task::batch([
                     load_thread_file_previews(app, &team, &channel, &ts),
                     load_thread_avatar_previews(app, &team, &channel, &ts),
                     hydrate_thread_emojis(app, &team, &channel, &ts),
                     load_thread_emoji_previews(app, &team, &channel, &ts),
+                    focus,
                 ])
             }
         }
@@ -155,7 +164,7 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
         Message::ThreadClosed => {
             app.text_selection = None;
             app.thread_open = false;
-            Task::none()
+            focus_active_composer(app)
         }
 
         Message::ThreadDismissed => {
@@ -894,7 +903,7 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
         Message::PaletteToggled => palette_toggled(app),
         Message::PaletteClosed => {
             app.palette_open = false;
-            Task::none()
+            focus_active_composer(app)
         }
         Message::PaletteDismissed => {
             if !app.palette_open {
@@ -1799,15 +1808,27 @@ fn select_workspace(app: &mut App, team: TeamId) -> Task<Message> {
                 .unwrap_or(false)
         })
         .unwrap_or(false);
+    let focus = focus_active_composer(app);
     if app.transport.is_some() && needs_load {
-        Task::batch([app.load_history(&team, &channel), activity_task])
+        Task::batch([app.load_history(&team, &channel), activity_task, focus])
     } else {
         Task::batch([
             mark_latest_visible(app, &team, &channel),
             scroll_to_pending(app, &channel),
             activity_task,
+            focus,
         ])
     }
+}
+
+fn focus_active_composer(app: &App) -> Task<Message> {
+    if app.thread_open {
+        return operation::focus(ui::composer::THREAD_INPUT_ID);
+    }
+    if app.active_channel.is_some() {
+        return operation::focus(ui::composer::CHANNEL_INPUT_ID);
+    }
+    Task::none()
 }
 
 fn authenticate(app: &mut App, add_account: bool) -> Task<Message> {
@@ -2917,7 +2938,7 @@ fn open_search_result(
 fn palette_toggled(app: &mut App) -> Task<Message> {
     if app.palette_open {
         app.palette_open = false;
-        return Task::none();
+        return focus_active_composer(app);
     }
     let entries = app
         .active_workspace()
