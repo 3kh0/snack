@@ -1,10 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use iced::widget::{Space, button, column, container, image, row, svg, text};
 use iced::{Alignment, ContentFit, Element, Fill, Length, font};
 
 use super::{icons, theme};
 use crate::app::{FilePreview, Message};
+use crate::config::{AccountId, Session};
 use crate::slack::models::UserId;
 use crate::state::{MainView, Presence, Workspace};
 
@@ -14,7 +15,7 @@ pub const ICON_SIZE: f32 = 28.0;
 const NAV_ICON_SIZE: f32 = 18.0;
 const AVATAR_RADIUS: f32 = 8.0;
 const RAIL_PADDING: f32 = 6.0;
-const MENU_WIDTH: f32 = 220.0;
+const MENU_WIDTH: f32 = 280.0;
 
 type AvatarPreviews = HashMap<UserId, FilePreview>;
 
@@ -121,7 +122,12 @@ fn badge_label(count: usize) -> String {
     }
 }
 
-pub fn account_menu<'a>(ws: &'a Workspace, avatars: &'a AvatarPreviews) -> Element<'a, Message> {
+pub fn account_menu<'a>(
+    ws: &'a Workspace,
+    avatars: &'a AvatarPreviews,
+    accounts: &'a BTreeMap<AccountId, Session>,
+    active_account: Option<&'a str>,
+) -> Element<'a, Message> {
     let presence = ws
         .presence
         .get(&ws.self_user_id)
@@ -161,15 +167,40 @@ pub fn account_menu<'a>(ws: &'a Workspace, avatars: &'a AvatarPreviews) -> Eleme
         )
     };
 
-    let menu = column![
+    let mut menu = column![
         header,
         theme::divider(),
         presence_action,
         theme::divider(),
-        menu_button("Settings", false, Message::SettingsOpened),
-        menu_button("Sign out", false, Message::SignOutPressed),
-    ]
-    .spacing(theme::SPACE_SM);
+        text("Accounts")
+            .size(theme::TEXT_SM)
+            .color(theme::TEXT_3)
+            .font(iced::Font {
+                weight: font::Weight::Semibold,
+                ..iced::Font::default()
+            }),
+    ];
+    for (account_id, session) in accounts {
+        menu = menu.push(menu_button(
+            &session.account_label(),
+            active_account == Some(account_id.as_str()),
+            Message::AccountSelected(account_id.clone()),
+        ));
+    }
+    menu = menu
+        .push(menu_button(
+            "+ Add another account",
+            false,
+            Message::AddAccountPressed,
+        ))
+        .push(theme::divider())
+        .push(menu_button("Settings", false, Message::SettingsOpened))
+        .push(menu_button(
+            "Sign out of this account",
+            false,
+            Message::SignOutPressed,
+        ))
+        .spacing(theme::SPACE_SM);
 
     container(menu)
         .width(Length::Fixed(MENU_WIDTH))

@@ -374,7 +374,12 @@ fn with_account_menu<'a>(app: &'a App, base: Element<'a, Message>) -> Element<'a
     let menu = ui::motion::overlay(open, move |anim, at| {
         let progress = ui::motion::t(anim, at);
         let card = ui::motion::fly_y(
-            opaque(ui::rail::account_menu(ws, &app.avatar_previews)),
+            opaque(ui::rail::account_menu(
+                ws,
+                &app.avatar_previews,
+                &app.accounts,
+                app.active_account.as_deref(),
+            )),
             progress,
             ui::motion::closing(anim),
             8.0,

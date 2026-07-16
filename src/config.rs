@@ -8,10 +8,32 @@ use serde::{Deserialize, Serialize};
 use crate::error::AppError;
 use crate::slack::models::{TeamId, UserId};
 
+pub type AccountId = String;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub d_cookie: String,
     pub workspaces: BTreeMap<TeamId, WorkspaceSession>,
+}
+
+impl Session {
+    pub fn account_label(&self) -> String {
+        let Some(workspace) = self.workspaces.values().next() else {
+            return "Slack account".to_owned();
+        };
+        let more = self.workspaces.len().saturating_sub(1);
+        if more == 0 {
+            format!("{} · {}", workspace.name, workspace.user_id)
+        } else {
+            format!("{} +{more} · {}", workspace.name, workspace.user_id)
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Accounts {
+    pub active_account: AccountId,
+    pub sessions: BTreeMap<AccountId, Session>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,10 +72,40 @@ struct SessionMeta {
     workspaces: Vec<WorkspaceMeta>,
 }
 
+impl From<&Session> for SessionMeta {
+    fn from(session: &Session) -> Self {
+        Self {
+            workspaces: session
+                .workspaces
+                .values()
+                .map(WorkspaceMeta::from)
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AccountsMeta {
+    active_account: AccountId,
+    accounts: BTreeMap<AccountId, SessionMeta>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum StoredMeta {
+    Accounts(AccountsMeta),
+    Legacy(SessionMeta),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SessionSecrets {
     d_cookie: String,
     tokens: BTreeMap<TeamId, String>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct AccountsSecrets {
+    accounts: BTreeMap<AccountId, SessionSecrets>,
 }
 
 impl From<&Session> for SessionSecrets {
@@ -203,6 +255,10 @@ fn session_path() -> Result<PathBuf, AppError> {
 }
 
 fn secret_account() -> &'static str {
+    "session_v3"
+}
+
+fn legacy_secret_account() -> &'static str {
     "session_v2"
 }
 
@@ -318,13 +374,8 @@ fn delete_secret(account: &str) {
         .remove(account);
 }
 
-fn save_secrets(session: &Session) -> Result<(), AppError> {
-    let secrets = SessionSecrets::from(session);
-    set_secret(secret_account(), &serde_json::to_string(&secrets)?)
-}
-
-fn load_secrets(meta: &SessionMeta) -> Result<Option<SessionSecrets>, AppError> {
-    if let Some(json) = get_secret(secret_account())? {
+fn load_legacy_secrets(meta: &SessionMeta) -> Result<Option<SessionSecrets>, AppError> {
+    if let Some(json) = get_secret(legacy_secret_account())? {
         return Ok(Some(serde_json::from_str(&json)?));
     }
 
@@ -340,41 +391,10 @@ fn load_secrets(meta: &SessionMeta) -> Result<Option<SessionSecrets>, AppError> 
     if tokens.is_empty() {
         return Ok(None);
     }
-    let secrets = SessionSecrets { d_cookie, tokens };
-    set_secret(secret_account(), &serde_json::to_string(&secrets)?)?;
-    Ok(Some(secrets))
+    Ok(Some(SessionSecrets { d_cookie, tokens }))
 }
 
-pub fn save_session(session: &Session) -> Result<(), AppError> {
-    let dir = config_dir()?;
-    std::fs::create_dir_all(&dir)?;
-
-    let meta = SessionMeta {
-        workspaces: session
-            .workspaces
-            .values()
-            .map(WorkspaceMeta::from)
-            .collect(),
-    };
-    let json = serde_json::to_string_pretty(&meta)?;
-    std::fs::write(session_path()?, json)?;
-
-    save_secrets(session)
-}
-
-pub fn load_session() -> Result<Option<Session>, AppError> {
-    let path = session_path()?;
-    let bytes = match std::fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e.into()),
-    };
-    let meta: SessionMeta = serde_json::from_slice(&bytes)?;
-
-    let Some(secrets) = load_secrets(&meta)? else {
-        return Ok(None);
-    };
-
+fn session_from_parts(meta: SessionMeta, secrets: &SessionSecrets) -> Option<Session> {
     let mut workspaces = BTreeMap::new();
     for w in meta.workspaces {
         let Some(token) = secrets.tokens.get(&w.team_id).cloned() else {
@@ -392,25 +412,229 @@ pub fn load_session() -> Result<Option<Session>, AppError> {
             },
         );
     }
+    (!workspaces.is_empty()).then(|| Session {
+        d_cookie: secrets.d_cookie.clone(),
+        workspaces,
+    })
+}
 
-    if workspaces.is_empty() {
+fn metadata(accounts: &Accounts) -> AccountsMeta {
+    AccountsMeta {
+        active_account: accounts.active_account.clone(),
+        accounts: accounts
+            .sessions
+            .iter()
+            .map(|(id, session)| (id.clone(), SessionMeta::from(session)))
+            .collect(),
+    }
+}
+
+fn write_metadata_value(meta: &AccountsMeta) -> Result<(), AppError> {
+    let dir = config_dir()?;
+    std::fs::create_dir_all(&dir)?;
+    let json = serde_json::to_string_pretty(meta)?;
+    let path = session_path()?;
+    let temp = dir.join(format!(".session-{}.tmp", uuid::Uuid::new_v4()));
+    std::fs::write(&temp, json)?;
+    #[cfg(target_os = "windows")]
+    if path.exists() {
+        std::fs::remove_file(&path)?;
+    }
+    match std::fs::rename(&temp, path) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = std::fs::remove_file(temp);
+            Err(error.into())
+        }
+    }
+}
+
+fn write_metadata(accounts: &Accounts) -> Result<(), AppError> {
+    write_metadata_value(&metadata(accounts))
+}
+
+fn write_accounts(accounts: &Accounts) -> Result<(), AppError> {
+    let secrets = AccountsSecrets {
+        accounts: accounts
+            .sessions
+            .iter()
+            .map(|(id, session)| (id.clone(), SessionSecrets::from(session)))
+            .collect(),
+    };
+    set_secret(secret_account(), &serde_json::to_string(&secrets)?)?;
+    write_metadata(accounts)
+}
+
+fn remove_legacy_secrets(meta: &SessionMeta) {
+    for workspace in &meta.workspaces {
+        delete_secret(&token_account(&workspace.team_id));
+    }
+    delete_secret("d_cookie");
+    delete_secret(legacy_secret_account());
+}
+
+fn migrate_legacy(meta: SessionMeta) -> Result<Option<Accounts>, AppError> {
+    let Some(secrets) = load_legacy_secrets(&meta)? else {
+        return Ok(None);
+    };
+    let Some(session) = session_from_parts(meta.clone(), &secrets) else {
+        return Ok(None);
+    };
+    let account_id = uuid::Uuid::new_v4().to_string();
+    let accounts = Accounts {
+        active_account: account_id.clone(),
+        sessions: BTreeMap::from([(account_id, session)]),
+    };
+    write_accounts(&accounts)?;
+    remove_legacy_secrets(&meta);
+    Ok(Some(accounts))
+}
+
+pub fn load_accounts() -> Result<Option<Accounts>, AppError> {
+    let path = session_path()?;
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let meta = match serde_json::from_slice::<StoredMeta>(&bytes)? {
+        StoredMeta::Accounts(meta) => meta,
+        StoredMeta::Legacy(meta) => return migrate_legacy(meta),
+    };
+    let Some(json) = get_secret(secret_account())? else {
+        return Ok(None);
+    };
+    let secrets: AccountsSecrets = serde_json::from_str(&json)?;
+    let sessions: BTreeMap<_, _> = meta
+        .accounts
+        .into_iter()
+        .filter_map(|(id, session_meta)| {
+            let session = session_from_parts(session_meta, secrets.accounts.get(&id)?)?;
+            Some((id, session))
+        })
+        .collect();
+    if sessions.is_empty() {
         return Ok(None);
     }
-    Ok(Some(Session {
-        d_cookie: secrets.d_cookie,
-        workspaces,
+    let active_account = if sessions.contains_key(&meta.active_account) {
+        meta.active_account
+    } else {
+        sessions
+            .keys()
+            .next()
+            .cloned()
+            .expect("sessions is not empty")
+    };
+    Ok(Some(Accounts {
+        active_account,
+        sessions,
     }))
 }
 
+pub fn load_session() -> Result<Option<Session>, AppError> {
+    let Some(accounts) = load_accounts()? else {
+        return Ok(None);
+    };
+    Ok(accounts.sessions.get(&accounts.active_account).cloned())
+}
+
+fn same_identity(a: &Session, b: &Session) -> bool {
+    a.workspaces.values().any(|workspace| {
+        b.workspaces
+            .get(&workspace.team_id)
+            .is_some_and(|other| other.user_id == workspace.user_id)
+    })
+}
+
+/// Add or refresh a Slack account and make it active.
+pub fn save_session(session: &Session) -> Result<(), AppError> {
+    let saved = match load_accounts() {
+        Ok(accounts) => accounts,
+        Err(AppError::Json(error)) => {
+            tracing::warn!(%error, "replacing corrupt saved session during sign-in");
+            None
+        }
+        Err(error) => return Err(error),
+    };
+    let mut accounts = saved.unwrap_or_else(|| {
+        let account_id = uuid::Uuid::new_v4().to_string();
+        Accounts {
+            active_account: account_id,
+            sessions: BTreeMap::new(),
+        }
+    });
+    let account_id = accounts
+        .sessions
+        .iter()
+        .find_map(|(id, saved)| same_identity(saved, session).then(|| id.clone()))
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    accounts.active_account = account_id.clone();
+    accounts.sessions.insert(account_id, session.clone());
+    write_accounts(&accounts)
+}
+
+pub fn set_active_account(account_id: &str) -> Result<(), AppError> {
+    let bytes = match std::fs::read(session_path()?) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(
+                std::io::Error::new(std::io::ErrorKind::NotFound, "no saved accounts").into(),
+            );
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let mut meta = match serde_json::from_slice::<StoredMeta>(&bytes)? {
+        StoredMeta::Accounts(meta) => meta,
+        StoredMeta::Legacy(_) => {
+            let Some(accounts) = load_accounts()? else {
+                return Err(
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "no saved accounts").into(),
+                );
+            };
+            metadata(&accounts)
+        }
+    };
+    if !meta.accounts.contains_key(account_id) {
+        return Err(
+            std::io::Error::new(std::io::ErrorKind::NotFound, "saved account not found").into(),
+        );
+    }
+    meta.active_account = account_id.to_owned();
+    write_metadata_value(&meta)
+}
+
+pub fn remove_account(account_id: &str) -> Result<Option<AccountId>, AppError> {
+    let Some(mut accounts) = load_accounts()? else {
+        clear_session()?;
+        return Ok(None);
+    };
+    accounts.sessions.remove(account_id);
+    if accounts.sessions.is_empty() {
+        clear_session()?;
+        return Ok(None);
+    }
+    if accounts.active_account == account_id {
+        accounts.active_account = accounts
+            .sessions
+            .keys()
+            .next()
+            .cloned()
+            .expect("sessions is not empty");
+    }
+    write_accounts(&accounts)?;
+    Ok(Some(accounts.active_account))
+}
+
 pub fn clear_session() -> Result<(), AppError> {
-    if let Ok(meta_bytes) = std::fs::read(session_path()?) {
-        if let Ok(meta) = serde_json::from_slice::<SessionMeta>(&meta_bytes) {
-            for w in &meta.workspaces {
-                delete_secret(&token_account(&w.team_id));
-            }
+    if let Ok(meta_bytes) = std::fs::read(session_path()?)
+        && let Ok(StoredMeta::Legacy(meta)) = serde_json::from_slice::<StoredMeta>(&meta_bytes)
+    {
+        for workspace in &meta.workspaces {
+            delete_secret(&token_account(&workspace.team_id));
         }
     }
     delete_secret("d_cookie");
+    delete_secret(legacy_secret_account());
     delete_secret(secret_account());
     match std::fs::remove_file(session_path()?) {
         Ok(()) => Ok(()),
@@ -495,6 +719,111 @@ mod tests {
     }
 
     #[test]
+    fn saves_switches_and_removes_multiple_accounts() {
+        let _guard = test_lock();
+        reset();
+
+        let first = session();
+        save_session(&first).expect("save first account");
+        let first_id = load_accounts()
+            .expect("load accounts")
+            .expect("accounts")
+            .active_account;
+
+        let mut second = session();
+        second.d_cookie = "xoxd-second".into();
+        second.workspaces.get_mut("T_ONE").unwrap().user_id = "U_OTHER".into();
+        second.workspaces.remove("T_TWO");
+        save_session(&second).expect("save second account");
+
+        let accounts = load_accounts().expect("load accounts").expect("accounts");
+        assert_eq!(accounts.sessions.len(), 2);
+        assert_ne!(accounts.active_account, first_id);
+        assert_eq!(
+            accounts.sessions[&accounts.active_account].d_cookie,
+            "xoxd-second"
+        );
+
+        set_active_account(&first_id).expect("switch account");
+        assert_eq!(
+            load_session().expect("load session").unwrap().d_cookie,
+            "xoxd-cookie"
+        );
+
+        let remaining = remove_account(&first_id)
+            .expect("remove account")
+            .expect("remaining account");
+        let accounts = load_accounts().expect("load accounts").expect("accounts");
+        assert_eq!(accounts.sessions.len(), 1);
+        assert_eq!(accounts.active_account, remaining);
+        assert_eq!(accounts.sessions[&remaining].d_cookie, "xoxd-second");
+    }
+
+    #[test]
+    fn signing_in_again_refreshes_matching_account() {
+        let _guard = test_lock();
+        reset();
+
+        let first = session();
+        save_session(&first).expect("save account");
+        let mut refreshed = first;
+        refreshed.d_cookie = "xoxd-refreshed".into();
+        refreshed.workspaces.get_mut("T_ONE").unwrap().token = "xoxc-refreshed".into();
+        save_session(&refreshed).expect("refresh account");
+
+        let accounts = load_accounts().expect("load accounts").expect("accounts");
+        assert_eq!(accounts.sessions.len(), 1);
+        let active = &accounts.sessions[&accounts.active_account];
+        assert_eq!(active.d_cookie, "xoxd-refreshed");
+        assert_eq!(active.workspaces["T_ONE"].token, "xoxc-refreshed");
+    }
+
+    #[test]
+    fn sign_in_recovers_from_corrupt_session_metadata() {
+        let _guard = test_lock();
+        reset();
+        std::fs::create_dir_all(config_dir().expect("config dir")).expect("create config dir");
+        std::fs::write(session_path().expect("session path"), b"{").expect("write corrupt session");
+
+        save_session(&session()).expect("replace corrupt session");
+
+        let loaded = load_session().expect("load session").expect("session");
+        assert_eq!(loaded.d_cookie, "xoxd-cookie");
+        assert_eq!(loaded.workspaces["T_ONE"].token, "xoxc-one");
+    }
+
+    #[test]
+    fn migrates_previous_single_session_format() {
+        let _guard = test_lock();
+        reset();
+
+        let session = session();
+        let meta = SessionMeta::from(&session);
+        std::fs::create_dir_all(config_dir().expect("config dir")).expect("create config dir");
+        std::fs::write(
+            session_path().expect("session path"),
+            serde_json::to_string_pretty(&meta).expect("serialize metadata"),
+        )
+        .expect("write metadata");
+        set_secret(
+            legacy_secret_account(),
+            &serde_json::to_string(&SessionSecrets::from(&session)).expect("serialize secrets"),
+        )
+        .expect("save legacy secrets");
+
+        let accounts = load_accounts().expect("load accounts").expect("accounts");
+
+        assert_eq!(accounts.sessions.len(), 1);
+        assert_eq!(
+            accounts.sessions[&accounts.active_account].workspaces["T_ONE"].token,
+            "xoxc-one"
+        );
+        let secrets = test_secrets().lock().expect("test secret store poisoned");
+        assert!(secrets.contains_key(secret_account()));
+        assert!(!secrets.contains_key(legacy_secret_account()));
+    }
+
+    #[test]
     fn migrates_legacy_secrets_to_single_entry() {
         let _guard = test_lock();
         reset();
@@ -526,6 +855,12 @@ mod tests {
                 .lock()
                 .expect("test secret store poisoned")
                 .contains_key(secret_account())
+        );
+        assert!(
+            !test_secrets()
+                .lock()
+                .expect("test secret store poisoned")
+                .contains_key("d_cookie")
         );
     }
 }

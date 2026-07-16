@@ -75,7 +75,11 @@ pub(super) fn subscription(app: &App) -> Subscription<Message> {
                 d_cookie: session.d_cookie.clone(),
                 user_agent: user_agent.clone(),
             };
-            subs.push(realtime::connect(params).map(map_rt_update));
+            subs.push(
+                realtime::connect(params)
+                    .with(app.account_epoch)
+                    .map(map_scoped_rt_update),
+            );
         }
     }
 
@@ -184,4 +188,8 @@ fn map_rt_update((team, update): (TeamId, RtUpdate)) -> Message {
         RtUpdate::Event { generation, event } => Message::Realtime(team, generation, event),
         RtUpdate::Disconnected { generation } => Message::RtDisconnected(team, generation),
     }
+}
+
+fn map_scoped_rt_update((epoch, update): (u64, (TeamId, RtUpdate))) -> Message {
+    Message::AccountScoped(epoch, Box::new(map_rt_update(update)))
 }

@@ -32,8 +32,8 @@ const SCR: &str = r#"
 })();
 "#;
 
-pub fn login() -> Result<Session, String> {
-    drive_login()
+pub fn login(fresh_profile: bool) -> Result<Session, String> {
+    drive_login(fresh_profile)
 }
 
 const CAPTURE_SCR: &str = r#"
@@ -132,7 +132,7 @@ pub fn capture_huddle_webview() -> Result<(), String> {
     Ok(())
 }
 
-fn drive_login() -> Result<Session, String> {
+fn drive_login(fresh_profile: bool) -> Result<Session, String> {
     let mut event_loop = EventLoop::new();
     let window = WindowBuilder::new()
         .with_title("Sign in to Slack")
@@ -142,8 +142,19 @@ fn drive_login() -> Result<Session, String> {
 
     let data_dir = config::config_dir()
         .map_err(|e| format!("config dir: {e}"))?
-        .join("webview");
-    let _ = std::fs::create_dir_all(&data_dir);
+        .join(if fresh_profile {
+            "webview-add-account"
+        } else {
+            "webview"
+        });
+    if fresh_profile {
+        match std::fs::remove_dir_all(&data_dir) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("reset add-account webview: {error}")),
+        }
+    }
+    std::fs::create_dir_all(&data_dir).map_err(|error| format!("create webview data: {error}"))?;
     let mut web_context = WebContext::new(Some(data_dir));
 
     let (tx, rx) = mpsc::channel::<String>();

@@ -16,10 +16,41 @@ pub struct Cache {
 }
 
 impl Cache {
-    pub fn open_default() -> Result<Self, AppError> {
+    fn default_path(account_id: &str) -> Result<std::path::PathBuf, AppError> {
+        if uuid::Uuid::parse_str(account_id).is_err() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid account id for cache",
+            )
+            .into());
+        }
         let dir = crate::config::data_dir()?;
         std::fs::create_dir_all(&dir)?;
-        Self::open(dir.join("cache.sqlite"))
+        Ok(dir.join(format!("cache-{account_id}.sqlite")))
+    }
+
+    pub fn open_default(account_id: &str, adopt_legacy: bool) -> Result<Self, AppError> {
+        let path = Self::default_path(account_id)?;
+        let legacy = crate::config::data_dir()?.join("cache.sqlite");
+        if adopt_legacy
+            && !path.exists()
+            && legacy.exists()
+            && std::fs::rename(&legacy, &path).is_err()
+            && std::fs::copy(&legacy, &path).is_ok()
+        {
+            let _ = std::fs::remove_file(legacy);
+        } else if !adopt_legacy && legacy.exists() {
+            let _ = std::fs::remove_file(legacy);
+        }
+        Self::open(path)
+    }
+
+    pub fn remove_default(account_id: &str) -> Result<(), AppError> {
+        match std::fs::remove_file(Self::default_path(account_id)?) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
     }
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self, AppError> {

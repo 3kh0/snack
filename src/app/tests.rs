@@ -5,7 +5,7 @@ use serde_json::json;
 use super::update::{
     begin_mark, channel_needs_hydration, channel_open_scroll_target, emoji_preview_from_bytes,
     is_permanent_mark_error, needs_user_hydration, notification_for_message, pending_target_ts,
-    preferred_channel, should_auto_load_activity, should_load_older_activity,
+    preferred_channel, scope_message, should_auto_load_activity, should_load_older_activity,
     should_load_older_history, unique_download_path, update,
 };
 use super::*;
@@ -141,6 +141,37 @@ pub(super) fn test_app() -> App {
     app.active_team = Some(team);
     app.active_channel = Some("C_GENERAL".into());
     app.screen = Screen::Main;
+    app
+}
+
+fn account_session(team: &str, user: &str, name: &str) -> Session {
+    Session {
+        d_cookie: format!("cookie-{user}"),
+        workspaces: BTreeMap::from([(
+            team.into(),
+            config::WorkspaceSession {
+                team_id: team.into(),
+                enterprise_id: None,
+                user_id: user.into(),
+                name: name.into(),
+                url: format!("https://{}.slack.com", name.to_ascii_lowercase()),
+                token: format!("token-{user}"),
+            },
+        )]),
+    }
+}
+
+pub(super) fn account_menu_app() -> App {
+    let mut app = test_app();
+    let active = "11111111-1111-4111-8111-111111111111".to_owned();
+    let other = "22222222-2222-4222-8222-222222222222".to_owned();
+    app.accounts = BTreeMap::from([
+        (active.clone(), account_session("T_TEST", SELF_USER, "Test")),
+        (other, account_session("T_OTHER", "U_OTHER", "Other")),
+    ]);
+    app.active_account = Some(active);
+    app.show_account_menu = true;
+    app.account_menu_open = true;
     app
 }
 
@@ -374,6 +405,58 @@ fn account_menu_toggles_and_closes_for_settings() {
 
     let _ = update(&mut app, Message::AccountMenuDismissed);
     assert!(!app.show_account_menu);
+}
+
+#[test]
+fn stale_account_scoped_messages_are_ignored_after_reset() {
+    let mut app = test_app();
+    let old_epoch = app.account_epoch;
+    app.reset_account_runtime();
+
+    let _ = update(
+        &mut app,
+        Message::AccountScoped(old_epoch, Box::new(Message::AccountMenuToggled)),
+    );
+
+    assert!(!app.show_account_menu);
+    assert!(!app.account_menu_open);
+}
+
+#[test]
+fn account_scoping_is_idempotent_for_nested_reducer_tasks() {
+    let scoped = Message::AccountScoped(7, Box::new(Message::AccountMenuToggled));
+
+    let result = scope_message(7, scoped);
+
+    let Message::AccountScoped(7, inner) = result else {
+        panic!("expected one account scope");
+    };
+    assert!(matches!(*inner, Message::AccountMenuToggled));
+}
+
+#[test]
+fn activating_account_replaces_account_scoped_runtime() {
+    let mut app = test_app();
+    let account_id = "33333333-3333-4333-8333-333333333333".to_owned();
+    app.accounts.insert(
+        account_id.clone(),
+        account_session("T_OTHER", "U_OTHER", "Other"),
+    );
+    app.search_input = "old account search".into();
+    app.composer = iced::widget::text_editor::Content::with_text("old account draft");
+    app.avatar_profile_hydrated.insert("U_ALICE".into());
+    let old_epoch = app.account_epoch;
+
+    let _ = app.activate_account(account_id.clone());
+
+    assert_eq!(app.active_account.as_deref(), Some(account_id.as_str()));
+    assert_eq!(app.active_team.as_deref(), Some("T_OTHER"));
+    assert!(app.workspaces.contains_key("T_OTHER"));
+    assert!(!app.workspaces.contains_key("T_TEST"));
+    assert!(app.search_input.is_empty());
+    assert!(app.composer.text().is_empty());
+    assert!(app.avatar_profile_hydrated.is_empty());
+    assert_ne!(app.account_epoch, old_epoch);
 }
 
 #[test]

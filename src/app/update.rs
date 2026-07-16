@@ -35,7 +35,26 @@ const LOAD_OLDER_SCROLL_TOP_PX: f32 = 48.0;
 const LOAD_OLDER_ACTIVITY_BOTTOM_PX: f32 = 96.0;
 
 pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
+    let message = match message {
+        Message::AccountScoped(epoch, message) if epoch == app.account_epoch => *message,
+        Message::AccountScoped(_, _) => return Task::none(),
+        message => message,
+    };
+    let task = update_inner(app, message);
+    let epoch = app.account_epoch;
+    task.map(move |message| scope_message(epoch, message))
+}
+
+pub(super) fn scope_message(epoch: u64, message: Message) -> Message {
     match message {
+        Message::AuthenticationFinished(_) | Message::AccountScoped(_, _) => message,
+        message => Message::AccountScoped(epoch, Box::new(message)),
+    }
+}
+
+fn update_inner(app: &mut App, message: Message) -> Task<Message> {
+    match message {
+        Message::AccountScoped(_, _) => Task::none(),
         Message::WorkspaceSelected(team) => select_workspace(app, team),
 
         Message::ChannelSelected(id) => {
@@ -1108,23 +1127,19 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
 
-        Message::SignInPressed => match std::env::current_exe() {
-            Ok(exe) => Task::perform(
-                async move {
-                    tokio::process::Command::new(exe)
-                        .env("SNACK_AUTH", "1")
-                        .status()
-                        .await
-                        .map(|s| s.success())
-                        .unwrap_or(false)
-                },
-                |_ok| Message::RetryAuth,
-            ),
-            Err(e) => {
-                app.toast(format!("could not locate snack binary: {e}"));
-                Task::none()
-            }
-        },
+        Message::SignInPressed => authenticate(app, false),
+
+        Message::AddAccountPressed => {
+            app.account_menu_open = false;
+            authenticate(app, true)
+        }
+
+        Message::AuthenticationFinished(true) => app.load_session(),
+
+        Message::AuthenticationFinished(false) => {
+            app.toast("Slack sign-in was not completed");
+            Task::none()
+        }
 
         Message::RetryAuth => app.load_session(),
 
@@ -1365,6 +1380,8 @@ pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
             }
             Task::none()
         }
+
+        Message::AccountSelected(account_id) => switch_account(app, account_id),
 
         Message::SelfPresenceSelected(presence) => set_self_presence(app, presence),
 
@@ -1756,46 +1773,78 @@ fn select_workspace(app: &mut App, team: TeamId) -> Task<Message> {
     }
 }
 
-fn sign_out(app: &mut App) -> Task<Message> {
-    if let Err(e) = config::clear_session() {
-        app.toast(format!("could not sign out: {e}"));
+fn authenticate(app: &mut App, add_account: bool) -> Task<Message> {
+    match std::env::current_exe() {
+        Ok(exe) => Task::perform(
+            async move {
+                let mut command = tokio::process::Command::new(exe);
+                command.env("SNACK_AUTH", "1");
+                if add_account {
+                    command.env("SNACK_AUTH_ADD", "1");
+                }
+                command
+                    .status()
+                    .await
+                    .map(|status| status.success())
+                    .unwrap_or(false)
+            },
+            Message::AuthenticationFinished,
+        ),
+        Err(e) => {
+            app.toast(format!("could not locate snack binary: {e}"));
+            Task::none()
+        }
+    }
+}
+
+fn switch_account(app: &mut App, account_id: config::AccountId) -> Task<Message> {
+    if app.active_account.as_deref() == Some(&account_id) {
+        app.account_menu_open = false;
         return Task::none();
     }
+    if !app.accounts.contains_key(&account_id) {
+        app.toast("saved account not found");
+        return Task::none();
+    }
+    if let Err(e) = config::set_active_account(&account_id) {
+        app.toast(format!("could not switch account: {e}"));
+        return Task::none();
+    }
+    app.activate_account(account_id)
+}
 
-    app.session = None;
-    app.cache = None;
-    app.transport = None;
-    app.active_team = None;
-    app.active_channel = None;
-    app.active_thread = None;
-    app.thread_open = false;
-    app.activity = ActivityState::default();
-    app.dms = DmsState::default();
-    app.workspaces.clear();
-    app.threads.clear();
-    app.composer = Content::new();
-    app.thread_composer = Content::new();
-    app.editing = None;
-    app.edit_text.clear();
-    app.hovered_message = None;
-    app.search_input.clear();
-    app.search = None;
-    app.file_previews.clear();
-    app.avatar_previews.clear();
-    app.emoji_previews.clear();
-    app.emoji_hydrated.clear();
-    app.avatar_profile_hydrated.clear();
-    app.pending_scroll_to = None;
-    app.cache_dirty.clear();
-    app.cache_saving.clear();
-    app.show_account_menu = false;
-    app.account_menu_open = false;
-    app.show_settings = false;
-    app.settings_open = false;
-    app.palette = None;
-    app.palette_open = false;
-    app.screen = Screen::Login;
-    Task::none()
+fn sign_out(app: &mut App) -> Task<Message> {
+    let Some(account_id) = app.active_account.clone() else {
+        return Task::none();
+    };
+    match config::remove_account(&account_id) {
+        Ok(Some(next_account)) => {
+            app.accounts.remove(&account_id);
+            app.reset_account_runtime();
+            let cache_error = Cache::remove_default(&account_id).err();
+            let task = app.activate_account(next_account);
+            if let Some(error) = cache_error {
+                app.toast(format!(
+                    "could not remove signed-out account cache: {error}"
+                ));
+            }
+            task
+        }
+        Ok(None) => {
+            app.accounts.clear();
+            app.reset_account_runtime();
+            if let Err(error) = Cache::remove_default(&account_id) {
+                app.toast(format!(
+                    "could not remove signed-out account cache: {error}"
+                ));
+            }
+            Task::none()
+        }
+        Err(e) => {
+            app.toast(format!("could not sign out: {e}"));
+            Task::none()
+        }
+    }
 }
 
 fn set_self_presence(app: &mut App, presence: Presence) -> Task<Message> {
@@ -4589,6 +4638,11 @@ fn mark_workspace_dirty(app: &mut App, team: &str) {
 }
 
 fn flush_due_cache(app: &mut App, now: Instant) -> Task<Message> {
+    let Some(account_id) = app.active_account.clone() else {
+        app.cache_dirty.clear();
+        app.cache_saving.clear();
+        return Task::none();
+    };
     if app.cache.is_none() {
         app.cache_dirty.clear();
         app.cache_saving.clear();
@@ -4607,12 +4661,13 @@ fn flush_due_cache(app: &mut App, now: Instant) -> Task<Message> {
 
     let tasks = due.into_iter().filter_map(|team| {
         let workspace = app.workspaces.get(&team)?.clone();
+        let account_id = account_id.clone();
         let started_at = now;
         app.cache_saving.insert(team.clone(), started_at);
         Some(Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
-                    Cache::open_default()
+                    Cache::open_default(&account_id, false)
                         .and_then(|cache| cache.save_workspace(&workspace))
                         .map_err(|e| e.to_string())
                 })

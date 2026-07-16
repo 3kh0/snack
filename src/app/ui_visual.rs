@@ -14,7 +14,8 @@ use iced::{Settings, Size};
 use iced_test::{Error, Simulator};
 
 use super::tests::{
-    activity_app, dms_app, login_app, multi_paragraph_emoji_app, search_app, settings_app, test_app,
+    account_menu_app, activity_app, dms_app, login_app, multi_paragraph_emoji_app, search_app,
+    settings_app, test_app,
 };
 use super::update::update;
 use super::view::view;

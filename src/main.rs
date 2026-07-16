@@ -57,7 +57,8 @@ pub fn main() -> iced::Result {
     }
 
     if std::env::var_os("SNACK_AUTH").is_some() {
-        match auth::login() {
+        let add_account = std::env::var_os("SNACK_AUTH_ADD").is_some();
+        match auth::login(add_account) {
             Ok(session) => {
                 if let Err(e) = config::save_session(&session) {
                     eprintln!("snack auth: failed to save session: {e}");

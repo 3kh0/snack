@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use iced::Task;
@@ -227,6 +227,9 @@ pub struct PendingFileMessage {
 
 pub struct App {
     screen: Screen,
+    accounts: BTreeMap<config::AccountId, Session>,
+    active_account: Option<config::AccountId>,
+    account_epoch: u64,
     session: Option<Session>,
     cache: Option<Cache>,
     client: SlackClient,
@@ -297,6 +300,7 @@ pub enum FormatMark {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    AccountScoped(u64, Box<Message>),
     WorkspaceSelected(TeamId),
     ChannelSelected(ChannelId),
     ComposerAction {
@@ -532,8 +536,11 @@ pub enum Message {
     DmsUnreadOnlyToggled(bool),
     DmsFilterChanged(String),
     SignInPressed,
+    AddAccountPressed,
+    AuthenticationFinished(bool),
     RetryAuth,
     AccountMenuToggled,
+    AccountSelected(config::AccountId),
     SelfPresenceSelected(crate::state::Presence),
     SelfPresenceUpdated {
         team: TeamId,
@@ -573,6 +580,9 @@ impl App {
         ui::theme::apply(&settings);
         App {
             screen: Screen::Login,
+            accounts: BTreeMap::new(),
+            active_account: None,
+            account_epoch: 0,
             session: None,
             cache: None,
             client: SlackClient::default(),
@@ -629,65 +639,154 @@ impl App {
     fn boot() -> (Self, Task<Message>) {
         let mut app = App::empty();
         let task = app.load_session();
-        (app, task)
+        let epoch = app.account_epoch;
+        (
+            app,
+            task.map(move |message| Message::AccountScoped(epoch, Box::new(message))),
+        )
     }
 
     fn load_session(&mut self) -> Task<Message> {
-        match config::load_session() {
-            Ok(Some(session)) => match Transport::new(session.d_cookie.clone()) {
-                Ok(transport) => {
-                    self.transport = Some(Arc::new(transport));
-                    let cache = match Cache::open_default() {
-                        Ok(cache) => Some(cache),
-                        Err(e) => {
-                            self.toast(format!("cache unavailable: {e}"));
-                            None
-                        }
-                    };
-                    let mut warm = false;
-                    for ws in session.workspaces.values() {
-                        let workspace = cache
-                            .as_ref()
-                            .and_then(|cache| match cache.load_workspace(ws) {
-                                Ok(workspace) => workspace,
-                                Err(e) => {
-                                    tracing::warn!(team = %ws.team_id, error = %e, "cache load failed");
-                                    None
-                                }
-                            })
-                            .unwrap_or_else(|| Workspace::from_session(ws));
-                        warm |= !workspace.channels.is_empty();
-                        self.workspaces.insert(ws.team_id.clone(), workspace);
-                    }
-                    self.active_team = session.workspaces.keys().next().cloned();
-                    if warm {
-                        self.screen = Screen::Main;
-                        if let Some(team) = self.active_team.clone() {
-                            self.active_channel = preferred_channel(self, &team);
-                        }
-                    } else {
-                        self.screen = Screen::Loading;
-                    }
-                    self.cache = cache;
-                    self.session = Some(session);
-                    self.boot_all()
-                }
-                Err(e) => {
-                    self.toast(format!("transport init failed: {e}"));
-                    self.screen = Screen::Login;
-                    Task::none()
-                }
-            },
+        match config::load_accounts() {
+            Ok(Some(accounts)) => {
+                let active_account = accounts.active_account;
+                self.accounts = accounts.sessions;
+                self.activate_account(active_account)
+            }
             Ok(None) => {
+                self.reset_account_runtime();
+                self.accounts.clear();
                 self.screen = Screen::Login;
                 Task::none()
             }
             Err(e) => {
+                self.reset_account_runtime();
                 self.toast(format!("could not load session: {e}"));
                 self.screen = Screen::Login;
                 Task::none()
             }
         }
+    }
+
+    fn activate_account(&mut self, account_id: config::AccountId) -> Task<Message> {
+        let Some(session) = self.accounts.get(&account_id).cloned() else {
+            self.toast("saved account not found");
+            return Task::none();
+        };
+        let transport = match Transport::new(session.d_cookie.clone()) {
+            Ok(transport) => Arc::new(transport),
+            Err(e) => {
+                self.toast(format!("transport init failed: {e}"));
+                return Task::none();
+            }
+        };
+        let adopt_legacy_cache = self.accounts.len() == 1;
+        let (cache, cache_error) = match Cache::open_default(&account_id, adopt_legacy_cache) {
+            Ok(cache) => (Some(cache), None),
+            Err(e) => (None, Some(e.to_string())),
+        };
+
+        self.reset_account_runtime();
+        self.active_account = Some(account_id);
+        self.transport = Some(transport);
+        if let Some(error) = cache_error {
+            self.toast(format!("cache unavailable: {error}"));
+        }
+        let mut warm = false;
+        for ws in session.workspaces.values() {
+            let workspace = cache
+                .as_ref()
+                .and_then(|cache| match cache.load_workspace(ws) {
+                    Ok(workspace) => workspace,
+                    Err(e) => {
+                        tracing::warn!(team = %ws.team_id, error = %e, "cache load failed");
+                        None
+                    }
+                })
+                .unwrap_or_else(|| Workspace::from_session(ws));
+            warm |= !workspace.channels.is_empty();
+            self.workspaces.insert(ws.team_id.clone(), workspace);
+        }
+        self.active_team = session.workspaces.keys().next().cloned();
+        if warm {
+            self.screen = Screen::Main;
+            if let Some(team) = self.active_team.clone() {
+                self.active_channel = preferred_channel(self, &team);
+            }
+        } else {
+            self.screen = Screen::Loading;
+        }
+        self.cache = cache;
+        self.session = Some(session);
+        self.boot_all()
+    }
+
+    fn reset_account_runtime(&mut self) {
+        for attachment in self
+            .composer_attachments
+            .iter()
+            .chain(&self.thread_composer_attachments)
+            .chain(
+                self.pending_file_messages
+                    .iter()
+                    .flat_map(|pending| &pending.attachments),
+            )
+        {
+            if let Some(cancel) = &attachment.upload_cancel {
+                cancel.store(true, Ordering::Relaxed);
+            }
+        }
+        self.account_epoch = self.account_epoch.wrapping_add(1);
+        self.active_account = None;
+        self.session = None;
+        self.cache = None;
+        self.transport = None;
+        self.active_team = None;
+        self.active_channel = None;
+        self.active_thread = None;
+        self.thread_open = false;
+        self.main_view = crate::state::MainView::Home;
+        self.activity = ActivityState::default();
+        self.dms = DmsState::default();
+        self.workspaces.clear();
+        self.threads.clear();
+        self.composer = Content::new();
+        self.thread_composer = Content::new();
+        self.composer_attachments.clear();
+        self.thread_composer_attachments.clear();
+        self.pending_file_messages.clear();
+        self.attachment_seq = 0;
+        self.editing = None;
+        self.edit_text.clear();
+        self.hovered_message = None;
+        self.text_selection = None;
+        self.search_input.clear();
+        self.search = None;
+        self.palette = None;
+        self.palette_open = false;
+        self.errors.clear();
+        self.send_seq = 0;
+        self.last_typing.clear();
+        self.last_active_channels.clear();
+        self.file_previews.clear();
+        self.avatar_previews.clear();
+        self.emoji_previews.clear();
+        self.emoji_animation_started = Instant::now();
+        self.emoji_hydrated.clear();
+        self.channel_hydrated.clear();
+        self.avatar_profile_hydrated.clear();
+        self.pending_scroll_to = None;
+        self.pending_marks.clear();
+        self.mark_blocked.clear();
+        self.cache_dirty.clear();
+        self.cache_saving.clear();
+        self.show_settings = false;
+        self.settings_open = false;
+        self.show_account_menu = false;
+        self.account_menu_open = false;
+        self.sidebar_resizing = false;
+        self.sidebar_resize_prev_x = None;
+        self.screen = Screen::Login;
     }
 
     fn boot_all(&self) -> Task<Message> {
