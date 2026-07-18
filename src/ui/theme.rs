@@ -17,6 +17,8 @@ pub const TEXT_LG: f32 = 15.0;
 
 pub const SIDEBAR_WIDTH: f32 = 240.0;
 pub const THREAD_WIDTH: f32 = 340.0;
+pub const PANEL_HEADER_HEIGHT: f32 = 42.0;
+pub const PANEL_CLOSE_SIZE: f32 = 24.0;
 
 pub const CONTROL_RADIUS: f32 = 6.0;
 
@@ -523,6 +525,14 @@ pub fn link_button(_theme: &Theme, status: button::Status) -> button::Style {
     button::Style {
         background: None,
         text_color: if hovered { accent_bright() } else { accent() },
+        ..button::Style::default()
+    }
+}
+
+pub fn panel_close_button(_theme: &Theme, status: button::Status) -> button::Style {
+    button::Style {
+        background: matches!(status, button::Status::Hovered).then_some(Background::Color(BG_ELEV)),
+        border: Border::default().rounded(CONTROL_RADIUS),
         ..button::Style::default()
     }
 }

@@ -288,7 +288,8 @@ fn header_shell<'a>(
         row = row.push(Space::new().width(Fill)).push(badge);
     }
     container(row)
-        .padding([theme::SPACE_SM, theme::SPACE_MD])
+        .center_y(Length::Fixed(theme::PANEL_HEADER_HEIGHT))
+        .padding([0.0, theme::SPACE_MD])
         .width(Fill)
         .into()
 }

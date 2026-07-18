@@ -790,8 +790,32 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
         Message::ProfilePressed(user) => profile_pressed(app, user),
 
         Message::ProfileDismissed => {
-            app.profile_pane = None;
+            app.profile_open = false;
             Task::none()
+        }
+
+        Message::ProfilePaneDismissed => {
+            if !app.profile_open {
+                app.profile_pane = None;
+            }
+            Task::none()
+        }
+
+        Message::ProfileSeeAllConversations(user) => {
+            let name = app
+                .active_workspace()
+                .map(|workspace| workspace.display_name(&user))
+                .unwrap_or(user);
+            app.profile_open = false;
+            app.main_view = crate::state::MainView::Dms;
+            app.dms.filter = name;
+            app.active_thread = None;
+            app.thread_open = false;
+            if app.dms.loaded || app.dms.loading {
+                Task::none()
+            } else {
+                load_dms(app, None)
+            }
         }
 
         Message::ProfileHoverEntered { user, key } => {
@@ -846,7 +870,10 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
                     && hover.generation == generation
                     && hover.source_hovered
             }) {
-                hover.visible = true;
+                // MouseArea enter can be delivered before the global cursor event.
+                // Anchor at reveal time, when the latest window-space point is known.
+                hover.position = app.cursor_position;
+                hover.visible = hover.position.is_some();
             }
             Task::none()
         }
@@ -877,6 +904,20 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
         }
 
         Message::ProfileLoaded { team, user, result } => profile_loaded(app, team, user, result),
+
+        Message::ProfileExtrasLoaded { team, user, result } => {
+            if let Ok(extras) = result
+                && let Some(member) = app
+                    .workspaces
+                    .get_mut(&team)
+                    .and_then(|workspace| workspace.users.get_mut(&user))
+            {
+                member.im_mpim_ids = extras.im_mpim_ids;
+                member.has_more_mpims = extras.has_more_mpims;
+                mark_workspace_dirty(app, &team);
+            }
+            Task::none()
+        }
 
         Message::ProfileFieldsLoaded { team, result } => {
             match result {
@@ -3436,11 +3477,19 @@ fn profile_pressed(app: &mut App, user: UserId) -> Task<Message> {
         return Task::none();
     };
     app.profile_hover = None;
+    app.profile_open = true;
     app.profile_pane = Some(ProfilePaneState {
         user: user.clone(),
         loading: true,
         error: None,
     });
+    if let Some(crate::state::RealtimeStatus::Connected(connection)) =
+        app.workspaces.get(&team).map(|workspace| &workspace.rt)
+    {
+        connection.send(crate::slack::realtime::presence_query_frame(
+            std::slice::from_ref(&user),
+        ));
+    }
 
     let Some((transport, session)) = app.live() else {
         if let Some(profile) = app.profile_pane.as_mut() {
@@ -3465,8 +3514,30 @@ fn profile_pressed(app: &mut App, user: UserId) -> Task<Message> {
             result,
         },
     );
+    let extras_transport = app.transport.as_ref().unwrap().clone();
+    let extras_client = app.client.clone();
+    let extras_workspace = schema_workspace.clone();
+    let extras_team = team.clone();
+    let extras_user = user.clone();
+    let requested_extras_user = user.clone();
+    let extras_task = Task::perform(
+        async move {
+            api::fetch_user_profile_extras(
+                &extras_transport,
+                &extras_client,
+                &extras_workspace,
+                requested_extras_user,
+            )
+            .await
+        },
+        move |result| Message::ProfileExtrasLoaded {
+            team: extras_team.clone(),
+            user: extras_user.clone(),
+            result,
+        },
+    );
     if app.profile_fields.contains_key(&team) {
-        return profile_task;
+        return Task::batch([profile_task, extras_task]);
     }
     let transport = app.transport.as_ref().unwrap().clone();
     let client = app.client.clone();
@@ -3478,7 +3549,7 @@ fn profile_pressed(app: &mut App, user: UserId) -> Task<Message> {
             result,
         },
     );
-    Task::batch([profile_task, fields_task])
+    Task::batch([profile_task, extras_task, fields_task])
 }
 
 fn profile_loaded(
@@ -3558,7 +3629,7 @@ fn open_profile_dm(app: &mut App, user: UserId) -> Task<Message> {
             .find(|channel| channel.is_im && channel.user.as_deref() == Some(user.as_str()))
             .map(|channel| channel.id.clone())
     }) {
-        app.profile_pane = None;
+        app.profile_open = false;
         return Task::done(Message::ChannelSelected(channel));
     }
     let Some((transport, session)) = app.live() else {
@@ -3569,7 +3640,7 @@ fn open_profile_dm(app: &mut App, user: UserId) -> Task<Message> {
     };
     let transport = transport.clone();
     let client = app.client.clone();
-    app.profile_pane = None;
+    app.profile_open = false;
     let request_user = user.clone();
     let result_team = team.clone();
     let result_user = user.clone();

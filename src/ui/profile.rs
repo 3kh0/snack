@@ -4,11 +4,11 @@ use std::time::Duration;
 use chrono::{FixedOffset, Utc};
 use iced::widget::{
     Column, Row, Space, button, column, container, float, image, mouse_area, opaque, row,
-    scrollable, text,
+    scrollable, svg, text,
 };
 use iced::{Alignment, ContentFit, Element, Fill, Font, Length, Vector, font};
 
-use super::{message, theme};
+use super::{icons, message, theme};
 use crate::app::{FilePreview, Message, ProfileHoverState, ProfilePaneState};
 use crate::slack::models::{TeamProfileField, User, UserId};
 use crate::state::{self, Presence, Workspace};
@@ -121,11 +121,7 @@ fn hover_card<'a>(
         body = body.push(status);
     }
     if let Some(local) = local_time(user) {
-        body = body.push(
-            text(format!("◷  {local}"))
-                .size(theme::TEXT_MD)
-                .color(theme::TEXT_2),
-        );
+        body = body.push(icon_line(icons::schedule(), local, theme::TEXT_2));
     }
     body = body.push(actions(ws, user_id, true));
 
@@ -158,10 +154,17 @@ pub fn pane<'a>(
                 ..Font::default()
             }),
         Space::new().width(Fill),
-        button(text("×").size(28.0).color(theme::TEXT_3))
-            .padding([0.0, theme::SPACE_XS])
-            .style(theme::link_button)
-            .on_press(Message::ProfileDismissed),
+        button(
+            svg(icons::close())
+                .width(Length::Fixed(16.0))
+                .height(Length::Fixed(16.0))
+                .style(theme::sidebar_icon(theme::TEXT_3)),
+        )
+        .width(Length::Fixed(theme::PANEL_CLOSE_SIZE))
+        .height(Length::Fixed(theme::PANEL_CLOSE_SIZE))
+        .padding(4.0)
+        .style(theme::panel_close_button)
+        .on_press(Message::ProfileDismissed),
     ]
     .align_y(Alignment::Center);
 
@@ -182,15 +185,22 @@ pub fn pane<'a>(
         identity = identity.push(text(pronouns).size(theme::TEXT_MD).color(theme::TEXT_3));
     }
     identity = identity.push(presence_line(ws, &state.user));
+    if ws
+        .active_huddles
+        .values()
+        .any(|room| room.participants.iter().any(|user| user == &state.user))
+    {
+        identity = identity.push(
+            text("In a huddle")
+                .size(theme::TEXT_MD)
+                .color(theme::TEXT_2),
+        );
+    }
     if let Some(status) = status_line(ws, profile, emoji_previews, emoji_elapsed) {
         identity = identity.push(status);
     }
     if let Some(local) = local_time(user) {
-        identity = identity.push(
-            text(format!("◷  {local}"))
-                .size(theme::TEXT_MD)
-                .color(theme::TEXT_2),
-        );
+        identity = identity.push(icon_line(icons::schedule(), local, theme::TEXT_2));
     }
 
     let mut content = Column::new()
@@ -222,7 +232,9 @@ pub fn pane<'a>(
         .style(theme::scrollbar)
         .height(Fill);
     container(column![
-        container(header).padding([theme::SPACE_SM, theme::SPACE_MD]),
+        container(header)
+            .center_y(Length::Fixed(theme::PANEL_HEADER_HEIGHT))
+            .padding([0.0, theme::SPACE_MD]),
         theme::divider(),
         body
     ])
@@ -262,8 +274,8 @@ fn name_line<'a>(
     line.into()
 }
 
-fn badge<'a>(label: &'a str) -> Element<'a, Message> {
-    container(text(label).size(10.0).font(Font {
+fn badge<'a>(label: impl Into<String>) -> Element<'a, Message> {
+    container(text(label.into()).size(10.0).font(Font {
         weight: font::Weight::Bold,
         ..Font::default()
     }))
@@ -317,36 +329,83 @@ fn contact_section<'a>(
 }
 
 fn recent_dms<'a>(ws: &'a Workspace, user: &str) -> Option<Element<'a, Message>> {
-    let mut channels: Vec<_> = ws
-        .channels
-        .values()
-        .filter(|channel| channel.is_im && state::dm_user_id(channel) == Some(user))
-        .collect();
-    channels.sort_by(|a, b| {
-        let a = ws
-            .messages
-            .get(&a.id)
-            .and_then(|messages| messages.latest_ts());
-        let b = ws
-            .messages
-            .get(&b.id)
-            .and_then(|messages| messages.latest_ts());
-        state::cmp_ts(b.as_deref(), a.as_deref())
-    });
-    let channel = channels.first()?;
-    let entry = button(
-        row![
-            text(ws.display_name(user)).size(theme::TEXT_MD),
-            Space::new().width(Fill),
-            text("Open").size(theme::TEXT_SM).color(theme::accent()),
-        ]
-        .align_y(Alignment::Center),
-    )
-    .width(Fill)
-    .padding(theme::SPACE_SM)
-    .style(theme::channel_row(false))
-    .on_press(Message::ChannelSelected(channel.id.clone()));
-    Some(section("Recent DMs", Column::new().push(entry)))
+    let member = ws.users.get(user);
+    let mut channels: Vec<_> = member
+        .map(|member| {
+            member
+                .im_mpim_ids
+                .iter()
+                .filter_map(|id| ws.channels.get(id))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if channels.is_empty() {
+        channels = ws
+            .channels
+            .values()
+            .filter(|channel| conversation_involves(channel, user))
+            .collect();
+        channels.sort_by(|a, b| {
+            let latest = |channel: &&crate::slack::models::Channel| {
+                ws.messages
+                    .get(&channel.id)
+                    .and_then(|messages| messages.latest_ts())
+            };
+            state::cmp_ts(latest(&b).as_deref(), latest(&a).as_deref())
+        });
+    }
+    if channels.is_empty() {
+        return None;
+    }
+
+    let mut rows = Column::new();
+    for channel in channels {
+        let label = state::channel_display_name(ws, channel);
+        let unread = ws.unread_total(channel);
+        let mut line = Row::new()
+            .spacing(theme::SPACE_SM)
+            .align_y(Alignment::Center)
+            .push(text(label).size(theme::TEXT_MD).color(theme::TEXT_2));
+        if unread > 0 {
+            line = line
+                .push(Space::new().width(Fill))
+                .push(badge(unread.min(99).to_string()));
+        }
+        rows = rows.push(
+            button(line)
+                .width(Fill)
+                .padding(theme::SPACE_SM)
+                .style(theme::channel_row(false))
+                .on_press(Message::ChannelSelected(channel.id.clone())),
+        );
+    }
+    if member.is_some_and(|member| member.has_more_mpims) {
+        let name = ws.display_name(user);
+        rows = rows.push(
+            button(
+                text(format!("See all conversations with {name}"))
+                    .size(theme::TEXT_MD)
+                    .color(theme::accent()),
+            )
+            .padding([theme::SPACE_SM, 0.0])
+            .style(theme::link_button)
+            .on_press(Message::ProfileSeeAllConversations(user.to_owned())),
+        );
+    }
+    Some(section("Recent DMs", rows))
+}
+
+fn conversation_involves(channel: &crate::slack::models::Channel, user: &str) -> bool {
+    if channel.is_im {
+        return state::dm_user_id(channel) == Some(user);
+    }
+    channel.is_mpim
+        && channel
+            .extra
+            .get("members")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|members| members.iter().any(|member| member.as_str() == Some(user)))
 }
 
 fn about_section<'a>(
@@ -499,19 +558,39 @@ fn status_line<'a>(
 
 fn presence_line<'a>(ws: &Workspace, user: &str) -> Element<'a, Message> {
     let presence = ws.presence.get(user).copied().unwrap_or(Presence::Unknown);
-    let (dot, label) = match presence {
-        Presence::Active => ("●", "Active"),
-        Presence::Away => ("○", "Away"),
-        Presence::Unknown => ("○", "Offline"),
+    let label = match presence {
+        Presence::Active => "Active",
+        Presence::Away => "Away",
+        Presence::Unknown => "Offline",
     };
-    text(format!("{dot}  {label}"))
-        .size(theme::TEXT_MD)
-        .color(if presence == Presence::Active {
-            theme::accent()
-        } else {
-            theme::TEXT_3
-        })
-        .into()
+    let color = if presence == Presence::Active {
+        theme::accent()
+    } else {
+        theme::TEXT_3
+    };
+    let icon = if presence == Presence::Active {
+        icons::active()
+    } else {
+        icons::away()
+    };
+    icon_line(icon, label.to_owned(), color)
+}
+
+fn icon_line<'a>(
+    handle: iced::widget::svg::Handle,
+    label: String,
+    color: iced::Color,
+) -> Element<'a, Message> {
+    row![
+        svg(handle)
+            .width(Length::Fixed(18.0))
+            .height(Length::Fixed(18.0))
+            .style(theme::sidebar_icon(color)),
+        text(label).size(theme::TEXT_MD).color(color),
+    ]
+    .spacing(theme::SPACE_SM)
+    .align_y(Alignment::Center)
+    .into()
 }
 
 fn local_time(user: Option<&User>) -> Option<String> {

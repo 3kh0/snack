@@ -150,6 +150,8 @@ pub(super) fn profile_app() -> App {
     let ws = app.active_workspace_mut().expect("workspace");
     let alice = ws.users.get_mut("U_ALICE").expect("Alice fixture");
     alice.tz_offset = Some(-14_400);
+    alice.im_mpim_ids = vec!["D_ALICE".into(), "G_ALICE_BOB".into(), "G_TEAM".into()];
+    alice.has_more_mpims = true;
     let profile = alice.profile.as_mut().expect("Alice profile");
     profile.title = Some("Product designer".into());
     profile.pronouns = Some("she/her".into());
@@ -176,6 +178,18 @@ pub(super) fn profile_app() -> App {
             ..Default::default()
         },
     );
+    for (id, name) in [("G_ALICE_BOB", "alice--bob"), ("G_TEAM", "alice--bob--you")] {
+        ws.channels.insert(
+            id.into(),
+            Channel {
+                id: id.into(),
+                name: Some(name.into()),
+                is_group: true,
+                is_mpim: true,
+                ..Default::default()
+            },
+        );
+    }
     ws.messages.insert(
         "D_ALICE".into(),
         loaded_channel("U_ALICE", "1783372400.000100", "See you there"),
@@ -1954,6 +1968,9 @@ fn profile_hover_waits_then_survives_pointer_transfer_to_card() {
     let generation = app.profile_hover.as_ref().unwrap().generation;
     assert!(!app.profile_hover.as_ref().unwrap().visible);
 
+    let expected = iced::Point::new(240.0, 160.0);
+    let _ = update(&mut app, Message::CursorMoved(expected));
+
     let _ = update(
         &mut app,
         Message::ProfileHoverReady {
@@ -1963,6 +1980,7 @@ fn profile_hover_waits_then_survives_pointer_transfer_to_card() {
         },
     );
     assert!(app.profile_hover.as_ref().unwrap().visible);
+    assert_eq!(app.profile_hover.as_ref().unwrap().position, Some(expected));
 
     let _ = update(
         &mut app,
@@ -1978,6 +1996,21 @@ fn profile_hover_waits_then_survives_pointer_transfer_to_card() {
         Message::ProfileHoverDismissReady(dismiss_generation),
     );
     assert!(app.profile_hover.is_some());
+}
+
+#[test]
+fn profile_close_waits_for_panel_animation_before_clearing() {
+    let mut app = profile_app();
+    let _ = update(&mut app, Message::ProfilePressed("U_ALICE".into()));
+    assert!(app.profile_open);
+    assert!(app.profile_pane.is_some());
+
+    let _ = update(&mut app, Message::ProfileDismissed);
+    assert!(!app.profile_open);
+    assert!(app.profile_pane.is_some());
+
+    let _ = update(&mut app, Message::ProfilePaneDismissed);
+    assert!(app.profile_pane.is_none());
 }
 
 #[test]
@@ -2012,4 +2045,25 @@ fn profile_result_merges_details_into_cached_user() {
     assert_eq!(alice.title.as_deref(), Some("Product designer"));
     assert_eq!(alice.pronouns.as_deref(), Some("she/her"));
     assert!(!app.profile_pane.as_ref().unwrap().loading);
+}
+
+#[test]
+fn profile_extras_result_updates_recent_conversations() {
+    let mut app = test_app();
+    let team = app.active_team.clone().unwrap();
+    let _ = update(
+        &mut app,
+        Message::ProfileExtrasLoaded {
+            team: team.clone(),
+            user: "U_ALICE".into(),
+            result: Ok(crate::slack::models::ProfileExtrasPage {
+                im_mpim_ids: vec!["D_ALICE".into(), "G_TEAM".into()],
+                has_more_mpims: true,
+                ..Default::default()
+            }),
+        },
+    );
+    let alice = &app.workspaces[&team].users["U_ALICE"];
+    assert_eq!(alice.im_mpim_ids, ["D_ALICE", "G_TEAM"]);
+    assert!(alice.has_more_mpims);
 }

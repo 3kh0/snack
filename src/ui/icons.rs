@@ -45,6 +45,30 @@ material_icon!(
 // "home" — channels view
 material_icon!(HOME, "M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z");
 
+// "close" — shared dismiss affordance for side panels
+material_icon!(
+    CLOSE,
+    "M18.3 5.71 12 12l6.3 6.29-1.41 1.42L10.59 13.41 4.29 19.71 2.88 18.3 9.17 12 2.88 5.7 4.29 4.29 10.59 10.59 16.89 4.29z"
+);
+
+// "schedule" — local time
+material_icon!(
+    SCHEDULE,
+    "M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"
+);
+
+// "radio_button_unchecked" — away/offline presence
+material_icon!(
+    AWAY,
+    "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8z"
+);
+
+// "radio_button_checked" — active presence
+material_icon!(
+    ACTIVE,
+    "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm0-13c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5z"
+);
+
 // "3p" — person in a chat bubble, the DMs view
 material_icon!(
     DMS,
@@ -113,4 +137,20 @@ pub fn search() -> svg::Handle {
 
 pub fn download() -> svg::Handle {
     DOWNLOAD.clone()
+}
+
+pub fn close() -> svg::Handle {
+    CLOSE.clone()
+}
+
+pub fn schedule() -> svg::Handle {
+    SCHEDULE.clone()
+}
+
+pub fn away() -> svg::Handle {
+    AWAY.clone()
+}
+
+pub fn active() -> svg::Handle {
+    ACTIVE.clone()
 }

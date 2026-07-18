@@ -1,10 +1,10 @@
 use iced::widget::text_editor::Content;
-use iced::widget::{Column, Id, button, column, container, mouse_area, row, scrollable, text};
+use iced::widget::{Column, Id, button, column, container, mouse_area, row, scrollable, svg, text};
 use iced::{Element, Fill, Font, Length};
 use std::collections::HashMap;
 use std::time::Duration;
 
-use super::{composer, message, theme};
+use super::{composer, icons, message, theme};
 use crate::app::{
     ComposerAttachment, ComposerTarget, FilePreview, Message, PendingFileMessage,
     ProfileHoverState, TextSelection, TextSelectionSurface,
@@ -45,10 +45,17 @@ pub fn view<'a>(
                 ..Font::default()
             })
             .width(Fill),
-        button(text("Close").size(theme::TEXT_SM))
-            .style(theme::secondary_button)
-            .padding([theme::SPACE_XS, theme::SPACE_SM])
-            .on_press(Message::ThreadClosed),
+        button(
+            svg(icons::close())
+                .width(Length::Fixed(16.0))
+                .height(Length::Fixed(16.0))
+                .style(theme::sidebar_icon(theme::TEXT_3)),
+        )
+        .width(Length::Fixed(theme::PANEL_CLOSE_SIZE))
+        .height(Length::Fixed(theme::PANEL_CLOSE_SIZE))
+        .style(theme::panel_close_button)
+        .padding(4.0)
+        .on_press(Message::ThreadClosed),
     ]
     .align_y(iced::Alignment::Center)
     .spacing(theme::SPACE_SM);
@@ -180,7 +187,9 @@ pub fn view<'a>(
     let input = composer::thread_view(content, attachments, ComposerTarget::Thread);
 
     container(column![
-        container(header).padding([theme::SPACE_SM, theme::SPACE_MD]),
+        container(header)
+            .center_y(Length::Fixed(theme::PANEL_HEADER_HEIGHT))
+            .padding([0.0, theme::SPACE_MD]),
         theme::divider(),
         container(list).height(Fill),
         input,

@@ -14,8 +14,9 @@ use crate::slack::api::{self, HistoryArgs};
 use crate::slack::events::RtEvent;
 use crate::slack::models::{
     ActivityFeedPage, BootData, Channel, ChannelId, ChannelSectionsPage, ClientDmsPage, CountsPage,
-    Emoji, HistoryPage, Message as SlackMessage, MessageTs, MessagesListPage, SearchMessagesPage,
-    SentMessage, SidebarDmsPage, TeamId, TeamProfileField, User, UserId, UserProfile,
+    Emoji, HistoryPage, Message as SlackMessage, MessageTs, MessagesListPage, ProfileExtrasPage,
+    SearchMessagesPage, SentMessage, SidebarDmsPage, TeamId, TeamProfileField, User, UserId,
+    UserProfile,
 };
 use crate::slack::realtime::Connection;
 use crate::slack::{Error as SlackError, SlackClient, Transport};
@@ -291,6 +292,7 @@ pub struct App {
     edit_text: String,
     hovered_message: Option<(bool, MessageTs)>,
     profile_pane: Option<ProfilePaneState>,
+    profile_open: bool,
     profile_hover: Option<ProfileHoverState>,
     profile_generation: u64,
     profile_fields: HashMap<TeamId, Vec<TeamProfileField>>,
@@ -453,6 +455,8 @@ pub enum Message {
     MessageUnhovered,
     ProfilePressed(UserId),
     ProfileDismissed,
+    ProfilePaneDismissed,
+    ProfileSeeAllConversations(UserId),
     ProfileHoverEntered {
         user: UserId,
         key: String,
@@ -474,6 +478,11 @@ pub enum Message {
         team: TeamId,
         user: UserId,
         result: Result<UserProfile, SlackError>,
+    },
+    ProfileExtrasLoaded {
+        team: TeamId,
+        user: UserId,
+        result: Result<ProfileExtrasPage, SlackError>,
     },
     ProfileFieldsLoaded {
         team: TeamId,
@@ -689,6 +698,7 @@ impl App {
             edit_text: String::new(),
             hovered_message: None,
             profile_pane: None,
+            profile_open: false,
             profile_hover: None,
             profile_generation: 0,
             profile_fields: HashMap::new(),
@@ -851,6 +861,7 @@ impl App {
         self.edit_text.clear();
         self.hovered_message = None;
         self.profile_pane = None;
+        self.profile_open = false;
         self.profile_hover = None;
         self.profile_generation = self.profile_generation.wrapping_add(1);
         self.profile_fields.clear();

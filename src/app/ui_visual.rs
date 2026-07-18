@@ -10,7 +10,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use iced::{Settings, Size};
+use iced::{Event, Settings, Size, mouse, time, window};
 use iced_test::{Error, Simulator};
 
 use super::tests::{
@@ -37,6 +37,9 @@ fn sim(app: &App) -> Simulator<'_, Message> {
 
 fn capture(app: &App, name: &str) -> Result<PathBuf, Error> {
     let mut ui = sim(app);
+    let now = time::Instant::now();
+    let _ = ui.simulate([Event::Window(window::Event::RedrawRequested(now))]);
+    std::thread::sleep(std::time::Duration::from_millis(180));
     let theme = ui::theme::midnight();
     let snapshot = ui.snapshot(&theme)?;
 
@@ -144,8 +147,28 @@ fn ui_visual_profile_hover_card_renders() -> Result<(), Error> {
 }
 
 #[test]
+fn ui_visual_message_author_emits_profile_hover() -> Result<(), Error> {
+    let app = test_app();
+    let mut ui = sim(&app);
+    let alice = ui.find("Alice")?;
+    let center = alice
+        .visible_bounds()
+        .expect("Alice author should be visible")
+        .center();
+    ui.point_at(center);
+    let _ = ui.simulate([Event::Mouse(mouse::Event::CursorMoved { position: center })]);
+    let messages = drain_messages(ui);
+    assert!(messages.iter().any(|message| matches!(
+        message,
+        Message::ProfileHoverEntered { user, .. } if user == "U_ALICE"
+    )));
+    Ok(())
+}
+
+#[test]
 fn ui_visual_profile_pane_renders() -> Result<(), Error> {
     let mut app = profile_app();
+    app.profile_open = true;
     app.profile_pane = Some(super::ProfilePaneState {
         user: "U_ALICE".into(),
         loading: false,
@@ -155,10 +178,48 @@ fn ui_visual_profile_pane_renders() -> Result<(), Error> {
     ui.find("Profile")?;
     ui.find("Contact information")?;
     ui.find("Recent DMs")?;
+    ui.find("See all conversations with Alice")?;
     ui.find("About me")?;
     ui.find("Manager")?;
     drop(ui);
     capture(&app, "profile-pane")?;
+    Ok(())
+}
+
+#[test]
+fn ui_visual_dm_header_is_compact_and_centered() -> Result<(), Error> {
+    let mut app = profile_app();
+    app.active_channel = Some("D_ALICE".into());
+    let mut ui = sim(&app);
+    ui.find("Alice")?;
+    drop(ui);
+    capture(&app, "dm-header-compact")?;
+    Ok(())
+}
+
+#[test]
+fn ui_visual_channel_thread_profile_headers_align() -> Result<(), Error> {
+    let mut app = profile_app();
+    apply_messages(
+        &mut app,
+        [Message::ThreadOpened {
+            channel: "C_GENERAL".into(),
+            ts: "1783372300.000100".into(),
+            unread_range: None,
+        }],
+    );
+    app.profile_open = true;
+    app.profile_pane = Some(super::ProfilePaneState {
+        user: "U_ALICE".into(),
+        loading: false,
+        error: None,
+    });
+    let mut ui = sim(&app);
+    ui.find("general")?;
+    ui.find("Thread")?;
+    ui.find("Profile")?;
+    drop(ui);
+    capture(&app, "channel-thread-profile-headers")?;
     Ok(())
 }
 

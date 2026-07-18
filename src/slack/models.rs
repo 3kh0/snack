@@ -349,6 +349,10 @@ pub struct User {
     pub tz_offset: Option<i32>,
     #[serde(default)]
     pub profile: Option<UserProfile>,
+    #[serde(default)]
+    pub im_mpim_ids: Vec<ChannelId>,
+    #[serde(default)]
+    pub has_more_mpims: bool,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -413,6 +417,16 @@ pub struct ProfileFieldValue {
 pub struct UserProfilePage {
     #[serde(default)]
     pub profile: UserProfile,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ProfileExtrasPage {
+    #[serde(default)]
+    pub im_mpim_ids: Vec<ChannelId>,
+    #[serde(default)]
+    pub has_more_mpims: bool,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -1189,6 +1203,16 @@ mod fixture_tests {
         assert_eq!(page.all_channels().len(), 2);
         assert!(page.all_channels()[0].is_im);
         assert!(page.all_channels()[1].is_mpim);
+    }
+
+    #[test]
+    fn deserialize_profile_extras_recent_conversations() {
+        let page: ProfileExtrasPage = serde_json::from_str(
+            r#"{"ok":true,"im_mpim_ids":["D1","G2","G3"],"has_more_mpims":true}"#,
+        )
+        .unwrap();
+        assert_eq!(page.im_mpim_ids, ["D1", "G2", "G3"]);
+        assert!(page.has_more_mpims);
     }
 
     #[test]

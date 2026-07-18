@@ -407,9 +407,12 @@ fn with_profile_pane<'a>(
     let Some(profile) = app.profile_pane.as_ref() else {
         return base;
     };
-    row![
-        base,
-        ui::profile::pane(
+    let open = app.profile_open;
+    let gap = ui::theme::gap();
+    let profile_key = profile.user.clone();
+    let panel = ui::motion::panel_reveal(open, move |anim, at| {
+        let progress = ui::motion::t(anim, at);
+        let pane = container(ui::profile::pane(
             ws,
             profile,
             &app.avatar_previews,
@@ -420,12 +423,13 @@ fn with_profile_pane<'a>(
                 .unwrap_or_default(),
             &app.emoji_previews,
             app.emoji_animation_started.elapsed(),
-        )
-    ]
-    .spacing(ui::theme::gap())
-    .width(Fill)
-    .height(Fill)
-    .into()
+        ))
+        .padding(iced::Padding::ZERO.left(gap));
+        ui::motion::collapse_x(pane.into(), progress, ui::profile::PANE_WIDTH + gap)
+    })
+    .key(profile_key)
+    .on_finish_maybe((!open).then_some(Message::ProfilePaneDismissed));
+    row![base, panel].width(Fill).height(Fill).into()
 }
 
 fn thread_unread_marker<'a>(

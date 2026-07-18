@@ -9,8 +9,8 @@ use super::client::{PreparedRequest, SlackClient};
 use super::models::{
     ActivityFeedPage, BootData, Channel, ChannelId, ChannelSectionsPage, ClientDmsPage, CountsPage,
     EdgeResults, Emoji, HistoryPage, MessageTs, MessagesListPage, OpenedConversation,
-    SearchInlinePage, SearchMessagesPage, SentMessage, SidebarDmsPage, TeamProfileField,
-    TeamProfilePage, User, UserId, UserProfile, UserProfilePage,
+    ProfileExtrasPage, SearchInlinePage, SearchMessagesPage, SentMessage, SidebarDmsPage,
+    TeamProfileField, TeamProfilePage, User, UserId, UserProfile, UserProfilePage,
 };
 use super::transport::Transport;
 pub fn user_boot(client: &SlackClient, workspace: &WorkspaceSession) -> PreparedRequest {
@@ -206,6 +206,18 @@ pub fn users_profile_get(
     user: UserId,
 ) -> PreparedRequest {
     client.rest_form(workspace, "users.profile.get", vec![("user", user)])
+}
+
+pub fn users_profile_get_extras(
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    user: UserId,
+) -> PreparedRequest {
+    client.rest_form(
+        workspace,
+        "users.profile.getExtras",
+        vec![("user", user), ("keys", "im_mpim_ids".to_owned())],
+    )
 }
 
 pub fn team_profile_get(client: &SlackClient, workspace: &WorkspaceSession) -> PreparedRequest {
@@ -555,6 +567,18 @@ pub async fn fetch_user_profile(
         .await?;
     let page: UserProfilePage = decode(value, "users.profile.get")?;
     Ok(page.profile)
+}
+
+pub async fn fetch_user_profile_extras(
+    transport: &Transport,
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    user: UserId,
+) -> Result<ProfileExtrasPage, Error> {
+    let value = transport
+        .execute(users_profile_get_extras(client, workspace, user))
+        .await?;
+    decode(value, "users.profile.getExtras")
 }
 
 pub async fn fetch_team_profile_fields(
@@ -1140,6 +1164,16 @@ mod tests {
         assert!(request.url.contains("/api/users.profile.get?"));
         assert!(fields.contains(&("user".into(), "U_PROFILE".into())));
         assert!(fields.contains(&("token".into(), "xoxc-test-token".into())));
+    }
+
+    #[test]
+    fn profile_extras_request_matches_slack_recent_dms_contract() {
+        let request =
+            users_profile_get_extras(&SlackClient::default(), &workspace(), "U_PROFILE".into());
+        let fields = form_fields(&request);
+        assert!(request.url.contains("/api/users.profile.getExtras?"));
+        assert!(fields.contains(&("user".into(), "U_PROFILE".into())));
+        assert!(fields.contains(&("keys".into(), "im_mpim_ids".into())));
     }
 
     #[test]
