@@ -30,6 +30,7 @@ pub fn view<'a>(
     emoji_animation_elapsed: Duration,
     editing: Option<(&str, &str)>,
     hovered_ts: Option<&str>,
+    unread_marker_ts: Option<&str>,
     text_selection: Option<&TextSelection>,
     pending_file_messages: &'a [PendingFileMessage],
     width: Length,
@@ -59,6 +60,9 @@ pub fn view<'a>(
                 root_ts: root_ts.to_owned(),
             };
             for (message_index, msg) in cm.messages.iter().enumerate() {
+                if msg.ts.as_deref().is_some() && msg.ts.as_deref() == unread_marker_ts {
+                    col = col.push(unread_divider());
+                }
                 let pending = msg
                     .ts
                     .as_deref()
@@ -181,6 +185,30 @@ pub fn view<'a>(
     .width(width)
     .height(Fill)
     .style(theme::panel)
+    .into()
+}
+
+fn unread_divider<'a>() -> Element<'a, Message> {
+    let line = container(
+        iced::widget::Space::new()
+            .width(Fill)
+            .height(Length::Fixed(theme::UNREAD_DIVIDER_THICKNESS)),
+    )
+    .width(Fill)
+    .style(theme::unread_divider_line);
+
+    row![
+        line,
+        container(text("NEW").size(10.0).font(Font {
+            weight: iced::font::Weight::Bold,
+            ..Font::default()
+        }))
+        .padding([1.0, theme::SPACE_SM])
+        .style(theme::unread_divider_pill),
+    ]
+    .spacing(theme::SPACE_XS)
+    .align_y(iced::Alignment::Center)
+    .padding([theme::SPACE_XS, theme::SPACE_SM])
     .into()
 }
 

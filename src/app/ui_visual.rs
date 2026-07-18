@@ -15,7 +15,7 @@ use iced_test::{Error, Simulator};
 
 use super::tests::{
     account_menu_app, activity_app, dms_app, login_app, multi_paragraph_emoji_app, search_app,
-    settings_app, test_app,
+    settings_app, test_app, thread_unread_app,
 };
 use super::update::update;
 use super::view::view;
@@ -119,6 +119,50 @@ fn ui_visual_channel_huddle_indicator() -> Result<(), Error> {
     ui.find("Huddle · 2")?;
     drop(ui);
     capture(&app, "channel-huddle")?;
+    Ok(())
+}
+
+#[test]
+fn ui_visual_chat_paused_pill() -> Result<(), Error> {
+    let mut app = test_app();
+    apply_messages(
+        &mut app,
+        [Message::ChannelScrolled {
+            channel: "C_GENERAL".into(),
+            y: 100.0,
+            bottom_gap: 300.0,
+        }],
+    );
+    apply_messages(
+        &mut app,
+        [Message::Realtime(
+            "T_TEST".into(),
+            1,
+            crate::slack::events::RtEvent::Message(crate::slack::models::Message {
+                user: Some("U_ALICE".into()),
+                ts: Some("9999999999.000001".into()),
+                channel: Some("C_GENERAL".into()),
+                text: Some("posted while you were reading".into()),
+                ..Default::default()
+            }),
+        )],
+    );
+
+    let mut ui = sim(&app);
+    ui.find("Chat paused · 1 new message")?;
+    drop(ui);
+    capture(&app, "chat-paused-pill")?;
+    Ok(())
+}
+
+#[test]
+fn ui_visual_thread_unread_divider() -> Result<(), Error> {
+    let app = thread_unread_app();
+    let mut ui = sim(&app);
+    ui.find("Thread")?;
+    ui.find("unread")?;
+    drop(ui);
+    capture(&app, "thread-unread-divider")?;
     Ok(())
 }
 

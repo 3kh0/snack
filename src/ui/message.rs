@@ -88,7 +88,7 @@ pub fn row<'a>(
         (can_reply || can_copy || edit_ts.is_some()).then(|| {
             let copy_text = copy_text.clone();
             let channel_id = channel_id.to_owned();
-            let reply_ts = thread_ts.clone();
+            let reply_ts = thread_ts.clone().filter(|_| can_reply);
             super::motion::micro_reveal(true, move |anim, at| {
                 let progress = super::motion::t(anim, at);
                 let mut actions = Row::new();

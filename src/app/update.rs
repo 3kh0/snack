@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use iced::Task;
 use iced::widget::image::Handle as ImageHandle;
-use iced::widget::operation::{self, RelativeOffset};
+use iced::widget::operation::{self, AbsoluteOffset, RelativeOffset};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::cache::Cache;
@@ -32,6 +32,7 @@ use iced::widget::text_editor::Content;
 
 const CACHE_SAVE_DEBOUNCE: Duration = Duration::from_millis(750);
 const LOAD_OLDER_SCROLL_TOP_PX: f32 = 48.0;
+const CHAT_PIN_BOTTOM_PX: f32 = 12.0;
 const LOAD_OLDER_ACTIVITY_BOTTOM_PX: f32 = 96.0;
 
 pub(super) fn update(app: &mut App, message: Message) -> Task<Message> {
@@ -79,6 +80,7 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
                 }
                 mark_workspace_dirty(app, &team);
                 if !same_channel {
+                    app.chat_paused.remove(&id);
                     app.pending_scroll_to = channel_open_scroll_target(app, &team, &id)
                         .map(|target| (id.clone(), target));
                 }
@@ -138,6 +140,7 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
             app.active_channel = Some(channel.clone());
             app.active_thread = Some((channel.clone(), ts.clone()));
             app.thread_open = true;
+            app.thread_unread_marker = None;
             let focus = focus_active_composer(app);
             let Some(team) = app.active_team.clone() else {
                 return focus;
@@ -216,6 +219,10 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
                         cm.upsert(msg);
                     }
                     cm.loaded = true;
+                    if let Some(anchor) = unread_anchor.clone() {
+                        app.thread_unread_marker =
+                            Some(((team.clone(), channel.clone(), root_ts.clone()), anchor));
+                    }
                     tracing::info!(%channel, %root_ts, messages = n, "thread loaded");
                     return Task::batch([
                         hydrate_missing_users(app, &team, &messages),
@@ -670,7 +677,19 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
 
-        Message::ChannelScrolled { channel, y } => channel_scrolled(app, channel, y),
+        Message::ChannelScrolled {
+            channel,
+            y,
+            bottom_gap,
+        } => channel_scrolled(app, channel, y, bottom_gap),
+
+        Message::ChatResumePressed(channel) => {
+            app.chat_paused.remove(&channel);
+            operation::scroll_to(
+                ui::channel::scrollable_id(&channel),
+                AbsoluteOffset { x: 0.0, y: 0.0 },
+            )
+        }
 
         Message::ChannelMarked(team, channel, ts, result) => {
             app.pending_marks
@@ -3280,16 +3299,13 @@ fn dm_opened(
     Task::done(Message::ChannelSelected(channel))
 }
 
-fn channel_scrolled(app: &mut App, channel: ChannelId, y: f32) -> Task<Message> {
+fn channel_scrolled(app: &mut App, channel: ChannelId, y: f32, bottom_gap: f32) -> Task<Message> {
     if app.active_channel.as_deref() != Some(channel.as_str()) {
         return Task::none();
     }
     let Some(team) = app.active_team.clone() else {
         return Task::none();
     };
-    if app.transport.is_none() {
-        return Task::none();
-    }
     if app
         .pending_scroll_to
         .as_ref()
@@ -3297,11 +3313,40 @@ fn channel_scrolled(app: &mut App, channel: ChannelId, y: f32) -> Task<Message> 
     {
         return Task::none();
     }
+    let pause = update_chat_pause(app, &channel, y, bottom_gap);
+    let load_older = load_older_on_scroll(app, &team, &channel, y);
+    Task::batch([pause, load_older])
+}
+
+fn update_chat_pause(app: &mut App, channel: &ChannelId, y: f32, bottom_gap: f32) -> Task<Message> {
+    let paused = app.chat_paused.contains_key(channel);
+    if bottom_gap > CHAT_PIN_BOTTOM_PX {
+        if !paused {
+            app.chat_paused.insert(channel.clone(), 0);
+            return operation::scroll_to(
+                ui::channel::scrollable_id(channel),
+                AbsoluteOffset { x: 0.0, y },
+            );
+        }
+    } else if paused {
+        app.chat_paused.remove(channel);
+        return operation::scroll_to(
+            ui::channel::scrollable_id(channel),
+            AbsoluteOffset { x: 0.0, y: 0.0 },
+        );
+    }
+    Task::none()
+}
+
+fn load_older_on_scroll(app: &mut App, team: &str, channel: &ChannelId, y: f32) -> Task<Message> {
+    if app.transport.is_none() {
+        return Task::none();
+    }
     let oldest = {
         let Some(cm) = app
             .workspaces
-            .get_mut(&team)
-            .and_then(|ws| ws.messages.get_mut(&channel))
+            .get_mut(team)
+            .and_then(|ws| ws.messages.get_mut(channel))
         else {
             return Task::none();
         };
@@ -3318,7 +3363,7 @@ fn channel_scrolled(app: &mut App, channel: ChannelId, y: f32) -> Task<Message> 
         channel.clone(),
         PendingScrollTarget::Message(oldest.clone()),
     ));
-    app.load_older_history(&team, &channel, oldest)
+    app.load_older_history(team, channel, oldest)
 }
 
 pub(super) fn should_load_older_history(cm: &ChannelMessages, y: f32) -> bool {
@@ -3350,10 +3395,19 @@ fn scroll_to_pending(app: &mut App, channel: &ChannelId) -> Task<Message> {
     match crate::state::scroll_ratio_for_ts(messages, &ts) {
         Some(ratio) => {
             app.pending_scroll_to = None;
-            operation::snap_to(
-                ui::channel::scrollable_id(channel),
-                RelativeOffset { x: 0.0, y: ratio },
-            )
+            if ratio >= 1.0 {
+                app.chat_paused.remove(channel);
+                operation::scroll_to(
+                    ui::channel::scrollable_id(channel),
+                    AbsoluteOffset { x: 0.0, y: 0.0 },
+                )
+            } else {
+                app.chat_paused.entry(channel.clone()).or_insert(0);
+                operation::snap_to(
+                    ui::channel::scrollable_id(channel),
+                    RelativeOffset { x: 0.0, y: ratio },
+                )
+            }
         }
         None => Task::none(),
     }
@@ -4511,6 +4565,9 @@ fn apply_realtime(
                 if msg.subtype.as_deref() != Some("thread_broadcast") {
                     return notification;
                 }
+            }
+            if let Some(new_count) = app.chat_paused.get_mut(&channel) {
+                *new_count += 1;
             }
             let cm = ws.messages.entry(channel).or_default();
             if let Some(pending_ts) = pending_message_ts {

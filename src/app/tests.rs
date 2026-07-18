@@ -175,6 +175,55 @@ pub(super) fn account_menu_app() -> App {
     app
 }
 
+pub(super) fn thread_unread_app() -> App {
+    let mut app = test_app();
+    let team = app.active_team.clone().unwrap();
+    let root_ts = "1783372300.000100".to_owned();
+    let anchor = "1783372360.000400".to_owned();
+    let _ = update(
+        &mut app,
+        Message::ThreadOpened {
+            channel: "C_GENERAL".into(),
+            ts: root_ts.clone(),
+            unread_range: Some((anchor.clone(), "1783372370.000500".into())),
+        },
+    );
+    let _ = update(
+        &mut app,
+        Message::ThreadLoaded {
+            team,
+            channel: "C_GENERAL".into(),
+            root_ts: root_ts.clone(),
+            unread_anchor: Some(anchor.clone()),
+            result: Ok(HistoryPage {
+                messages: vec![
+                    msg(
+                        "U_ALICE",
+                        &root_ts,
+                        "morning — shipping the agent UI harness today",
+                    ),
+                    SlackMessage {
+                        thread_ts: Some(root_ts.clone()),
+                        ..msg(SELF_USER, "1783372350.000300", "already read this reply")
+                    },
+                    SlackMessage {
+                        thread_ts: Some(root_ts.clone()),
+                        ..msg("U_BOB", &anchor, "this reply is still unread")
+                    },
+                    SlackMessage {
+                        thread_ts: Some(root_ts),
+                        ..msg("U_ALICE", "1783372370.000500", "so is this one")
+                    },
+                ],
+                ..Default::default()
+            }),
+        },
+    );
+    app.main_view = MainView::Activity;
+    app.activity.loaded = true;
+    app
+}
+
 pub(super) fn activity_app() -> App {
     let mut app = test_app();
     app.main_view = MainView::Activity;
@@ -930,6 +979,48 @@ fn thread_loaded_stores_replies() {
 }
 
 #[test]
+fn thread_loaded_with_unread_anchor_sets_marker_and_reopen_clears_it() {
+    let mut app = test_app();
+    let team = app.active_team.clone().unwrap();
+    let root_ts = "1783372300.000100".to_owned();
+    let anchor = "1783372310.000100".to_owned();
+    let _ = update(
+        &mut app,
+        Message::ThreadLoaded {
+            team: team.clone(),
+            channel: "C_GENERAL".into(),
+            root_ts: root_ts.clone(),
+            unread_anchor: Some(anchor.clone()),
+            result: Ok(HistoryPage {
+                messages: vec![
+                    msg("U_ALICE", &root_ts, "morning"),
+                    SlackMessage {
+                        thread_ts: Some(root_ts.clone()),
+                        ..msg("U_BOB", &anchor, "reply")
+                    },
+                ],
+                ..Default::default()
+            }),
+        },
+    );
+
+    assert_eq!(
+        app.thread_unread_marker,
+        Some(((team, "C_GENERAL".into(), root_ts.clone()), anchor.clone()))
+    );
+
+    let _ = update(
+        &mut app,
+        Message::ThreadOpened {
+            channel: "C_GENERAL".into(),
+            ts: root_ts,
+            unread_range: None,
+        },
+    );
+    assert_eq!(app.thread_unread_marker, None);
+}
+
+#[test]
 fn unread_thread_window_replaces_stale_full_thread() {
     let mut app = test_app();
     let team = app.active_team.clone().unwrap();
@@ -1119,6 +1210,68 @@ fn realtime_message_upserts_into_channel() {
     let _ = update(&mut app, Message::Realtime(team.clone(), 1, ev));
     let after = app.workspaces[&team].messages["C_GENERAL"].messages.len();
     assert_eq!(after, before + 1);
+}
+
+#[test]
+fn scrolling_up_pauses_chat_and_bottom_resumes() {
+    let mut app = test_app();
+    assert!(!app.chat_paused.contains_key("C_GENERAL"));
+
+    let _ = update(
+        &mut app,
+        Message::ChannelScrolled {
+            channel: "C_GENERAL".into(),
+            y: 500.0,
+            bottom_gap: 300.0,
+        },
+    );
+    assert!(app.chat_paused.contains_key("C_GENERAL"));
+
+    let _ = update(
+        &mut app,
+        Message::ChannelScrolled {
+            channel: "C_GENERAL".into(),
+            y: 800.0,
+            bottom_gap: 0.0,
+        },
+    );
+    assert!(!app.chat_paused.contains_key("C_GENERAL"));
+}
+
+#[test]
+fn near_bottom_scroll_does_not_pause_chat() {
+    let mut app = test_app();
+    let _ = update(
+        &mut app,
+        Message::ChannelScrolled {
+            channel: "C_GENERAL".into(),
+            y: 795.0,
+            bottom_gap: 5.0,
+        },
+    );
+    assert!(!app.chat_paused.contains_key("C_GENERAL"));
+}
+
+#[test]
+fn realtime_message_counts_toward_paused_pill() {
+    let mut app = test_app();
+    let team = app.active_team.clone().unwrap();
+    app.chat_paused.insert("C_GENERAL".into(), 0);
+
+    for (i, user) in ["U_ALICE", "U_BOB"].iter().enumerate() {
+        let ev = RtEvent::Message(SlackMessage {
+            user: Some((*user).into()),
+            ts: Some(format!("9999999999.00000{i}")),
+            channel: Some("C_GENERAL".into()),
+            text: Some("live!".into()),
+            ..Default::default()
+        });
+        let _ = update(&mut app, Message::Realtime(team.clone(), 1, ev));
+    }
+    assert_eq!(app.chat_paused.get("C_GENERAL"), Some(&2));
+
+    let _ = update(&mut app, Message::ChatResumePressed("C_GENERAL".into()));
+    assert!(!app.chat_paused.contains_key("C_GENERAL"));
 }
 
 #[test]

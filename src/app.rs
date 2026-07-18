@@ -289,6 +289,8 @@ pub struct App {
     channel_hydrated: HashSet<(TeamId, ChannelId)>,
     avatar_profile_hydrated: HashSet<UserId>,
     pending_scroll_to: Option<(ChannelId, PendingScrollTarget)>,
+    thread_unread_marker: Option<(ThreadKey, MessageTs)>,
+    chat_paused: HashMap<ChannelId, u32>,
     pending_marks: HashSet<(TeamId, ChannelId, MessageTs)>,
     mark_blocked: HashSet<(TeamId, ChannelId)>,
     cache_dirty: HashMap<TeamId, Instant>,
@@ -383,7 +385,9 @@ pub enum Message {
     ChannelScrolled {
         channel: ChannelId,
         y: f32,
+        bottom_gap: f32,
     },
+    ChatResumePressed(ChannelId),
     ChannelMarked(TeamId, ChannelId, MessageTs, Result<(), SlackError>),
     ThreadOpened {
         channel: ChannelId,
@@ -644,6 +648,8 @@ impl App {
             avatar_profile_hydrated: HashSet::new(),
             text_selection: None,
             pending_scroll_to: None,
+            thread_unread_marker: None,
+            chat_paused: HashMap::new(),
             pending_marks: HashSet::new(),
             mark_blocked: HashSet::new(),
             cache_dirty: HashMap::new(),
@@ -798,6 +804,8 @@ impl App {
         self.channel_hydrated.clear();
         self.avatar_profile_hydrated.clear();
         self.pending_scroll_to = None;
+        self.thread_unread_marker = None;
+        self.chat_paused.clear();
         self.pending_marks.clear();
         self.mark_blocked.clear();
         self.cache_dirty.clear();

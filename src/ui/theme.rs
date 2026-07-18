@@ -330,6 +330,48 @@ pub fn reaction_chip(_theme: &Theme) -> container::Style {
     }
 }
 
+pub fn chat_paused_pill(_theme: &Theme, status: button::Status) -> button::Style {
+    let hovered = matches!(status, button::Status::Hovered);
+    button::Style {
+        background: Some(Background::Color(if hovered {
+            BG_ELEV_HI
+        } else {
+            BG_ELEV
+        })),
+        text_color: TEXT_1,
+        border: Border {
+            color: BORDER,
+            width: 1.0,
+            radius: 999.0.into(),
+        },
+        shadow: Shadow {
+            color: Color { a: 0.35, ..BG_BASE },
+            offset: Vector::new(0.0, 2.0),
+            blur_radius: 8.0,
+        },
+        ..button::Style::default()
+    }
+}
+
+pub const UNREAD_DIVIDER_THICKNESS: f32 = 4.0;
+
+pub fn unread_divider_line(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(accent())),
+        border: Border::default().rounded(UNREAD_DIVIDER_THICKNESS),
+        ..container::Style::default()
+    }
+}
+
+pub fn unread_divider_pill(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(accent())),
+        text_color: Some(BG_BASE),
+        border: Border::default().rounded(999.0),
+        ..container::Style::default()
+    }
+}
+
 pub fn date_separator_label(_theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(BG_BASE)),

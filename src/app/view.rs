@@ -206,6 +206,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
             .get(&(team.clone(), channel.clone(), root_ts.clone()));
         let root = ui::thread::root_message(ws, channel, root_ts);
         let open = app.thread_open;
+        let unread_marker = thread_unread_marker(app, team, channel, root_ts);
         let thread_key = (channel.as_str(), root_ts.as_str());
         let gap = ui::theme::gap();
         let thread_panel = ui::motion::panel_reveal(open, move |anim, at| {
@@ -224,6 +225,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
                 emoji_animation_elapsed,
                 editing_for(channel),
                 hovered_for(true),
+                unread_marker,
                 app.text_selection.as_ref(),
                 &app.pending_file_messages,
                 iced::Length::Fixed(ui::theme::THREAD_WIDTH),
@@ -289,6 +291,7 @@ fn channel_main_panel<'a>(
                     hovered,
                     app.text_selection.as_ref(),
                     &app.pending_file_messages,
+                    app.chat_paused.get(channel_id).copied(),
                 ))
                 .height(Fill),
                 container(ui::composer::view(
@@ -351,10 +354,23 @@ fn thread_static_panel<'a>(
         emoji_animation_elapsed,
         editing,
         hovered,
+        thread_unread_marker(app, team, channel, root_ts),
         app.text_selection.as_ref(),
         &app.pending_file_messages,
         Fill,
     )
+}
+
+fn thread_unread_marker<'a>(
+    app: &'a App,
+    team: &str,
+    channel: &str,
+    root_ts: &str,
+) -> Option<&'a str> {
+    app.thread_unread_marker
+        .as_ref()
+        .filter(|((t, c, r), _)| t == team && c == channel && r == root_ts)
+        .map(|(_, ts)| ts.as_str())
 }
 
 fn resize_handle<'a>() -> Element<'a, Message> {

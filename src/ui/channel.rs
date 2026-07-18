@@ -33,6 +33,7 @@ pub fn view<'a>(
     hovered_ts: Option<&str>,
     text_selection: Option<&TextSelection>,
     pending_file_messages: &'a [PendingFileMessage],
+    paused: Option<u32>,
 ) -> Element<'a, Message> {
     let header = channel_header(ws, channel_id, avatar_previews);
 
@@ -109,18 +110,42 @@ pub fn view<'a>(
                 col = col.push(row);
                 previous_group_message = Some(m);
             }
-            scrollable(col)
+            let is_paused = paused.is_some();
+            let mut list = scrollable(col)
                 .id(scrollable_id(channel_id))
                 .on_scroll({
                     let channel_id = channel_id.to_owned();
-                    move |viewport| Message::ChannelScrolled {
-                        channel: channel_id.clone(),
-                        y: viewport.absolute_offset().y,
+                    move |viewport| {
+                        let offset = viewport.absolute_offset().y;
+                        let reversed = viewport.absolute_offset_reversed().y;
+                        let (y, bottom_gap) = if is_paused {
+                            (offset, reversed)
+                        } else {
+                            (reversed, offset)
+                        };
+                        Message::ChannelScrolled {
+                            channel: channel_id.clone(),
+                            y,
+                            bottom_gap,
+                        }
                     }
                 })
                 .style(theme::scrollbar)
-                .height(Fill)
-                .into()
+                .height(Fill);
+            if !is_paused {
+                list = list.anchor_bottom();
+            }
+            match paused {
+                Some(new_count) => stack![
+                    list,
+                    container(chat_paused_pill(channel_id, new_count))
+                        .center_x(Fill)
+                        .align_bottom(Fill)
+                        .padding(theme::SPACE_SM),
+                ]
+                .into(),
+                None => list.into(),
+            }
         }
         Some(cm) if cm.history_failed => history_failed_placeholder(channel_id),
         Some(cm) if cm.loaded => message::empty_placeholder("No messages yet."),
@@ -149,6 +174,19 @@ pub fn view<'a>(
     .width(Fill)
     .height(Fill)
     .into()
+}
+
+fn chat_paused_pill<'a>(channel_id: &str, new_count: u32) -> Element<'a, Message> {
+    let label = match new_count {
+        0 => "Chat paused due to scroll".to_owned(),
+        1 => "Chat paused · 1 new message".to_owned(),
+        n => format!("Chat paused · {n} new messages"),
+    };
+    button(text(label).size(theme::TEXT_SM))
+        .padding([theme::SPACE_XS, theme::SPACE_MD])
+        .style(theme::chat_paused_pill)
+        .on_press(Message::ChatResumePressed(channel_id.to_owned()))
+        .into()
 }
 
 fn same_message_group(
