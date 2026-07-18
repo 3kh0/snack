@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use super::{composer, message, theme};
 use crate::app::{
-    ComposerAttachment, ComposerTarget, FilePreview, Message, PendingFileMessage, TextSelection,
-    TextSelectionSurface,
+    ComposerAttachment, ComposerTarget, FilePreview, Message, PendingFileMessage,
+    ProfileHoverState, TextSelection, TextSelectionSurface,
 };
 use crate::slack::models::Message as SlackMessage;
 use crate::state::{ChannelMessages, Workspace};
@@ -17,16 +17,16 @@ pub fn scrollable_id(channel_id: &str, root_ts: &str) -> Id {
 }
 
 pub fn view<'a>(
-    ws: &Workspace,
+    ws: &'a Workspace,
     channel_id: &str,
     root_ts: &str,
-    root: Option<&SlackMessage>,
-    replies: Option<&ChannelMessages>,
+    root: Option<&'a SlackMessage>,
+    replies: Option<&'a ChannelMessages>,
     content: &'a Content,
     attachments: &'a [ComposerAttachment],
-    file_previews: &HashMap<String, FilePreview>,
-    avatar_previews: &HashMap<String, FilePreview>,
-    emoji_previews: &HashMap<String, FilePreview>,
+    file_previews: &'a HashMap<String, FilePreview>,
+    avatar_previews: &'a HashMap<String, FilePreview>,
+    emoji_previews: &'a HashMap<String, FilePreview>,
     emoji_animation_elapsed: Duration,
     editing: Option<(&str, &str)>,
     hovered_ts: Option<&str>,
@@ -34,6 +34,7 @@ pub fn view<'a>(
     text_selection: Option<&TextSelection>,
     pending_file_messages: &'a [PendingFileMessage],
     width: Length,
+    profile_hover: Option<&'a ProfileHoverState>,
 ) -> Element<'a, Message> {
     let header = row![
         text("Thread")
@@ -98,6 +99,7 @@ pub fn view<'a>(
                                     == Some(pending.client_msg_id.as_str())
                         })
                         .map(|pending| pending.attachments.as_slice()),
+                    profile_hover,
                 );
                 let row: Element<'a, Message> = match msg.ts.clone() {
                     Some(ts) => mouse_area(row)
@@ -144,6 +146,7 @@ pub fn view<'a>(
                     0,
                     text_selection,
                     None,
+                    profile_hover,
                 );
                 let root_row: Element<'a, Message> = match root.ts.clone() {
                     Some(ts) => mouse_area(root_row)

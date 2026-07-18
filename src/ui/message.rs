@@ -7,21 +7,24 @@ use iced::widget::{Column, Row, button, container, image, stack, svg, text, text
 use iced::{Alignment, Color, ContentFit, Element, Fill, Font, Length, Point};
 use unicode_segmentation::UnicodeSegmentation;
 
-use super::{blocks, composer, icons, selectable, theme};
-use crate::app::{ComposerAttachment, FilePreview, Message, TextSelection, TextSelectionSurface};
+use super::{blocks, composer, icons, profile, selectable, theme};
+use crate::app::{
+    ComposerAttachment, FilePreview, Message, ProfileHoverState, TextSelection,
+    TextSelectionSurface,
+};
 use crate::slack::models::Message as SlackMessage;
 use crate::state::{self, Workspace};
 
 pub fn row<'a>(
-    ws: &Workspace,
+    ws: &'a Workspace,
     channel_id: &str,
-    msg: &SlackMessage,
+    msg: &'a SlackMessage,
     pending: bool,
     compact: bool,
     in_thread: bool,
     hovered: bool,
     file_previews: &HashMap<String, FilePreview>,
-    avatar_previews: &HashMap<String, FilePreview>,
+    avatar_previews: &'a HashMap<String, FilePreview>,
     emoji_previews: &HashMap<String, FilePreview>,
     emoji_animation_elapsed: Duration,
     edit_text: Option<&str>,
@@ -29,8 +32,13 @@ pub fn row<'a>(
     message_index: usize,
     text_selection: Option<&TextSelection>,
     pending_attachments: Option<&'a [ComposerAttachment]>,
+    profile_hover: Option<&'a ProfileHoverState>,
 ) -> Element<'a, Message> {
     let author = ws.message_author_name(msg);
+    let profile_user = msg
+        .user
+        .as_deref()
+        .filter(|_| msg.bot_profile.is_none() && msg.bot_id.is_none());
 
     let time = msg
         .ts
@@ -38,18 +46,34 @@ pub fn row<'a>(
         .map(state::format_ts_hm)
         .unwrap_or_default();
 
+    let author_label: Element<'a, Message> = text(author.clone())
+        .size(theme::TEXT_MD)
+        .color(theme::TEXT_1)
+        .font(Font {
+            weight: iced::font::Weight::Bold,
+            ..Font::default()
+        })
+        .into();
+    let author_label = match profile_user {
+        Some(user) => profile::trigger(
+            author_label,
+            ws,
+            user,
+            format!(
+                "message-name:{}:{}",
+                in_thread,
+                msg.ts.as_deref().unwrap_or_default()
+            ),
+            profile_hover,
+            avatar_previews,
+        ),
+        None => author_label,
+    };
+
     let mut header = Row::new()
         .spacing(theme::SPACE_SM)
         .align_y(Alignment::Center)
-        .push(
-            text(author.clone())
-                .size(theme::TEXT_MD)
-                .color(theme::TEXT_1)
-                .font(Font {
-                    weight: iced::font::Weight::Bold,
-                    ..Font::default()
-                }),
-        );
+        .push(author_label);
 
     if is_app_message(msg) {
         header = header.push(
@@ -168,6 +192,21 @@ pub fn row<'a>(
             avatar_previews,
             author.chars().next(),
         );
+        let avatar = match profile_user {
+            Some(user) => profile::trigger(
+                avatar,
+                ws,
+                user,
+                format!(
+                    "message-avatar:{}:{}",
+                    in_thread,
+                    msg.ts.as_deref().unwrap_or_default()
+                ),
+                profile_hover,
+                avatar_previews,
+            ),
+            None => avatar,
+        };
         return container(
             Row::new()
                 .spacing(theme::SPACE_SM)
@@ -314,12 +353,27 @@ pub fn row<'a>(
                 avatar_spacer()
             } else {
                 let (avatar_key, avatar_url) = ws.message_avatar(msg);
-                avatar(
+                let avatar = avatar(
                     avatar_key.as_deref(),
                     avatar_url.as_deref(),
                     avatar_previews,
                     author.chars().next(),
-                )
+                );
+                match profile_user {
+                    Some(user) => profile::trigger(
+                        avatar,
+                        ws,
+                        user,
+                        format!(
+                            "message-avatar:{}:{}",
+                            in_thread,
+                            msg.ts.as_deref().unwrap_or_default()
+                        ),
+                        profile_hover,
+                        avatar_previews,
+                    ),
+                    None => avatar,
+                }
             })
             .push(content),
     )
@@ -584,6 +638,7 @@ fn selectable_segments(line: &blocks::RenderLine) -> Vec<selectable::Segment> {
         return vec![selectable::Segment {
             text: state::emoji_text_to_display(&line.text),
             channel: None,
+            user: None,
             mono: line.mono,
             color: None,
             background: None,
@@ -600,6 +655,7 @@ fn selectable_segments(line: &blocks::RenderLine) -> Vec<selectable::Segment> {
             selectable::Segment {
                 text: state::emoji_text_to_display(&segment.text),
                 channel: segment.channel.clone(),
+                user: segment.user.clone(),
                 mono: line.mono || style.code,
                 color: segment_fg(style),
                 background: segment_bg(style),
@@ -622,11 +678,17 @@ fn emoji_body<'a>(
     for line in lines {
         for soft_line in soft_wrap_lines(line) {
             let mut row = Row::new().spacing(0).align_y(Alignment::End).width(Fill);
-            for (text_value, mono, style, channel) in &soft_line.parts {
+            for (text_value, mono, style, channel, user) in &soft_line.parts {
                 match text_value {
                     SoftPart::Text(value) if !value.is_empty() => {
                         for run in text_runs(value) {
-                            row = row.push(text_run(run, *mono, style, channel.as_deref()));
+                            row = row.push(text_run(
+                                run,
+                                *mono,
+                                style,
+                                channel.as_deref(),
+                                user.as_deref(),
+                            ));
                         }
                     }
                     SoftPart::Text(_) => {}
@@ -653,7 +715,13 @@ enum SoftPart {
 }
 
 struct SoftLine {
-    parts: Vec<(SoftPart, bool, blocks::SegmentStyle, Option<String>)>,
+    parts: Vec<(
+        SoftPart,
+        bool,
+        blocks::SegmentStyle,
+        Option<String>,
+        Option<String>,
+    )>,
 }
 
 fn soft_wrap_lines(line: &blocks::RenderLine) -> Vec<SoftLine> {
@@ -671,6 +739,7 @@ fn soft_wrap_lines(line: &blocks::RenderLine) -> Vec<SoftLine> {
                                 mono,
                                 segment.style.clone(),
                                 segment.channel.clone(),
+                                segment.user.clone(),
                             ));
                         }
                         if parts.peek().is_some() {
@@ -684,6 +753,7 @@ fn soft_wrap_lines(line: &blocks::RenderLine) -> Vec<SoftLine> {
                         mono,
                         segment.style.clone(),
                         segment.channel.clone(),
+                        segment.user.clone(),
                     ));
                 }
             }
@@ -724,6 +794,7 @@ fn line_segments(line: &blocks::RenderLine) -> Vec<blocks::RenderSegment> {
             text: line.text.clone(),
             style: blocks::SegmentStyle::default(),
             channel: None,
+            user: None,
         }]
     } else {
         line.segments.clone()
@@ -750,6 +821,7 @@ fn text_run<'a>(
     mono: bool,
     style: &blocks::SegmentStyle,
     channel: Option<&str>,
+    user: Option<&str>,
 ) -> Element<'a, Message> {
     let mut font = if mono { Font::MONOSPACE } else { Font::DEFAULT };
     if style.bold {
@@ -762,17 +834,22 @@ fn text_run<'a>(
         .size(theme::TEXT_MD)
         .font(font)
         .color(segment_fg(style).unwrap_or(theme::TEXT_2));
-    match (segment_bg(style), channel) {
-        (Some(_), Some(channel)) => button(styled)
+    match (segment_bg(style), channel, user) {
+        (Some(_), Some(channel), _) => button(styled)
             .padding([0.0, 3.0])
             .style(theme::inline_mention_button(style.broadcast))
             .on_press(Message::ChannelSelected(channel.to_owned()))
             .into(),
-        (Some(_), None) => container(styled)
+        (Some(_), None, Some(user)) => button(styled)
+            .padding([0.0, 3.0])
+            .style(theme::inline_mention_button(style.broadcast))
+            .on_press(Message::ProfilePressed(user.to_owned()))
+            .into(),
+        (Some(_), None, None) => container(styled)
             .padding([0.0, 3.0])
             .style(theme::inline_mention(style.broadcast))
             .into(),
-        (None, _) => styled.into(),
+        (None, _, _) => styled.into(),
     }
 }
 
@@ -824,7 +901,7 @@ pub fn inline_line<'a>(
     row.into()
 }
 
-fn emoji_inline<'a>(
+pub(super) fn emoji_inline<'a>(
     ws: &Workspace,
     name: &str,
     emoji_previews: &HashMap<String, FilePreview>,

@@ -799,6 +799,17 @@ pub fn user_avatar_url(user: &User) -> Option<&str> {
         .or_else(|| non_empty(profile.image_original.as_deref()))
 }
 
+pub fn user_profile_image_url(user: &User) -> Option<&str> {
+    let profile = user.profile.as_ref()?;
+    non_empty(profile.image_original.as_deref())
+        .or_else(|| non_empty(profile.image_512.as_deref()))
+        .or_else(|| non_empty(profile.image_192.as_deref()))
+        .or_else(|| non_empty(profile.image_72.as_deref()))
+        .or_else(|| non_empty(profile.image_48.as_deref()))
+        .or_else(|| non_empty(profile.image_32.as_deref()))
+        .or_else(|| non_empty(profile.image_24.as_deref()))
+}
+
 pub fn message_author_name(ws: &Workspace, msg: &SlackMessage) -> String {
     if let Some(user) = msg
         .user

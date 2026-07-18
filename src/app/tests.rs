@@ -12,8 +12,9 @@ use super::*;
 use crate::slack::Error as SlackError;
 use crate::slack::events::RtEvent;
 use crate::slack::models::{
-    ActivityItem, Channel, File, HistoryPage, Message as SlackMessage, ResponseMetadata,
-    SearchItem, SearchMessagesPage, SearchPagination, SentMessage, User, UserProfile,
+    ActivityItem, Channel, File, HistoryPage, Message as SlackMessage, ProfileFieldValue,
+    ResponseMetadata, SearchItem, SearchMessagesPage, SearchPagination, SentMessage,
+    TeamProfileField, User, UserProfile,
 };
 use crate::slack::realtime::Connection;
 use crate::state::{ChannelMessages, MainView, Presence, RealtimeStatus};
@@ -141,6 +142,53 @@ pub(super) fn test_app() -> App {
     app.active_team = Some(team);
     app.active_channel = Some("C_GENERAL".into());
     app.screen = Screen::Main;
+    app
+}
+
+pub(super) fn profile_app() -> App {
+    let mut app = test_app();
+    let ws = app.active_workspace_mut().expect("workspace");
+    let alice = ws.users.get_mut("U_ALICE").expect("Alice fixture");
+    alice.tz_offset = Some(-14_400);
+    let profile = alice.profile.as_mut().expect("Alice profile");
+    profile.title = Some("Product designer".into());
+    profile.pronouns = Some("she/her".into());
+    profile.email = Some("alice@example.com".into());
+    profile.phone = Some("+1 212 555 0142".into());
+    profile.start_date = Some("2024-03-18".into());
+    profile.status_emoji = Some(":seedling:".into());
+    profile.status_text = Some("Growing good interfaces".into());
+    profile.fields.insert(
+        "X_MANAGER".into(),
+        ProfileFieldValue {
+            value: json!("U_BOB"),
+            ..Default::default()
+        },
+    );
+    ws.presence.insert("U_ALICE".into(), Presence::Active);
+    ws.vip_users.insert("U_ALICE".into());
+    ws.channels.insert(
+        "D_ALICE".into(),
+        Channel {
+            id: "D_ALICE".into(),
+            is_im: true,
+            user: Some("U_ALICE".into()),
+            ..Default::default()
+        },
+    );
+    ws.messages.insert(
+        "D_ALICE".into(),
+        loaded_channel("U_ALICE", "1783372400.000100", "See you there"),
+    );
+    app.profile_fields.insert(
+        "T_TEST".into(),
+        vec![TeamProfileField {
+            id: "X_MANAGER".into(),
+            label: Some("Manager".into()),
+            field_type: Some("user".into()),
+            ..Default::default()
+        }],
+    );
     app
 }
 
@@ -1891,4 +1939,77 @@ fn older_activity_page_appends_items_and_advances_cursor() {
             .any(|item| item.key == "older-mention")
     );
     assert_eq!(app.activity.next_cursor.as_deref(), Some("page-3"));
+}
+
+#[test]
+fn profile_hover_waits_then_survives_pointer_transfer_to_card() {
+    let mut app = test_app();
+    let _ = update(
+        &mut app,
+        Message::ProfileHoverEntered {
+            user: "U_ALICE".into(),
+            key: "alice-name".into(),
+        },
+    );
+    let generation = app.profile_hover.as_ref().unwrap().generation;
+    assert!(!app.profile_hover.as_ref().unwrap().visible);
+
+    let _ = update(
+        &mut app,
+        Message::ProfileHoverReady {
+            user: "U_ALICE".into(),
+            key: "alice-name".into(),
+            generation,
+        },
+    );
+    assert!(app.profile_hover.as_ref().unwrap().visible);
+
+    let _ = update(
+        &mut app,
+        Message::ProfileHoverExited {
+            user: "U_ALICE".into(),
+            key: "alice-name".into(),
+        },
+    );
+    let dismiss_generation = app.profile_hover.as_ref().unwrap().generation;
+    let _ = update(&mut app, Message::ProfileCardEntered);
+    let _ = update(
+        &mut app,
+        Message::ProfileHoverDismissReady(dismiss_generation),
+    );
+    assert!(app.profile_hover.is_some());
+}
+
+#[test]
+fn profile_result_merges_details_into_cached_user() {
+    let mut app = test_app();
+    let team = app.active_team.clone().unwrap();
+    app.profile_pane = Some(ProfilePaneState {
+        user: "U_ALICE".into(),
+        loading: true,
+        error: None,
+    });
+    let profile = UserProfile {
+        display_name: Some("Alice".into()),
+        title: Some("Product designer".into()),
+        pronouns: Some("she/her".into()),
+        email: Some("alice@example.com".into()),
+        ..Default::default()
+    };
+    let _ = update(
+        &mut app,
+        Message::ProfileLoaded {
+            team: team.clone(),
+            user: "U_ALICE".into(),
+            result: Ok(profile),
+        },
+    );
+
+    let alice = app.workspaces[&team].users["U_ALICE"]
+        .profile
+        .as_ref()
+        .unwrap();
+    assert_eq!(alice.title.as_deref(), Some("Product designer"));
+    assert_eq!(alice.pronouns.as_deref(), Some("she/her"));
+    assert!(!app.profile_pane.as_ref().unwrap().loading);
 }

@@ -434,6 +434,19 @@ pub fn handle(app: &mut App, id: u64, command: AgentCommand) -> iced::Task<Messa
             complete(id, AgentResponse::ok(id, json!({ "settings_open": false })));
             task
         }
+        AgentCommand::OpenProfile { user } => {
+            let task = update(app, Message::ProfilePressed(user.clone()));
+            complete(
+                id,
+                AgentResponse::ok(id, json!({ "profile_user": user, "loading": true })),
+            );
+            task
+        }
+        AgentCommand::CloseProfile => {
+            let task = update(app, Message::ProfileDismissed);
+            complete(id, AgentResponse::ok(id, json!({ "profile_user": null })));
+            task
+        }
         AgentCommand::Screenshot { path } => {
             let path = resolve_screenshot_path(path);
             if let Some(parent) = path.parent() {
@@ -724,12 +737,31 @@ pub fn dump_state(app: &App) -> Value {
         })).collect::<Vec<_>>(),
     });
 
+    let profile = app.profile_pane.as_ref().map(|pane| {
+        let details = app.active_workspace().and_then(|workspace| {
+            workspace
+                .users
+                .get(&pane.user)
+                .and_then(|user| user.profile.as_ref())
+        });
+        json!({
+            "user": pane.user,
+            "loading": pane.loading,
+            "error": pane.error,
+            "title": details.and_then(|profile| profile.title.as_deref()),
+            "pronouns": details.and_then(|profile| profile.pronouns.as_deref()),
+            "email": details.and_then(|profile| profile.email.as_deref()),
+            "custom_field_count": details.map(|profile| profile.fields.len()).unwrap_or(0),
+        })
+    });
+
     json!({
         "screen": screen,
         "signed_in": app.session.is_some(),
         "main_view": main_view_label(app.main_view),
         "activity": activity,
         "dms": dms,
+        "profile": profile,
         "active_team": app.active_team,
         "active_channel": app.active_channel,
         "active_channel_name": active_channel_name,
@@ -803,6 +835,8 @@ fn help_data() -> Value {
             {"cmd": "clear-search", "desc": "close search"},
             {"cmd": "open-settings", "desc": "open settings"},
             {"cmd": "close-settings", "desc": "close settings"},
+            {"cmd": "open-profile", "args": {"user": "user id"}, "desc": "open a user profile pane"},
+            {"cmd": "close-profile", "desc": "close the profile pane"},
             {"cmd": "screenshot", "args": {"path": "optional"}, "desc": "capture window PNG"},
             {"cmd": "main-view", "args": {"view": "home|activity"}, "desc": "switch far-rail surface"},
             {"cmd": "activity-select", "args": {"index": "usize"}, "desc": "open an activity item in the right panel"},
@@ -861,6 +895,10 @@ pub enum AgentCommand {
     ClearSearch,
     OpenSettings,
     CloseSettings,
+    OpenProfile {
+        user: String,
+    },
+    CloseProfile,
     Screenshot {
         #[serde(default)]
         path: Option<String>,
@@ -919,6 +957,13 @@ mod tests {
             AgentCommand::Screenshot { path } => {
                 assert_eq!(path.as_deref(), Some("tmp/x.png"));
             }
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let profile: AgentRequest =
+            serde_json::from_str(r#"{"cmd":"open-profile","user":"U123"}"#).unwrap();
+        match profile.cmd {
+            AgentCommand::OpenProfile { user } => assert_eq!(user, "U123"),
             other => panic!("unexpected {other:?}"),
         }
     }

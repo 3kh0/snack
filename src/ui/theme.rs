@@ -228,6 +228,36 @@ pub fn panel(_theme: &Theme) -> container::Style {
     }
 }
 
+pub fn profile_card(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(BG_PANEL)),
+        text_color: Some(TEXT_2),
+        border: Border {
+            color: BORDER,
+            width: 1.0,
+            radius: 10.0.into(),
+        },
+        shadow: Shadow {
+            color: Color {
+                a: 0.38,
+                ..Color::BLACK
+            },
+            offset: Vector::new(0.0, 8.0),
+            blur_radius: 24.0,
+        },
+        ..container::Style::default()
+    }
+}
+
+pub fn profile_badge(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(TEXT_1)),
+        text_color: Some(BG_BASE),
+        border: Border::default().rounded(4.0),
+        ..container::Style::default()
+    }
+}
+
 pub fn sidebar(theme: &Theme) -> container::Style {
     panel(theme)
 }

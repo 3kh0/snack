@@ -135,7 +135,8 @@ impl Cache {
             .prepare("select json from users where team_id = ?1")?;
         let rows = stmt.query_map(params![session.team_id], |row| row.get::<_, String>(0))?;
         for row in rows {
-            let user: User = serde_json::from_str(&row?)?;
+            let value: serde_json::Value = serde_json::from_str(&row?)?;
+            let user: User = serde_json::from_value(value)?;
             ws.users.insert(user.id.clone(), user);
         }
 
@@ -220,9 +221,10 @@ impl Cache {
 
         tx.execute("delete from users where team_id = ?1", params![ws.team_id])?;
         for user in ws.users.values() {
+            let json = serde_json::to_string(&serde_json::to_value(user)?)?;
             tx.execute(
                 "insert into users (team_id, user_id, json) values (?1, ?2, ?3)",
-                params![ws.team_id, user.id, serde_json::to_string(user)?],
+                params![ws.team_id, user.id, json],
             )?;
         }
 
@@ -343,7 +345,7 @@ impl Cache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::slack::models::Channel;
+    use crate::slack::models::{Channel, User};
 
     fn session() -> WorkspaceSession {
         WorkspaceSession {
@@ -396,5 +398,50 @@ mod tests {
         assert_eq!(loaded.last_active_channel.as_deref(), Some("C1"));
         assert_eq!(loaded.recent_channels, vec!["C1".to_string()]);
         assert_eq!(loaded.frecency_score("C1", 1_000_000), 1.0);
+    }
+
+    #[test]
+    fn loads_legacy_user_json_with_duplicate_flattened_keys() {
+        let cache = Cache::open(":memory:").unwrap();
+        let session = session();
+        cache
+            .save_workspace(&Workspace::from_session(&session))
+            .unwrap();
+        cache
+            .conn
+            .execute(
+                "insert into users (team_id, user_id, json) values (?1, ?2, ?3)",
+                params![
+                    session.team_id,
+                    "U1",
+                    r#"{"id":"U1","deleted":false,"is_bot":false,"deleted":true}"#
+                ],
+            )
+            .unwrap();
+
+        let loaded = cache.load_workspace(&session).unwrap().unwrap();
+        assert!(loaded.users["U1"].deleted);
+    }
+
+    #[test]
+    fn cache_serialization_collapses_typed_keys_left_in_user_extra() {
+        let cache = Cache::open(":memory:").unwrap();
+        let session = session();
+        let mut workspace = Workspace::from_session(&session);
+        workspace.users.insert(
+            "U1".into(),
+            User {
+                id: "U1".into(),
+                extra: std::collections::BTreeMap::from([(
+                    "deleted".into(),
+                    serde_json::json!(true),
+                )]),
+                ..Default::default()
+            },
+        );
+
+        cache.save_workspace(&workspace).unwrap();
+        let loaded = cache.load_workspace(&session).unwrap().unwrap();
+        assert!(loaded.users["U1"].deleted);
     }
 }

@@ -56,6 +56,8 @@ Commands:
   main-view <home|dms|activity>   Switch far-rail surface
   activity-select <index>         Open activity item in right panel
   close-settings
+  open-profile <user_id>
+  close-profile
   screenshot [path]
   toast <text>
   allow-destructive [true|false]
@@ -147,6 +149,13 @@ case "$cmd" in
     ;;
   close-settings)
     JSON=$(printf '{"id":%s,"cmd":"close-settings"}' "$REQ_ID")
+    ;;
+  open-profile)
+    [[ $# -ge 1 ]] || { echo "usage: agentctl.sh open-profile <user_id>" >&2; exit 2; }
+    JSON=$(python3 -c 'import json,sys; print(json.dumps({"id": int(sys.argv[1]), "cmd":"open-profile", "user": sys.argv[2]}))' "$REQ_ID" "$1")
+    ;;
+  close-profile)
+    JSON=$(printf '{"id":%s,"cmd":"close-profile"}' "$REQ_ID")
     ;;
   screenshot)
     path="${1:-}"

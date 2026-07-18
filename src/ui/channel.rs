@@ -4,8 +4,11 @@ use iced::widget::{
 };
 use iced::{Alignment, ContentFit, Element, Fill, Length, font};
 
-use super::{message, theme};
-use crate::app::{FilePreview, Message, PendingFileMessage, TextSelection, TextSelectionSurface};
+use super::{message, profile, theme};
+use crate::app::{
+    FilePreview, Message, PendingFileMessage, ProfileHoverState, TextSelection,
+    TextSelectionSurface,
+};
 use crate::slack::models::{Channel, UserId};
 use crate::state::{self, Presence, Workspace};
 use std::collections::HashMap;
@@ -23,10 +26,10 @@ pub fn scrollable_id(channel_id: &str) -> Id {
 }
 
 pub fn view<'a>(
-    ws: &Workspace,
+    ws: &'a Workspace,
     channel_id: &str,
     file_previews: &HashMap<String, FilePreview>,
-    avatar_previews: &HashMap<String, FilePreview>,
+    avatar_previews: &'a HashMap<String, FilePreview>,
     emoji_previews: &HashMap<String, FilePreview>,
     emoji_animation_elapsed: Duration,
     editing: Option<(&str, &str)>,
@@ -34,8 +37,9 @@ pub fn view<'a>(
     text_selection: Option<&TextSelection>,
     pending_file_messages: &'a [PendingFileMessage],
     paused: Option<u32>,
+    profile_hover: Option<&'a ProfileHoverState>,
 ) -> Element<'a, Message> {
-    let header = channel_header(ws, channel_id, avatar_previews);
+    let header = channel_header(ws, channel_id, avatar_previews, profile_hover);
 
     let list: Element<'a, Message> = match ws.messages.get(channel_id) {
         Some(cm) if !cm.messages.is_empty() => {
@@ -96,6 +100,7 @@ pub fn view<'a>(
                                     == Some(pending.client_msg_id.as_str())
                         })
                         .map(|pending| pending.attachments.as_slice()),
+                    profile_hover,
                 );
                 let row: Element<'a, Message> = match m.ts.clone() {
                     Some(ts) => mouse_area(row)
@@ -236,9 +241,10 @@ fn history_failed_placeholder<'a>(channel_id: &str) -> Element<'a, Message> {
 }
 
 fn channel_header<'a>(
-    ws: &Workspace,
+    ws: &'a Workspace,
     channel_id: &str,
-    avatars: &AvatarPreviews,
+    avatars: &'a AvatarPreviews,
+    profile_hover: Option<&'a ProfileHoverState>,
 ) -> Element<'a, Message> {
     let badge = ws.active_huddle(channel_id).map(huddle_badge);
 
@@ -247,7 +253,7 @@ fn channel_header<'a>(
     };
 
     if channel.is_im {
-        return dm_header(ws, channel, avatars, badge);
+        return dm_header(ws, channel, avatars, badge, profile_hover);
     }
 
     let label = if channel.is_mpim {
@@ -318,10 +324,11 @@ fn huddle_badge<'a>(room: &crate::slack::models::Room) -> Element<'a, Message> {
 }
 
 fn dm_header<'a>(
-    ws: &Workspace,
-    channel: &Channel,
-    avatars: &AvatarPreviews,
+    ws: &'a Workspace,
+    channel: &'a Channel,
+    avatars: &'a AvatarPreviews,
     badge: Option<Element<'a, Message>>,
+    profile_hover: Option<&'a ProfileHoverState>,
 ) -> Element<'a, Message> {
     let name = state::channel_display_name(ws, channel);
     let presence = ws.presence_for_channel(channel);
@@ -344,7 +351,19 @@ fn dm_header<'a>(
         title = title.push(vip_badge());
     }
 
-    header_shell(title.into(), badge)
+    let title: Element<'a, Message> = title.into();
+    let title = match state::dm_user_id(channel) {
+        Some(user) => profile::trigger(
+            title,
+            ws,
+            user,
+            format!("dm-header:{}", channel.id),
+            profile_hover,
+            avatars,
+        ),
+        None => title,
+    };
+    header_shell(title, badge)
 }
 
 fn dm_avatar_with_presence<'a>(

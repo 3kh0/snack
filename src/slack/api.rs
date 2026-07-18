@@ -9,7 +9,8 @@ use super::client::{PreparedRequest, SlackClient};
 use super::models::{
     ActivityFeedPage, BootData, Channel, ChannelId, ChannelSectionsPage, ClientDmsPage, CountsPage,
     EdgeResults, Emoji, HistoryPage, MessageTs, MessagesListPage, OpenedConversation,
-    SearchInlinePage, SearchMessagesPage, SentMessage, SidebarDmsPage, User, UserId,
+    SearchInlinePage, SearchMessagesPage, SentMessage, SidebarDmsPage, TeamProfileField,
+    TeamProfilePage, User, UserId, UserProfile, UserProfilePage,
 };
 use super::transport::Transport;
 pub fn user_boot(client: &SlackClient, workspace: &WorkspaceSession) -> PreparedRequest {
@@ -197,6 +198,18 @@ pub fn users_set_presence(
     presence: String,
 ) -> PreparedRequest {
     client.rest_form(workspace, "users.setPresence", vec![("presence", presence)])
+}
+
+pub fn users_profile_get(
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    user: UserId,
+) -> PreparedRequest {
+    client.rest_form(workspace, "users.profile.get", vec![("user", user)])
+}
+
+pub fn team_profile_get(client: &SlackClient, workspace: &WorkspaceSession) -> PreparedRequest {
+    client.rest_form(workspace, "team.profile.get", Vec::new())
 }
 
 pub fn conversations_open(
@@ -529,6 +542,31 @@ pub async fn fetch_users_info(
     let value = transport.execute(request).await?;
     let page: EdgeResults<User> = decode(value, "users/info")?;
     Ok(page.results)
+}
+
+pub async fn fetch_user_profile(
+    transport: &Transport,
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+    user: UserId,
+) -> Result<UserProfile, Error> {
+    let value = transport
+        .execute(users_profile_get(client, workspace, user))
+        .await?;
+    let page: UserProfilePage = decode(value, "users.profile.get")?;
+    Ok(page.profile)
+}
+
+pub async fn fetch_team_profile_fields(
+    transport: &Transport,
+    client: &SlackClient,
+    workspace: &WorkspaceSession,
+) -> Result<Vec<TeamProfileField>, Error> {
+    let value = transport
+        .execute(team_profile_get(client, workspace))
+        .await?;
+    let page: TeamProfilePage = decode(value, "team.profile.get")?;
+    Ok(page.profile.fields)
 }
 
 pub async fn fetch_channels_info(
@@ -1093,5 +1131,21 @@ mod tests {
         assert!(request.url.contains("/api/users.setPresence?"));
         assert!(fields.contains(&("presence".into(), "away".into())));
         assert!(fields.contains(&("token".into(), "xoxc-test-token".into())));
+    }
+
+    #[test]
+    fn profile_request_targets_user_with_desktop_token() {
+        let request = users_profile_get(&SlackClient::default(), &workspace(), "U_PROFILE".into());
+        let fields = form_fields(&request);
+        assert!(request.url.contains("/api/users.profile.get?"));
+        assert!(fields.contains(&("user".into(), "U_PROFILE".into())));
+        assert!(fields.contains(&("token".into(), "xoxc-test-token".into())));
+    }
+
+    #[test]
+    fn team_profile_request_fetches_custom_field_schema() {
+        let request = team_profile_get(&SlackClient::default(), &workspace());
+        assert!(request.url.contains("/api/team.profile.get?"));
+        assert!(form_fields(&request).contains(&("token".into(), "xoxc-test-token".into())));
     }
 }

@@ -7,6 +7,7 @@ pub mod icons;
 pub mod message;
 pub mod motion;
 pub mod palette;
+pub mod profile;
 pub mod rail;
 pub mod search;
 pub mod selectable;

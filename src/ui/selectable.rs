@@ -40,6 +40,7 @@ const CHIP_RADIUS: f32 = 4.0;
 pub struct Segment {
     pub text: String,
     pub channel: Option<String>,
+    pub user: Option<String>,
     pub mono: bool,
     pub color: Option<Color>,
     pub background: Option<Color>,
@@ -54,6 +55,7 @@ impl Segment {
         Self {
             text: text.into(),
             channel: None,
+            user: None,
             mono: false,
             color: None,
             background: None,
@@ -75,6 +77,7 @@ struct HighlightRun {
 pub struct SelectableText {
     spans: Vec<Span<'static, (), Font>>,
     channels: Vec<Option<String>>,
+    users: Vec<Option<String>>,
     highlight_runs: Vec<HighlightRun>,
     size: Pixels,
     color: Color,
@@ -92,10 +95,11 @@ impl SelectableText {
     /// paragraph. Newlines inside segment text create wrapped lines that
     /// selection spans naturally.
     pub fn new(segments: &[Segment], size: f32, color: Color, selection_color: Color) -> Self {
-        let (spans, channels, highlight_runs) = explode_segments(segments);
+        let (spans, channels, users, highlight_runs) = explode_segments(segments);
         Self {
             spans,
             channels,
+            users,
             highlight_runs,
             size: Pixels(size),
             color,
@@ -144,6 +148,10 @@ impl SelectableText {
 
     fn channel_at(&self, index: usize) -> Option<&str> {
         self.channels.get(index).and_then(Option::as_deref)
+    }
+
+    fn user_at(&self, index: usize) -> Option<&str> {
+        self.users.get(index).and_then(Option::as_deref)
     }
 
     /// Maps a cursor position to a cluster index. Falls back to the nearest
@@ -433,10 +441,15 @@ impl Widget<Message, Theme, Renderer> for SelectableText {
                 }
                 if self.selection.is_none()
                     && anchor == index
-                    && let Some(channel) = index.and_then(|index| self.channel_at(index))
+                    && let Some(index) = index
                 {
-                    shell.publish(Message::ChannelSelected(channel.to_owned()));
-                    shell.capture_event();
+                    if let Some(channel) = self.channel_at(index) {
+                        shell.publish(Message::ChannelSelected(channel.to_owned()));
+                        shell.capture_event();
+                    } else if let Some(user) = self.user_at(index) {
+                        shell.publish(Message::ProfilePressed(user.to_owned()));
+                        shell.capture_event();
+                    }
                 }
                 if anchor.is_some() {
                     shell.request_redraw();
@@ -456,10 +469,9 @@ impl Widget<Message, Theme, Renderer> for SelectableText {
     ) -> mouse::Interaction {
         let state = tree.state.downcast_ref::<State>();
         if state.hovered
-            && self
-                .locate(state, _layout, _cursor)
-                .and_then(|index| self.channel_at(index))
-                .is_some()
+            && self.locate(state, _layout, _cursor).is_some_and(|index| {
+                self.channel_at(index).is_some() || self.user_at(index).is_some()
+            })
         {
             mouse::Interaction::Pointer
         } else if state.hovered {
@@ -481,10 +493,12 @@ fn explode_segments(
 ) -> (
     Vec<Span<'static, (), Font>>,
     Vec<Option<String>>,
+    Vec<Option<String>>,
     Vec<HighlightRun>,
 ) {
     let mut spans = Vec::new();
     let mut channels = Vec::new();
+    let mut users = Vec::new();
     let mut highlight_runs = Vec::new();
 
     for seg in segments {
@@ -506,6 +520,7 @@ fn explode_segments(
             }
             spans.push(span.to_static());
             channels.push(seg.channel.clone());
+            users.push(seg.user.clone());
         }
         if let Some(color) = seg.background {
             if spans.len() > run_start {
@@ -518,7 +533,7 @@ fn explode_segments(
         }
     }
 
-    (spans, channels, highlight_runs)
+    (spans, channels, users, highlight_runs)
 }
 
 fn merge_line_regions(mut regions: Vec<Rectangle>) -> Vec<Rectangle> {
@@ -558,6 +573,7 @@ mod tests {
         Segment {
             text: text.into(),
             channel: channel.map(str::to_owned),
+            user: None,
             mono: false,
             color: Some(Color::from_rgb(0.1, 0.7, 0.9)),
             background: Some(bg),
@@ -581,7 +597,7 @@ mod tests {
             mention_segment("#what-is-my-slack-id", Some("C1"), bg),
             Segment::plain(" please"),
         ];
-        let (spans, channels, runs) = explode_segments(&segments);
+        let (spans, channels, _users, runs) = explode_segments(&segments);
 
         assert_eq!(
             spans.len(),
@@ -608,7 +624,7 @@ mod tests {
             Segment::plain(" "),
             mention_segment("#b", Some("C2"), bg),
         ];
-        let (_, channels, runs) = explode_segments(&segments);
+        let (_, channels, _users, runs) = explode_segments(&segments);
         assert_eq!(runs.len(), 2);
         assert_eq!(channels[runs[0].start].as_deref(), Some("C1"));
         assert_eq!(channels[runs[1].start].as_deref(), Some("C2"));

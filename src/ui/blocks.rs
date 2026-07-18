@@ -14,6 +14,7 @@ pub struct RenderSegment {
     pub text: String,
     pub style: SegmentStyle,
     pub channel: Option<String>,
+    pub user: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -78,6 +79,7 @@ impl RenderSegment {
             text: text.into(),
             style: SegmentStyle::default(),
             channel: None,
+            user: None,
         }
     }
 
@@ -94,6 +96,16 @@ impl RenderSegment {
             text: text.into(),
             style,
             channel,
+            user: None,
+        }
+    }
+
+    fn styled_user(text: impl Into<String>, style: SegmentStyle, user: String) -> Self {
+        Self {
+            text: text.into(),
+            style,
+            channel: None,
+            user: Some(user),
         }
     }
 }
@@ -222,7 +234,11 @@ fn rich_leaf_segments(ws: &Workspace, leaf: &Value) -> Vec<RenderSegment> {
             .map(|user| {
                 let mut style = style.clone();
                 style.mention = true;
-                RenderSegment::styled(format!("@{}", ws.display_name(user)), style)
+                RenderSegment::styled_user(
+                    format!("@{}", ws.display_name(user)),
+                    style,
+                    user.to_owned(),
+                )
             })
             .into_iter()
             .collect(),
@@ -348,7 +364,10 @@ fn mrkdwn_segments(ws: &Workspace, text: &str) -> Vec<RenderSegment> {
             .strip_prefix('<')
             .and_then(|_| parse_slack_ref(ws, rest))
         {
-            out.push(RenderSegment::styled_channel(token.0, token.1, token.2));
+            out.push(match token.3 {
+                Some(user) => RenderSegment::styled_user(token.0, token.1, user),
+                None => RenderSegment::styled_channel(token.0, token.1, token.2),
+            });
             i += len;
             continue;
         }
@@ -376,20 +395,23 @@ fn mrkdwn_segments(ws: &Workspace, text: &str) -> Vec<RenderSegment> {
 fn parse_slack_ref(
     ws: &Workspace,
     text: &str,
-) -> Option<((String, SegmentStyle, Option<String>), usize)> {
+) -> Option<(
+    (String, SegmentStyle, Option<String>, Option<String>),
+    usize,
+)> {
     let end = text.find('>')?;
     let raw = &text[1..end];
-    let (label, mut style, channel_target) = if let Some(user) = raw.strip_prefix('@') {
+    let (label, mut style, channel_target, user_target) = if let Some(user) = raw.strip_prefix('@')
+    {
+        let user = user.split('|').next().unwrap_or(user);
         (
-            format!(
-                "@{}",
-                ws.display_name(user.split('|').next().unwrap_or(user))
-            ),
+            format!("@{}", ws.display_name(user)),
             SegmentStyle {
                 mention: true,
                 ..SegmentStyle::default()
             },
             None,
+            Some(user.to_owned()),
         )
     } else if let Some(channel) = raw.strip_prefix('#') {
         let (id, fallback_label) = channel.split_once('|').unwrap_or((channel, channel));
@@ -403,6 +425,7 @@ fn parse_slack_ref(
                 ..SegmentStyle::default()
             },
             Some(id.to_owned()),
+            None,
         )
     } else if let Some(broadcast) = raw.strip_prefix('!') {
         (
@@ -412,6 +435,7 @@ fn parse_slack_ref(
                 broadcast: true,
                 ..SegmentStyle::default()
             },
+            None,
             None,
         )
     } else {
@@ -423,12 +447,13 @@ fn parse_slack_ref(
                 ..SegmentStyle::default()
             },
             None,
+            None,
         )
     };
     if !style.link && state::is_browser_url(&label) {
         style.link = true;
     }
-    Some(((label, style, channel_target), end + 1))
+    Some(((label, style, channel_target, user_target), end + 1))
 }
 
 /// Returns every channel referenced by a Slack message's rich text or fallback
@@ -526,7 +551,9 @@ fn merge_segments(segments: Vec<RenderSegment>) -> Vec<RenderSegment> {
     {
         match merged.last_mut() {
             Some(existing)
-                if existing.style == segment.style && existing.channel == segment.channel =>
+                if existing.style == segment.style
+                    && existing.channel == segment.channel
+                    && existing.user == segment.user =>
             {
                 existing.text.push_str(&segment.text)
             }
@@ -704,6 +731,7 @@ mod tests {
             ]
         );
         assert!(rendered[0].segments[1].style.mention);
+        assert_eq!(rendered[0].segments[1].user.as_deref(), Some("U1"));
         assert!(rendered[0].segments[3].style.mention);
         assert_eq!(rendered[0].segments[3].channel.as_deref(), Some("C1"));
         assert!(rendered[0].segments[5].style.link);

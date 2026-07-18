@@ -10,8 +10,28 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
     match app.screen {
         Screen::Login => login_view(),
         Screen::Loading => center_text("Loading…"),
-        Screen::Main => with_palette(app, main_view(app)),
+        Screen::Main => with_palette(app, with_profile_hover(app, main_view(app))),
     }
+}
+
+fn with_profile_hover<'a>(app: &'a App, base: Element<'a, Message>) -> Element<'a, Message> {
+    let Some((ws, hover)) = app.active_workspace().zip(app.profile_hover.as_ref()) else {
+        return base;
+    };
+    if !hover.visible || hover.position.is_none() {
+        return base;
+    }
+    stack![
+        base,
+        ui::profile::hover_overlay(
+            ws,
+            hover,
+            &app.avatar_previews,
+            &app.emoji_previews,
+            app.emoji_animation_started.elapsed(),
+        )
+    ]
+    .into()
 }
 
 fn overlay_host<'a>(
@@ -113,7 +133,10 @@ fn main_view(app: &App) -> Element<'_, Message> {
             .spacing(ui::theme::gap())
             .width(Fill)
             .height(Fill);
-        return with_modal(app, with_account_menu(app, shell(body.into())));
+        return with_modal(
+            app,
+            with_account_menu(app, shell(with_profile_pane(app, ws, body.into()))),
+        );
     }
 
     if app.main_view == crate::state::MainView::Activity {
@@ -142,7 +165,10 @@ fn main_view(app: &App) -> Element<'_, Message> {
             .spacing(ui::theme::gap())
             .width(Fill)
             .height(Fill);
-        return with_modal(app, with_account_menu(app, shell(body.into())));
+        return with_modal(
+            app,
+            with_account_menu(app, shell(with_profile_pane(app, ws, body.into()))),
+        );
     }
 
     let sidebar_panel = ui::sidebar::view(
@@ -170,13 +196,15 @@ fn main_view(app: &App) -> Element<'_, Message> {
             app,
             with_account_menu(
                 app,
-                shell(
+                shell(with_profile_pane(
+                    app,
+                    ws,
                     row![rail, sidebar, content]
                         .spacing(ui::theme::gap())
                         .width(Fill)
                         .height(Fill)
                         .into(),
-                ),
+                )),
             ),
         );
     }
@@ -229,6 +257,7 @@ fn main_view(app: &App) -> Element<'_, Message> {
                 app.text_selection.as_ref(),
                 &app.pending_file_messages,
                 iced::Length::Fixed(ui::theme::THREAD_WIDTH),
+                app.profile_hover.as_ref(),
             ))
             .padding(iced::Padding::ZERO.left(gap));
             ui::motion::collapse_x(panel.into(), progress, ui::theme::THREAD_WIDTH + gap)
@@ -244,7 +273,11 @@ fn main_view(app: &App) -> Element<'_, Message> {
             app,
             with_account_menu(
                 app,
-                shell(row![body, thread_panel].width(Fill).height(Fill).into()),
+                shell(with_profile_pane(
+                    app,
+                    ws,
+                    row![body, thread_panel].width(Fill).height(Fill).into(),
+                )),
             ),
         )
     } else {
@@ -252,7 +285,10 @@ fn main_view(app: &App) -> Element<'_, Message> {
             .spacing(ui::theme::gap())
             .width(Fill)
             .height(Fill);
-        with_modal(app, with_account_menu(app, shell(body.into())))
+        with_modal(
+            app,
+            with_account_menu(app, shell(with_profile_pane(app, ws, body.into()))),
+        )
     }
 }
 
@@ -292,6 +328,7 @@ fn channel_main_panel<'a>(
                     app.text_selection.as_ref(),
                     &app.pending_file_messages,
                     app.chat_paused.get(channel_id).copied(),
+                    app.profile_hover.as_ref(),
                 ))
                 .height(Fill),
                 container(ui::composer::view(
@@ -358,7 +395,37 @@ fn thread_static_panel<'a>(
         app.text_selection.as_ref(),
         &app.pending_file_messages,
         Fill,
+        app.profile_hover.as_ref(),
     )
+}
+
+fn with_profile_pane<'a>(
+    app: &'a App,
+    ws: &'a crate::state::Workspace,
+    base: Element<'a, Message>,
+) -> Element<'a, Message> {
+    let Some(profile) = app.profile_pane.as_ref() else {
+        return base;
+    };
+    row![
+        base,
+        ui::profile::pane(
+            ws,
+            profile,
+            &app.avatar_previews,
+            &app.profile_previews,
+            app.profile_fields
+                .get(&ws.team_id)
+                .map(Vec::as_slice)
+                .unwrap_or_default(),
+            &app.emoji_previews,
+            app.emoji_animation_started.elapsed(),
+        )
+    ]
+    .spacing(ui::theme::gap())
+    .width(Fill)
+    .height(Fill)
+    .into()
 }
 
 fn thread_unread_marker<'a>(

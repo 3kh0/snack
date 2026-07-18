@@ -4,9 +4,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use iced::Task;
 use iced::widget::image::Handle as ImageHandle;
 use iced::widget::text_editor::{self, Content};
+use iced::{Point, Task};
 
 use crate::cache::Cache;
 use crate::config::{self, Session};
@@ -15,7 +15,7 @@ use crate::slack::events::RtEvent;
 use crate::slack::models::{
     ActivityFeedPage, BootData, Channel, ChannelId, ChannelSectionsPage, ClientDmsPage, CountsPage,
     Emoji, HistoryPage, Message as SlackMessage, MessageTs, MessagesListPage, SearchMessagesPage,
-    SentMessage, SidebarDmsPage, TeamId, User, UserId,
+    SentMessage, SidebarDmsPage, TeamId, TeamProfileField, User, UserId, UserProfile,
 };
 use crate::slack::realtime::Connection;
 use crate::slack::{Error as SlackError, SlackClient, Transport};
@@ -245,6 +245,24 @@ pub struct PendingFileMessage {
     pub attachments: Vec<ComposerAttachment>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ProfilePaneState {
+    pub user: UserId,
+    pub loading: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProfileHoverState {
+    pub user: UserId,
+    pub key: String,
+    pub generation: u64,
+    pub visible: bool,
+    pub source_hovered: bool,
+    pub card_hovered: bool,
+    pub position: Option<Point>,
+}
+
 pub struct App {
     screen: Screen,
     accounts: BTreeMap<config::AccountId, Session>,
@@ -272,6 +290,11 @@ pub struct App {
     editing: Option<(ChannelId, MessageTs)>,
     edit_text: String,
     hovered_message: Option<(bool, MessageTs)>,
+    profile_pane: Option<ProfilePaneState>,
+    profile_hover: Option<ProfileHoverState>,
+    profile_generation: u64,
+    profile_fields: HashMap<TeamId, Vec<TeamProfileField>>,
+    cursor_position: Option<Point>,
     text_selection: Option<TextSelection>,
     search_input: String,
     search: Option<SearchState>,
@@ -283,6 +306,7 @@ pub struct App {
     last_active_channels: HashMap<TeamId, ChannelId>,
     file_previews: HashMap<String, FilePreview>,
     avatar_previews: HashMap<UserId, FilePreview>,
+    profile_previews: HashMap<UserId, FilePreview>,
     emoji_previews: HashMap<String, FilePreview>,
     emoji_animation_started: Instant,
     emoji_hydrated: HashSet<(TeamId, String)>,
@@ -427,6 +451,39 @@ pub enum Message {
         ts: MessageTs,
     },
     MessageUnhovered,
+    ProfilePressed(UserId),
+    ProfileDismissed,
+    ProfileHoverEntered {
+        user: UserId,
+        key: String,
+    },
+    ProfileHoverExited {
+        user: UserId,
+        key: String,
+    },
+    CursorMoved(Point),
+    ProfileHoverReady {
+        user: UserId,
+        key: String,
+        generation: u64,
+    },
+    ProfileHoverDismissReady(u64),
+    ProfileCardEntered,
+    ProfileCardExited,
+    ProfileLoaded {
+        team: TeamId,
+        user: UserId,
+        result: Result<UserProfile, SlackError>,
+    },
+    ProfileFieldsLoaded {
+        team: TeamId,
+        result: Result<Vec<TeamProfileField>, SlackError>,
+    },
+    ProfileImageLoaded {
+        user: UserId,
+        result: Result<Vec<u8>, SlackError>,
+    },
+    ProfileMessagePressed(UserId),
     EditCancelled,
     MessageEdited {
         team: TeamId,
@@ -631,6 +688,11 @@ impl App {
             editing: None,
             edit_text: String::new(),
             hovered_message: None,
+            profile_pane: None,
+            profile_hover: None,
+            profile_generation: 0,
+            profile_fields: HashMap::new(),
+            cursor_position: None,
             search_input: String::new(),
             search: None,
             palette: None,
@@ -641,6 +703,7 @@ impl App {
             last_active_channels: HashMap::new(),
             file_previews: HashMap::new(),
             avatar_previews: HashMap::new(),
+            profile_previews: HashMap::new(),
             emoji_previews: HashMap::new(),
             emoji_animation_started: Instant::now(),
             emoji_hydrated: HashSet::new(),
@@ -787,6 +850,11 @@ impl App {
         self.editing = None;
         self.edit_text.clear();
         self.hovered_message = None;
+        self.profile_pane = None;
+        self.profile_hover = None;
+        self.profile_generation = self.profile_generation.wrapping_add(1);
+        self.profile_fields.clear();
+        self.cursor_position = None;
         self.text_selection = None;
         self.search_input.clear();
         self.search = None;
@@ -798,6 +866,7 @@ impl App {
         self.last_active_channels.clear();
         self.file_previews.clear();
         self.avatar_previews.clear();
+        self.profile_previews.clear();
         self.emoji_previews.clear();
         self.emoji_animation_started = Instant::now();
         self.emoji_hydrated.clear();

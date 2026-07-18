@@ -17,6 +17,7 @@ pub(super) fn subscription(app: &App) -> Subscription<Message> {
 
     subs.push(iced::event::listen_with(palette_hotkey));
     subs.push(iced::event::listen_with(file_drop));
+    subs.push(iced::event::listen_with(cursor_position));
     if app.text_selection.is_some() {
         subs.push(iced::event::listen_with(selection_copy_hotkey));
     }
@@ -29,6 +30,8 @@ pub(super) fn subscription(app: &App) -> Subscription<Message> {
     }
     if app.palette_open {
         subs.push(iced::event::listen_with(palette_navigation));
+    } else if app.profile_pane.is_some() {
+        subs.push(iced::event::listen_with(profile_navigation));
     }
     if app
         .emoji_previews
@@ -88,6 +91,35 @@ pub(super) fn subscription(app: &App) -> Subscription<Message> {
     }
 
     Subscription::batch(subs)
+}
+
+fn cursor_position(
+    event: iced::Event,
+    _status: iced::event::Status,
+    _id: iced::window::Id,
+) -> Option<Message> {
+    match event {
+        iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+            Some(Message::CursorMoved(position))
+        }
+        _ => None,
+    }
+}
+
+fn profile_navigation(
+    event: iced::Event,
+    _status: iced::event::Status,
+    _id: iced::window::Id,
+) -> Option<Message> {
+    use iced::keyboard::key::Named;
+    use iced::keyboard::{Event, Key};
+    match event {
+        iced::Event::Keyboard(Event::KeyPressed {
+            key: Key::Named(Named::Escape),
+            ..
+        }) => Some(Message::ProfileDismissed),
+        _ => None,
+    }
 }
 
 fn file_drop(

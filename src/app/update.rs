@@ -25,8 +25,9 @@ use crate::ui;
 use super::palette::{self, PaletteEntry, PaletteState, PaletteTarget};
 use super::{
     ActivityState, App, ComposerAttachment, ComposerTarget, DesktopNotification, DmsState,
-    FilePreview, HistoryLoadKind, Message, PendingFileMessage, PendingScrollTarget, SearchHit,
-    SearchState, TextSelection, TextSelectionPoint, TextSelectionSurface, ThreadKey,
+    FilePreview, HistoryLoadKind, Message, PendingFileMessage, PendingScrollTarget,
+    ProfileHoverState, ProfilePaneState, SearchHit, SearchState, TextSelection, TextSelectionPoint,
+    TextSelectionSurface, ThreadKey,
 };
 use iced::widget::text_editor::Content;
 
@@ -785,6 +786,125 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
             app.hovered_message = None;
             Task::none()
         }
+
+        Message::ProfilePressed(user) => profile_pressed(app, user),
+
+        Message::ProfileDismissed => {
+            app.profile_pane = None;
+            Task::none()
+        }
+
+        Message::ProfileHoverEntered { user, key } => {
+            app.profile_generation = app.profile_generation.wrapping_add(1);
+            let generation = app.profile_generation;
+            app.profile_hover = Some(ProfileHoverState {
+                user: user.clone(),
+                key: key.clone(),
+                generation,
+                visible: false,
+                source_hovered: true,
+                card_hovered: false,
+                position: app.cursor_position,
+            });
+            Task::perform(
+                async move { tokio::time::sleep(Duration::from_millis(900)).await },
+                move |_| Message::ProfileHoverReady {
+                    user: user.clone(),
+                    key: key.clone(),
+                    generation,
+                },
+            )
+        }
+
+        Message::ProfileHoverExited { user, key } => {
+            let matches = app
+                .profile_hover
+                .as_ref()
+                .is_some_and(|hover| hover.user == user && hover.key == key);
+            if !matches {
+                return Task::none();
+            }
+            if let Some(hover) = app.profile_hover.as_mut() {
+                hover.source_hovered = false;
+            }
+            schedule_profile_hover_dismiss(app)
+        }
+
+        Message::CursorMoved(position) => {
+            app.cursor_position = Some(position);
+            Task::none()
+        }
+
+        Message::ProfileHoverReady {
+            user,
+            key,
+            generation,
+        } => {
+            if let Some(hover) = app.profile_hover.as_mut().filter(|hover| {
+                hover.user == user
+                    && hover.key == key
+                    && hover.generation == generation
+                    && hover.source_hovered
+            }) {
+                hover.visible = true;
+            }
+            Task::none()
+        }
+
+        Message::ProfileHoverDismissReady(generation) => {
+            if app.profile_hover.as_ref().is_some_and(|hover| {
+                hover.generation == generation && !hover.source_hovered && !hover.card_hovered
+            }) {
+                app.profile_hover = None;
+            }
+            Task::none()
+        }
+
+        Message::ProfileCardEntered => {
+            app.profile_generation = app.profile_generation.wrapping_add(1);
+            if let Some(hover) = app.profile_hover.as_mut() {
+                hover.generation = app.profile_generation;
+                hover.card_hovered = true;
+            }
+            Task::none()
+        }
+
+        Message::ProfileCardExited => {
+            if let Some(hover) = app.profile_hover.as_mut() {
+                hover.card_hovered = false;
+            }
+            schedule_profile_hover_dismiss(app)
+        }
+
+        Message::ProfileLoaded { team, user, result } => profile_loaded(app, team, user, result),
+
+        Message::ProfileFieldsLoaded { team, result } => {
+            match result {
+                Ok(fields) => {
+                    app.profile_fields.insert(team, fields);
+                }
+                Err(error) => {
+                    tracing::debug!(%team, %error, "workspace profile schema failed");
+                }
+            }
+            Task::none()
+        }
+
+        Message::ProfileImageLoaded { user, result } => {
+            match result {
+                Ok(bytes) => {
+                    app.profile_previews
+                        .insert(user, FilePreview::Loaded(ImageHandle::from_bytes(bytes)));
+                }
+                Err(error) => {
+                    tracing::debug!(%user, %error, "profile image failed");
+                    app.profile_previews.insert(user, FilePreview::Failed);
+                }
+            }
+            Task::none()
+        }
+
+        Message::ProfileMessagePressed(user) => open_profile_dm(app, user),
 
         Message::MessageEdited {
             team,
@@ -3297,6 +3417,170 @@ fn dm_opened(
     }
     mark_workspace_dirty(app, &team);
     Task::done(Message::ChannelSelected(channel))
+}
+
+fn schedule_profile_hover_dismiss(app: &mut App) -> Task<Message> {
+    app.profile_generation = app.profile_generation.wrapping_add(1);
+    let generation = app.profile_generation;
+    if let Some(hover) = app.profile_hover.as_mut() {
+        hover.generation = generation;
+    }
+    Task::perform(
+        async move { tokio::time::sleep(Duration::from_millis(140)).await },
+        move |_| Message::ProfileHoverDismissReady(generation),
+    )
+}
+
+fn profile_pressed(app: &mut App, user: UserId) -> Task<Message> {
+    let Some(team) = app.active_team.clone() else {
+        return Task::none();
+    };
+    app.profile_hover = None;
+    app.profile_pane = Some(ProfilePaneState {
+        user: user.clone(),
+        loading: true,
+        error: None,
+    });
+
+    let Some((transport, session)) = app.live() else {
+        if let Some(profile) = app.profile_pane.as_mut() {
+            profile.loading = false;
+        }
+        return load_profile_image(app, &team, &user);
+    };
+    let Some(workspace) = session.workspaces.get(&team).cloned() else {
+        return Task::none();
+    };
+    let transport = transport.clone();
+    let client = app.client.clone();
+    let schema_workspace = workspace.clone();
+    let request_user = user.clone();
+    let result_team = team.clone();
+    let result_user = user.clone();
+    let profile_task = Task::perform(
+        async move { api::fetch_user_profile(&transport, &client, &workspace, request_user).await },
+        move |result| Message::ProfileLoaded {
+            team: result_team.clone(),
+            user: result_user.clone(),
+            result,
+        },
+    );
+    if app.profile_fields.contains_key(&team) {
+        return profile_task;
+    }
+    let transport = app.transport.as_ref().unwrap().clone();
+    let client = app.client.clone();
+    let fields_team = team.clone();
+    let fields_task = Task::perform(
+        async move { api::fetch_team_profile_fields(&transport, &client, &schema_workspace).await },
+        move |result| Message::ProfileFieldsLoaded {
+            team: fields_team.clone(),
+            result,
+        },
+    );
+    Task::batch([profile_task, fields_task])
+}
+
+fn profile_loaded(
+    app: &mut App,
+    team: TeamId,
+    user: UserId,
+    result: Result<crate::slack::models::UserProfile, SlackError>,
+) -> Task<Message> {
+    if app.active_team.as_deref() != Some(team.as_str())
+        || app.profile_pane.as_ref().map(|pane| pane.user.as_str()) != Some(user.as_str())
+    {
+        return Task::none();
+    }
+    if let Some(pane) = app.profile_pane.as_mut() {
+        pane.loading = false;
+    }
+    match result {
+        Ok(profile) => {
+            if let Some(workspace) = app.workspaces.get_mut(&team) {
+                let entry = workspace.users.entry(user.clone()).or_insert_with(|| {
+                    crate::slack::models::User {
+                        id: user.clone(),
+                        ..Default::default()
+                    }
+                });
+                entry.profile = Some(profile);
+            }
+            mark_workspace_dirty(app, &team);
+        }
+        Err(error) => {
+            tracing::debug!(%team, %user, %error, "profile details failed");
+            if let Some(pane) = app.profile_pane.as_mut() {
+                pane.error = Some("Some profile details could not be loaded.".into());
+            }
+        }
+    }
+    load_profile_image(app, &team, &user)
+}
+
+fn load_profile_image(app: &mut App, team: &str, user: &str) -> Task<Message> {
+    if app.profile_previews.contains_key(user) {
+        return Task::none();
+    }
+    let Some(url) = app
+        .workspaces
+        .get(team)
+        .and_then(|workspace| workspace.users.get(user))
+        .and_then(crate::state::user_profile_image_url)
+        .map(str::to_owned)
+    else {
+        return Task::none();
+    };
+    let Some(transport) = app.transport.clone() else {
+        return Task::none();
+    };
+    app.profile_previews
+        .insert(user.to_owned(), FilePreview::Loading);
+    let user_agent = crate::slack::xparams::Identity::from_capture().user_agent;
+    let user = user.to_owned();
+    Task::perform(
+        async move { transport.get_bytes(&url, &user_agent).await },
+        move |result| Message::ProfileImageLoaded {
+            user: user.clone(),
+            result,
+        },
+    )
+}
+
+fn open_profile_dm(app: &mut App, user: UserId) -> Task<Message> {
+    let Some(team) = app.active_team.clone() else {
+        return Task::none();
+    };
+    if let Some(channel) = app.workspaces.get(&team).and_then(|workspace| {
+        workspace
+            .channels
+            .values()
+            .find(|channel| channel.is_im && channel.user.as_deref() == Some(user.as_str()))
+            .map(|channel| channel.id.clone())
+    }) {
+        app.profile_pane = None;
+        return Task::done(Message::ChannelSelected(channel));
+    }
+    let Some((transport, session)) = app.live() else {
+        return Task::none();
+    };
+    let Some(workspace) = session.workspaces.get(&team).cloned() else {
+        return Task::none();
+    };
+    let transport = transport.clone();
+    let client = app.client.clone();
+    app.profile_pane = None;
+    let request_user = user.clone();
+    let result_team = team.clone();
+    let result_user = user.clone();
+    Task::perform(
+        async move { api::open_dm(&transport, &client, &workspace, request_user).await },
+        move |result| Message::DmOpened {
+            team: result_team.clone(),
+            user: result_user.clone(),
+            result,
+        },
+    )
 }
 
 fn channel_scrolled(app: &mut App, channel: ChannelId, y: f32, bottom_gap: f32) -> Task<Message> {

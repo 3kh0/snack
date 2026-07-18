@@ -14,8 +14,8 @@ use iced::{Settings, Size};
 use iced_test::{Error, Simulator};
 
 use super::tests::{
-    account_menu_app, activity_app, dms_app, login_app, multi_paragraph_emoji_app, search_app,
-    settings_app, test_app, thread_unread_app,
+    account_menu_app, activity_app, dms_app, login_app, multi_paragraph_emoji_app, profile_app,
+    search_app, settings_app, test_app, thread_unread_app,
 };
 use super::update::update;
 use super::view::view;
@@ -41,8 +41,8 @@ fn capture(app: &App, name: &str) -> Result<PathBuf, Error> {
     let snapshot = ui.snapshot(&theme)?;
 
     let path = capture_dir().join(name);
-    let _ = fs::remove_file(path.with_extension("png"));
     let stem = path.with_extension("");
+    remove_captures(&stem);
     assert!(
         snapshot.matches_image(&stem)?,
         "failed to write capture for {name}"
@@ -51,6 +51,27 @@ fn capture(app: &App, name: &str) -> Result<PathBuf, Error> {
     let written = find_capture(&stem).unwrap_or_else(|| stem.with_extension("png"));
     eprintln!("ui_visual: wrote {}", written.display());
     Ok(written)
+}
+
+fn remove_captures(stem: &Path) {
+    let Some(parent) = stem.parent() else {
+        return;
+    };
+    let Some(base) = stem.file_name().map(|name| name.to_string_lossy()) else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    for path in entries.flatten().map(|entry| entry.path()) {
+        let matches = path
+            .file_name()
+            .map(|name| name.to_string_lossy())
+            .is_some_and(|name| name.starts_with(base.as_ref()) && name.ends_with(".png"));
+        if matches {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 fn find_capture(stem: &Path) -> Option<PathBuf> {
@@ -98,6 +119,46 @@ fn ui_visual_main_channel_renders() -> Result<(), Error> {
     ui.find("You")?;
     drop(ui);
     capture(&app, "main-general")?;
+    Ok(())
+}
+
+#[test]
+fn ui_visual_profile_hover_card_renders() -> Result<(), Error> {
+    let mut app = profile_app();
+    app.profile_hover = Some(super::ProfileHoverState {
+        user: "U_ALICE".into(),
+        key: "message-name:false:1783372300.000100".into(),
+        generation: 1,
+        visible: true,
+        source_hovered: true,
+        card_hovered: false,
+        position: Some(iced::Point::new(360.0, 96.0)),
+    });
+    let mut ui = sim(&app);
+    ui.find("Product designer")?;
+    ui.find("Growing good interfaces")?;
+    ui.find("Message")?;
+    drop(ui);
+    capture(&app, "profile-hover-card")?;
+    Ok(())
+}
+
+#[test]
+fn ui_visual_profile_pane_renders() -> Result<(), Error> {
+    let mut app = profile_app();
+    app.profile_pane = Some(super::ProfilePaneState {
+        user: "U_ALICE".into(),
+        loading: false,
+        error: None,
+    });
+    let mut ui = sim(&app);
+    ui.find("Profile")?;
+    ui.find("Contact information")?;
+    ui.find("Recent DMs")?;
+    ui.find("About me")?;
+    ui.find("Manager")?;
+    drop(ui);
+    capture(&app, "profile-pane")?;
     Ok(())
 }
 
@@ -160,7 +221,7 @@ fn ui_visual_thread_unread_divider() -> Result<(), Error> {
     let app = thread_unread_app();
     let mut ui = sim(&app);
     ui.find("Thread")?;
-    ui.find("unread")?;
+    ui.find("NEW")?;
     drop(ui);
     capture(&app, "thread-unread-divider")?;
     Ok(())
