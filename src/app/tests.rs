@@ -264,6 +264,32 @@ pub(super) fn activity_app() -> App {
         app.activity.upsert(item);
     }
 
+    let channel_post: ActivityItem = serde_json::from_value(json!({
+        "is_unread": true,
+        "feed_ts": "1783372400.000100",
+        "key": "channel-C_DEV",
+        "item": {
+            "type": "channel",
+            "bundle_info": {
+                "payload": {
+                    "channel_entry": {
+                        "latest_message": {
+                            "ts": "1783372400.000100",
+                            "channel": "C_DEV"
+                        },
+                        "unread_msg_count": 2
+                    }
+                }
+            }
+        }
+    }))
+    .unwrap();
+    app.activity.hydrated.insert(
+        ("C_DEV".into(), "1783372400.000100".into()),
+        msg("U_ALICE", "1783372400.000100", "Subscribed channel post"),
+    );
+    app.activity.upsert(channel_post);
+
     app
 }
 

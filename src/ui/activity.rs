@@ -339,21 +339,14 @@ fn verb(item: &ActivityItem) -> &'static str {
         "at_channel" | "at_everyone" => "Channel mention in",
         "at_user" => "Mention in",
         "keyword" | "unjoined_channel_mention" => "Keyword mention in",
+        "channel" => "Post in",
         "dm" | "bot_dm_bundle" => "DM",
         _ => "Activity in",
     }
 }
 
 fn badge_count(item: &ActivityItem) -> Option<u32> {
-    let count = item
-        .item
-        .bundle_info
-        .as_ref()?
-        .payload
-        .as_ref()?
-        .thread_entry
-        .as_ref()?
-        .unread_msg_count;
+    let count = item.unread_msg_count();
     (count > 0).then_some(count)
 }
 

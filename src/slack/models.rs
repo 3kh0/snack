@@ -773,6 +773,18 @@ pub struct ActivityBundlePayload {
     pub thread_entry: Option<ActivityThreadEntry>,
     #[serde(default)]
     pub dm_entry: Option<ActivityDmEntry>,
+    #[serde(default)]
+    pub channel_entry: Option<ActivityChannelEntry>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ActivityChannelEntry {
+    #[serde(default)]
+    pub latest_message: Option<ActivityMessageRef>,
+    #[serde(default)]
+    pub unread_msg_count: u32,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -823,6 +835,9 @@ impl ActivityItem {
         if let Some(dm) = self.dm_message() {
             return dm.channel.as_deref();
         }
+        if let Some(latest) = self.channel_message() {
+            return latest.channel.as_deref();
+        }
         self.item
             .message
             .as_ref()
@@ -835,6 +850,9 @@ impl ActivityItem {
         }
         if let Some(dm) = self.dm_message() {
             return dm.ts.as_deref();
+        }
+        if let Some(latest) = self.channel_message() {
+            return latest.ts.as_deref();
         }
         self.item.message.as_ref().and_then(|m| m.ts.as_deref())
     }
@@ -852,6 +870,9 @@ impl ActivityItem {
     pub fn author(&self) -> Option<&str> {
         if let Some(reaction) = &self.item.reaction {
             return reaction.user.as_deref();
+        }
+        if let Some(latest) = self.channel_message() {
+            return latest.author_user_id.as_deref();
         }
         self.item
             .message
@@ -904,6 +925,29 @@ impl ActivityItem {
             .as_ref()
     }
 
+    fn channel_entry(&self) -> Option<&ActivityChannelEntry> {
+        self.item
+            .bundle_info
+            .as_ref()?
+            .payload
+            .as_ref()?
+            .channel_entry
+            .as_ref()
+    }
+
+    fn channel_message(&self) -> Option<&ActivityMessageRef> {
+        self.channel_entry()?.latest_message.as_ref()
+    }
+
+    pub fn unread_msg_count(&self) -> u32 {
+        if let Some(entry) = self.thread_entry() {
+            return entry.unread_msg_count;
+        }
+        self.channel_entry()
+            .map(|e| e.unread_msg_count)
+            .unwrap_or(0)
+    }
+
     pub fn identity(&self) -> String {
         let channel = self.channel().unwrap_or("");
         if self.thread_entry().is_some()
@@ -915,6 +959,9 @@ impl ActivityItem {
         let kind = self.item.kind.as_str();
         if matches!(kind, "dm" | "bot_dm_bundle") {
             return format!("dm:{channel}");
+        }
+        if kind == "channel" {
+            return format!("channel:{channel}");
         }
         let ts = self.ts().unwrap_or("");
         format!("{kind}:{channel}:{ts}")
@@ -939,13 +986,17 @@ mod fixture_tests {
                              "reaction":{"user":"U08R","name":"yay"}}},
                     {"is_unread":false,"feed_ts":"1783825812.401009","key":"at_user-1",
                      "item":{"type":"at_user","message":{"ts":"1783825812.401009","channel":"C08G",
-                             "thread_ts":"1783822728.610059","author_user_id":"U07U"}}}
+                             "thread_ts":"1783822728.610059","author_user_id":"U07U"}}},
+                    {"is_unread":true,"feed_ts":"1784342170.887589","key":"channel-G01Q",
+                     "item":{"type":"channel","bundle_info":{"payload":{"channel_entry":{
+                        "latest_message":{"ts":"1784342170.887589","channel":"G01Q"},
+                        "unread_msg_count":3}}}}}
                 ]
             }"#,
         )
         .expect("decode activity feed");
 
-        assert_eq!(page.items.len(), 3);
+        assert_eq!(page.items.len(), 4);
 
         let thread = &page.items[0];
         assert_eq!(thread.item.kind, "thread_v2");
@@ -964,6 +1015,14 @@ mod fixture_tests {
         assert_eq!(mention.channel(), Some("C08G"));
         assert_eq!(mention.thread_ts(), Some("1783822728.610059"));
         assert_eq!(mention.author(), Some("U07U"));
+
+        let channel = &page.items[3];
+        assert_eq!(channel.item.kind, "channel");
+        assert_eq!(channel.channel(), Some("G01Q"));
+        assert_eq!(channel.ts(), Some("1784342170.887589"));
+        assert_eq!(channel.thread_ts(), None);
+        assert_eq!(channel.unread_msg_count(), 3);
+        assert_eq!(channel.identity(), "channel:G01Q");
     }
 
     #[test]

@@ -241,6 +241,18 @@ fn ui_visual_activity_unread_filter() -> Result<(), Error> {
 }
 
 #[test]
+fn ui_visual_activity_channel_post() -> Result<(), Error> {
+    let app = activity_app();
+    let mut ui = sim(&app);
+    ui.find("Post in")?;
+    ui.find("dev")?;
+    ui.find("Subscribed channel post")?;
+    drop(ui);
+    capture(&app, "activity-channel-post")?;
+    Ok(())
+}
+
+#[test]
 fn ui_visual_dms_list_renders() -> Result<(), Error> {
     let app = dms_app();
     let mut ui = sim(&app);
